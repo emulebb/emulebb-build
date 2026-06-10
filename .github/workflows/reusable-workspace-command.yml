@@ -278,7 +278,7 @@ jobs:
 
       - name: Upload failure artifacts
         if: ${{ failure() && inputs.failure_artifact_name != '' && inputs.failure_artifact_path != '' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.failure_artifact_name }}
           path: ${{ steps.artifact_paths.outputs.failure_artifact_path }}
@@ -287,7 +287,7 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ inputs.artifact_name != '' && inputs.artifact_path != '' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
           path: ${{ steps.artifact_paths.outputs.artifact_path }}
