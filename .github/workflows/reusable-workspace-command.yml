@@ -98,7 +98,7 @@ jobs:
           }
 
       - name: Checkout build orchestration
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: emulebb/emulebb-build
           ref: ${{ inputs.build_ref }}
