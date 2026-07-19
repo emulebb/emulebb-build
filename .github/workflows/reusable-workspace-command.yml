@@ -172,13 +172,13 @@ jobs:
 
       - name: Set up Node
         if: ${{ inputs.node_version != '' && inputs.node_cache_dependency_path == '' }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node_version }}
 
       - name: Set up Node with npm cache
         if: ${{ inputs.node_version != '' && inputs.node_cache_dependency_path != '' }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node_version }}
           cache: npm
