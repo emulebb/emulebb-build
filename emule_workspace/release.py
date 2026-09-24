@@ -730,6 +730,7 @@ def _stage_emulebb_rust_linux_tree(
 def _normalize_emulebb_rust_linux_modes(root: Path, *, is_appdir: bool) -> None:
     """Applies release-safe modes on a native Linux package staging tree."""
 
+    root.chmod(0o755)
     for path in root.rglob("*"):
         path.chmod(0o755 if path.is_dir() else 0o644)
     executable_paths = [
