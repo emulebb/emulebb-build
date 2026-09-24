@@ -716,7 +716,8 @@ def _stage_emulebb_rust_linux_tree(
     shutil.copy2(tooling_root / "docs" / "products" / "emulebb-rust" / "RELEASE-SCOPE.md", doc_root)
     (doc_root / "README.md").write_text(
         f"# eMuleBB Rust {version}\n\nUnsigned Linux x86_64 beta package. The native Slint UI is not included.\n"
-        "Run `emulebb-rust --profile <profile-dir>`; the daemon serves the packaged WebUI beside its binary.\n",
+        "Run `emulebb-rust` for the platform-default profile, or pass `--profile <profile-dir>`; "
+        "the daemon serves the packaged WebUI beside its binary.\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -855,7 +856,7 @@ def _write_emulebb_rust_readme(package_root: Path, version: str) -> None:
         f"eMuleBB Rust {version}\n"
         "====================\n\n"
         "This is the unsigned Windows x64 beta package for the headless emulebb-rust daemon.\n\n"
-        "Run `emulebb-rust.exe --profile <profile-dir>` from this directory or from a script that points at a profile.\n"
+        "Run `emulebb-rust.exe` for the platform-default profile, or pass `--profile <profile-dir>`.\n"
         "The daemon serves the embedded browser WebUI from the packaged `webui` directory beside the executable.\n\n"
         "Package contents:\n\n"
         "- `emulebb-rust.exe` - regular headless daemon executable.\n"
