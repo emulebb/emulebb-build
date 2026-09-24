@@ -9,6 +9,7 @@ import re
 import shutil
 import struct
 import subprocess
+import tempfile
 import tomllib
 import urllib.request
 import zipfile
@@ -635,19 +636,28 @@ def _create_emulebb_rust_linux_packages(
     shutil.copy2(appdir / "SBOM.spdx.json", sbom_path)
     shutil.copy2(appdir / "SBOM.spdx.json", deb_root / "usr" / "share" / "doc" / "emulebb-rust" / "SBOM.spdx.json")
 
-    control_root.chmod(0o755)
-    dpkg_command = ["dpkg-deb", "--build", "--root-owner-group"]
-    if (control_root.stat().st_mode & 0o777) > 0o775:
-        # DrvFS without metadata support reports every directory as 0777 and
-        # cannot persist chmod. The control directory is not part of the data
-        # archive, so bypass only this host-filesystem validation.
-        dpkg_command.append("--nocheck")
-    dpkg_command.extend((str(deb_root), str(deb_path)))
-    _run_packaging_tool(tuple(dpkg_command), "dpkg-deb")
     appimagetool = shutil.which("appimagetool") or os.environ.get("APPIMAGETOOL", "").strip()
     if not appimagetool:
         raise RuntimeError("Linux AppImage packaging requires appimagetool on PATH or APPIMAGETOOL.")
-    _run_packaging_tool((appimagetool, "--no-appstream", str(appdir), str(appimage_path)), "appimagetool")
+    # Package from the host's native temporary filesystem. WSL DrvFS mounts can
+    # report every path as 0777 and ignore chmod, which would otherwise leak
+    # writable/executable modes into both Linux artifacts.
+    with tempfile.TemporaryDirectory(prefix="emulebb-rust-linux-package-") as native_temp:
+        native_root = Path(native_temp)
+        native_deb_root = native_root / "deb"
+        native_appdir = native_root / "AppDir"
+        shutil.copytree(deb_root, native_deb_root)
+        shutil.copytree(appdir, native_appdir)
+        _normalize_emulebb_rust_linux_modes(native_deb_root, is_appdir=False)
+        _normalize_emulebb_rust_linux_modes(native_appdir, is_appdir=True)
+        _run_packaging_tool(
+            ("dpkg-deb", "--build", "--root-owner-group", str(native_deb_root), str(deb_path)),
+            "dpkg-deb",
+        )
+        _run_packaging_tool(
+            (appimagetool, "--no-appstream", str(native_appdir), str(appimage_path)),
+            "appimagetool",
+        )
 
     assets = (deb_path, appimage_path)
     manifests: list[Path] = []
@@ -715,6 +725,24 @@ def _stage_emulebb_rust_linux_tree(
         encoding="utf-8",
         newline="\n",
     )
+
+
+def _normalize_emulebb_rust_linux_modes(root: Path, *, is_appdir: bool) -> None:
+    """Applies release-safe modes on a native Linux package staging tree."""
+
+    for path in root.rglob("*"):
+        path.chmod(0o755 if path.is_dir() else 0o644)
+    executable_paths = [
+        root / "usr" / "bin" / "emulebb-rust",
+        root / "usr" / "lib" / "emulebb-rust" / "emulebb-rust",
+    ]
+    if is_appdir:
+        executable_paths.append(root / "AppRun")
+    for path in executable_paths:
+        path.chmod(0o755)
+    if not is_appdir:
+        (root / "DEBIAN").chmod(0o755)
+        (root / "DEBIAN" / "control").chmod(0o644)
 
 
 def _write_emulebb_rust_linux_sbom(
