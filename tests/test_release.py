@@ -1184,6 +1184,57 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
     assert [line.split("  ", 1)[1] for line in sums] == [zip_path.name, manifest_path.name, sbom_path.name]
 
 
+def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _make_rust_package_layout(tmp_path)
+    _stage_rust_package_inputs(layout)
+    staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
+    (staged_bin / "emulebb-rust").write_bytes(b"\x7fELF-linux")
+    monkeypatch.setattr(release, "repo_status_lines", lambda _repo: ["## main...origin/main"])
+    monkeypatch.setattr(
+        release,
+        "_package_repo_provenance",
+        lambda repo: {"commit": f"{repo.name}-commit", "branch": "main", "remote": ""},
+    )
+    monkeypatch.setattr(release.shutil, "which", lambda name: "/tools/appimagetool" if name == "appimagetool" else None)
+
+    def fake_packaging_tool(command: tuple[str, ...], _label: str) -> None:
+        Path(command[-1]).write_bytes(b"package")
+
+    monkeypatch.setattr(release, "_run_packaging_tool", fake_packaging_tool)
+    options = WorkspaceOptions(
+        workspace_root=layout.emule_workspace_root,
+        output_root=layout.output_root,
+        configuration="Release",
+        platform="x64",
+    )
+
+    release.create_emulebb_rust_package(
+        layout,
+        options,
+        EmulebbRustPackageOptions(
+            release_version="0.1.0-beta.1",
+            skip_build=True,
+            target_os="linux",
+        ),
+    )
+
+    release_root = layout.output_release_root / "rust-v0.1.0-beta.1"
+    deb = release_root / "emulebb-rust-v0.1.0-beta.1-linux-amd64.deb"
+    appimage = release_root / "emulebb-rust-v0.1.0-beta.1-linux-x86_64.AppImage"
+    sbom = release_root / "emulebb-rust-v0.1.0-beta.1-linux-x86_64.sbom.spdx.json"
+    assert deb.is_file()
+    assert appimage.is_file()
+    assert sbom.is_file()
+    assert deb.with_name(f"{deb.name}.manifest.json").is_file()
+    assert appimage.with_name(f"{appimage.name}.manifest.json").is_file()
+    sums = (release_root / "SHA256SUMS").read_text(encoding="ascii")
+    assert deb.name in sums
+    assert appimage.name in sums
+
+
 def test_emulebb_rust_package_contents_reject_dead_ui_and_diagnostics(tmp_path: Path) -> None:
     zip_path = tmp_path / "emulebb-rust.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:

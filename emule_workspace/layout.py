@@ -337,7 +337,10 @@ def file_token(value: str) -> str:
 def _resolve_workspace_manifest_path(workspace_root: Path, relative_path: str | Path) -> Path:
     """Resolves a path relative to the workspace manifest's workspace root."""
 
-    return (workspace_root / Path(str(relative_path))).resolve()
+    # Workspace manifests are shared by Windows and WSL, so their canonical
+    # Windows separators must also be understood by POSIX pathlib.
+    portable_path = str(relative_path).replace("\\", "/")
+    return (workspace_root / Path(portable_path)).resolve()
 
 
 def _optional_workspace_manifest_path(workspace_root: Path, repos: dict[str, Any], key: str) -> Path | None:

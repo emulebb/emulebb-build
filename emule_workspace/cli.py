@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from dataclasses import replace
 from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
@@ -757,6 +758,13 @@ def build_tests(
 @click.option("--clean", is_flag=True, help="Clean selected client outputs before building.")
 @click.option("--diagnostics", is_flag=True, help="Build diagnostics-flavored clients when supported.")
 @click.option(
+    "--target-os",
+    type=click.Choice(["windows", "linux"]),
+    default="windows",
+    show_default=True,
+    help="Target OS for emulebb-rust; other clients remain Windows-only.",
+)
+@click.option(
     "--client",
     "clients",
     multiple=True,
@@ -770,13 +778,19 @@ def build_clients(
     *,
     clean: bool,
     diagnostics: bool,
+    target_os: str,
     clients: tuple[str, ...],
     workspace_options: WorkspaceOptions,
     layout,
 ) -> None:
     """Build opt-in third-party P2P clients for local multi-client tests."""
 
-    build_options = BuildClientsOptions(clean=clean, clients=clients, diagnostics=diagnostics)
+    build_options = BuildClientsOptions(
+        clean=clean,
+        clients=clients,
+        diagnostics=diagnostics,
+        target_os=target_os,
+    )
     _locked(
         "build clients",
         lambda **kwargs: invoke_build_clients(kwargs["layout"], kwargs["workspace_options"], build_options),
@@ -1547,11 +1561,19 @@ def package_release(
     help="Rust release version in MAJOR.MINOR.PATCH[-rc.N|-beta.N|-nightly.YYYYMMDD.SHA] form.",
 )
 @click.option("--skip-build", is_flag=True, help="Reuse the staged regular Rust runtime instead of rebuilding it.")
+@click.option(
+    "--target-os",
+    type=click.Choice(["windows", "linux"]),
+    default="windows",
+    show_default=True,
+    help="Package Windows ZIP assets or Linux DEB and AppImage assets.",
+)
 def package_emulebb_rust(
     *,
     clean: bool,
     release_version: str,
     skip_build: bool,
+    target_os: str,
     workspace_options: WorkspaceOptions,
     layout,
 ) -> None:
@@ -1561,11 +1583,61 @@ def package_emulebb_rust(
         release_version=release_version,
         clean=clean,
         skip_build=skip_build,
+        target_os=target_os,
     )
     _locked(
         "package emulebb-rust",
         lambda **kwargs: create_emulebb_rust_package(kwargs["layout"], kwargs["workspace_options"], package_options),
     )(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("package-emulebb-rust-ci")
+@click.option(
+    "--release-version",
+    default="0.1.0-beta.1",
+    show_default=True,
+    help="Rust release version in MAJOR.MINOR.PATCH[-rc.N|-beta.N|-nightly.YYYYMMDD.SHA] form.",
+)
+@click.option("--clean", is_flag=True, help="Clean selected Rust build/staging outputs before building.")
+def package_emulebb_rust_ci(*, release_version: str, clean: bool) -> None:
+    """Build Linux Rust assets from fork checkouts on a clean CI runner."""
+
+    output_root_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
+    rust_repo_value = os.environ.get("EMULEBB_RUST_REPO", "").strip()
+    tooling_repo_value = os.environ.get("EMULEBB_TOOLING_REPO", "").strip()
+    missing = [
+        name
+        for name, value in (
+            (WORKSPACE_OUTPUT_ROOT_ENV, output_root_value),
+            ("EMULEBB_RUST_REPO", rust_repo_value),
+            ("EMULEBB_TOOLING_REPO", tooling_repo_value),
+        )
+        if not value
+    ]
+    if missing:
+        raise click.ClickException(f"CI Rust packaging requires: {', '.join(missing)}.")
+
+    layout = replace(
+        build_ci_layout(output_root=Path(output_root_value)),
+        emulebb_rust_repo_root=Path(rust_repo_value).resolve(),
+        tooling_repo_root=Path(tooling_repo_value).resolve(),
+    )
+    options = WorkspaceOptions(
+        workspace_root=layout.emule_workspace_root,
+        output_root=layout.output_root,
+        workspace_name="ci",
+        configuration="Release",
+        platform="x64",
+    )
+    package_options = EmulebbRustPackageOptions(
+        release_version=release_version,
+        clean=clean,
+        target_os="linux",
+    )
+    try:
+        create_emulebb_rust_package(layout, options, package_options)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @main.group("vm-lab")

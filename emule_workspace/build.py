@@ -245,7 +245,12 @@ def build_clients(layout: WorkspaceLayout, options: WorkspaceOptions, build_opti
             if client == "amule":
                 build_amule_client(session, clean=build_options.clean)
             elif client == "emulebb-rust":
-                build_emulebb_rust_client(session, clean=build_options.clean, diagnostics=build_options.diagnostics)
+                build_emulebb_rust_client(
+                    session,
+                    clean=build_options.clean,
+                    diagnostics=build_options.diagnostics,
+                    target_os=build_options.target_os,
+                )
             elif client == "qbittorrentbb":
                 # Static is opt-in (default dynamic dev build); CI sets it.
                 static = os.environ.get("EMULEBB_QBT_STATIC", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -257,8 +262,13 @@ def build_clients(layout: WorkspaceLayout, options: WorkspaceOptions, build_opti
 
 
 RUST_CLIENT_TARGETS = {
-    "x64": "x86_64-pc-windows-msvc",
-    "ARM64": "aarch64-pc-windows-msvc",
+    "windows": {
+        "x64": "x86_64-pc-windows-msvc",
+        "ARM64": "aarch64-pc-windows-msvc",
+    },
+    "linux": {
+        "x64": "x86_64-unknown-linux-gnu",
+    },
 }
 STALE_EMULEBB_RUST_UI_ARTIFACTS = (
     "emulebb-rust-ui.exe",
@@ -267,7 +277,13 @@ STALE_EMULEBB_RUST_UI_ARTIFACTS = (
 )
 
 
-def build_emulebb_rust_client(session: BuildSession, *, clean: bool, diagnostics: bool = False) -> None:
+def build_emulebb_rust_client(
+    session: BuildSession,
+    *,
+    clean: bool,
+    diagnostics: bool = False,
+    target_os: str = "windows",
+) -> None:
     """Builds and stages the headless Rust eMuleBB client under the output root."""
 
     repo_root = session.layout.emulebb_rust_repo_root
@@ -275,7 +291,7 @@ def build_emulebb_rust_client(session: BuildSession, *, clean: bool, diagnostics
         raise RuntimeError("build clients --client emulebb-rust requires repos/emulebb-rust in the workspace manifest.")
     if not repo_root.is_dir():
         raise RuntimeError(f"eMuleBB Rust repo was not found: {repo_root}")
-    target = rust_client_target(session.options.platform)
+    target = rust_client_target(session.options.platform, target_os=target_os)
     cargo_path = find_tool(("cargo.exe", "cargo"))
     if cargo_path is None:
         raise RuntimeError("build clients --client emulebb-rust requires Rust cargo on PATH.")
@@ -323,7 +339,7 @@ def build_emulebb_rust_client(session: BuildSession, *, clean: bool, diagnostics
             )
         if completed.returncode != 0:
             raise RuntimeError(f"eMuleBB Rust client build failed with exit code {completed.returncode}. See {log_path}")
-        stage_emulebb_rust_runtime(session.layout, target, diagnostics=diagnostics)
+        stage_emulebb_rust_runtime(session.layout, target, diagnostics=diagnostics, target_os=target_os)
         build_emulebb_rust_webui(session, repo_root)
         session.add_step(
             name=f"CLIENT eMuleBB Rust{' diagnostics' if diagnostics else ''}",
@@ -349,33 +365,51 @@ def build_emulebb_rust_webui(session: BuildSession, repo_root: Path) -> None:
     webui_root = repo_root / "webui"
     if not (webui_root / "package.json").is_file():
         raise RuntimeError(f"eMuleBB Rust WebUI package.json was not found: {webui_root / 'package.json'}")
-    npm_path = find_tool(("npm.cmd", "npm.exe", "npm"))
+    npm_candidates = ("npm.cmd", "npm.exe", "npm") if os.name == "nt" else ("npm",)
+    npm_path = find_tool(npm_candidates)
     if npm_path is None:
         raise RuntimeError("build clients --client emulebb-rust requires Node npm on PATH to build the WebUI.")
 
-    build_root = session.layout.output_build_root / "emulebb-rust" / "webui-dist"
+    webui_build_parent = session.layout.output_build_root / "emulebb-rust"
+    source_build_root = webui_build_parent / "webui-source"
+    build_root = webui_build_parent / "webui-dist"
+    remove_tree_if_present(source_build_root)
     remove_tree_if_present(build_root)
-    build_root.parent.mkdir(parents=True, exist_ok=True)
+    webui_build_parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        webui_root,
+        source_build_root,
+        ignore=shutil.ignore_patterns("node_modules", "dist", "test-results"),
+    )
     log_path = session.log_directory / f"client-emulebb-rust-webui-{session.options.platform.lower()}.log"
     npm_command = str(npm_path)
-    command = [npm_command, "run", "build", "--", "--outDir", str(build_root)]
+    commands = (
+        [npm_command, "ci", "--ignore-scripts"],
+        [npm_command, "run", "build", "--", "--outDir", str(build_root)],
+    )
+    npm_env = subprocess_os_environ()
+    npm_env["NPM_CONFIG_CACHE"] = str(session.layout.output_cache_root / "npm")
     started_at = time.monotonic()
     try:
         with log_path.open("w", encoding="utf-8", newline="\n") as stream:
             stream.write(f"npm: {npm_path}\n")
+            stream.write(f"WebUI source copy: {source_build_root}\n")
             stream.write(f"WebUI output: {build_root}\n")
-            stream.write(" ".join(shlex.quote(part) for part in command) + "\n\n")
-            completed = subprocess.run(
-                command,
-                cwd=webui_root,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
-                env=subprocess_os_environ(),
-            )
-        if completed.returncode != 0:
-            raise RuntimeError(f"eMuleBB Rust WebUI build failed with exit code {completed.returncode}. See {log_path}")
+            for command in commands:
+                stream.write(" ".join(shlex.quote(part) for part in command) + "\n\n")
+                completed = subprocess.run(
+                    command,
+                    cwd=source_build_root,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    check=False,
+                    env=npm_env,
+                )
+                if completed.returncode != 0:
+                    raise RuntimeError(
+                        f"eMuleBB Rust WebUI build failed with exit code {completed.returncode}. See {log_path}"
+                    )
         if not (build_root / "index.html").is_file():
             raise RuntimeError(f"eMuleBB Rust WebUI build did not produce index.html: {build_root / 'index.html'}")
         staged_webui = staged_emulebb_rust_root(session.layout) / "bin" / "webui"
@@ -399,14 +433,21 @@ def build_emulebb_rust_webui(session: BuildSession, repo_root: Path) -> None:
         raise
 
 
-def rust_client_target(platform: str) -> str:
-    """Returns the Rust MSVC target triple for one workspace package platform."""
+def rust_client_target(platform: str, *, target_os: str = "windows") -> str:
+    """Returns the Rust target triple for one workspace package platform and OS."""
 
     try:
-        return RUST_CLIENT_TARGETS[platform]
+        targets = RUST_CLIENT_TARGETS[target_os]
+        return targets[platform]
     except KeyError as error:
-        supported = ", ".join(sorted(RUST_CLIENT_TARGETS))
-        raise RuntimeError(f"Unsupported eMuleBB Rust client platform {platform}; supported: {supported}") from error
+        supported = ", ".join(
+            f"{os_name}/{platform_name}"
+            for os_name, platforms in sorted(RUST_CLIENT_TARGETS.items())
+            for platform_name in sorted(platforms)
+        )
+        raise RuntimeError(
+            f"Unsupported eMuleBB Rust client target {target_os}/{platform}; supported: {supported}"
+        ) from error
 
 
 def rust_pdb_source_names(staged_pdb_name: str) -> tuple[str, ...]:
@@ -429,6 +470,8 @@ def remove_rust_target_runtime_artifacts(layout: WorkspaceLayout) -> None:
     """Removes runnable Rust client copies from Cargo target dirs after staging."""
 
     names = (
+        "emulebb-rust",
+        "emulebb-rust-diagnostics",
         "emulebb-rust.exe",
         "emulebb-rust.pdb",
         "emulebb_rust.pdb",
@@ -438,7 +481,11 @@ def remove_rust_target_runtime_artifacts(layout: WorkspaceLayout) -> None:
     )
     release_roots = [
         layout.output_rust_target_root / "release",
-        *(layout.output_rust_target_root / target / "release" for target in RUST_CLIENT_TARGETS.values()),
+        *(
+            layout.output_rust_target_root / target / "release"
+            for targets in RUST_CLIENT_TARGETS.values()
+            for target in targets.values()
+        ),
     ]
     for release_root in release_roots:
         for name in names:
@@ -635,7 +682,13 @@ def staged_emulebb_rust_root(layout: WorkspaceLayout) -> Path:
     return layout.output_tools_root / "emulebb-rust"
 
 
-def stage_emulebb_rust_runtime(layout: WorkspaceLayout, target: str, *, diagnostics: bool = False) -> None:
+def stage_emulebb_rust_runtime(
+    layout: WorkspaceLayout,
+    target: str,
+    *,
+    diagnostics: bool = False,
+    target_os: str = "windows",
+) -> None:
     """Stages the built headless Rust client below the output root.
 
     The diagnostics flavor is built as its own bin target, so cargo emits
@@ -646,7 +699,8 @@ def stage_emulebb_rust_runtime(layout: WorkspaceLayout, target: str, *, diagnost
     unambiguously.
     """
 
-    exe_name = "emulebb-rust-diagnostics.exe" if diagnostics else "emulebb-rust.exe"
+    executable_suffix = ".exe" if target_os == "windows" else ""
+    exe_name = ("emulebb-rust-diagnostics" if diagnostics else "emulebb-rust") + executable_suffix
     pdb_name = "emulebb-rust-diagnostics.pdb" if diagnostics else "emulebb-rust.pdb"
     source_root = layout.output_rust_target_root / target / "release"
     exe = source_root / exe_name
@@ -658,15 +712,16 @@ def stage_emulebb_rust_runtime(layout: WorkspaceLayout, target: str, *, diagnost
     for stale_artifact in STALE_EMULEBB_RUST_UI_ARTIFACTS:
         (bin_root / stale_artifact).unlink(missing_ok=True)
     shutil.copy2(exe, bin_root / exe_name)
-    staged_pdb_source = None
-    for pdb_source_name in rust_pdb_source_names(pdb_name):
-        pdb = source_root / pdb_source_name
-        if pdb.is_file():
-            staged_pdb_source = pdb
-            break
-    if staged_pdb_source is not None:
-        for staged_pdb_name in rust_pdb_stage_names(pdb_name):
-            shutil.copy2(staged_pdb_source, bin_root / staged_pdb_name)
+    if target_os == "windows":
+        staged_pdb_source = None
+        for pdb_source_name in rust_pdb_source_names(pdb_name):
+            pdb = source_root / pdb_source_name
+            if pdb.is_file():
+                staged_pdb_source = pdb
+                break
+        if staged_pdb_source is not None:
+            for staged_pdb_name in rust_pdb_stage_names(pdb_name):
+                shutil.copy2(staged_pdb_source, bin_root / staged_pdb_name)
     if not (bin_root / exe_name).is_file():
         raise RuntimeError(f"Staged eMuleBB Rust runtime is missing required file: {bin_root / exe_name}")
     remove_rust_target_runtime_artifacts(layout)

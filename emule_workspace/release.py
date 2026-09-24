@@ -424,7 +424,7 @@ def create_emulebb_rust_package(
     workspace_options: WorkspaceOptions,
     package_options: EmulebbRustPackageOptions,
 ) -> None:
-    """Builds or reuses the staged Rust runtime and creates the Windows ZIP."""
+    """Builds or reuses the staged Rust runtime and creates native release assets."""
 
     if workspace_options.configuration != "Release":
         raise RuntimeError("package emulebb-rust requires --config Release.")
@@ -449,9 +449,18 @@ def create_emulebb_rust_package(
             stamp=utc_run_id(),
         )
         try:
-            build_emulebb_rust_client(session, clean=package_options.clean, diagnostics=False)
+            build_emulebb_rust_client(
+                session,
+                clean=package_options.clean,
+                diagnostics=False,
+                target_os=package_options.target_os,
+            )
         finally:
             session.write_recap()
+
+    if package_options.target_os == "linux":
+        _create_emulebb_rust_linux_packages(layout, workspace_options, package_options, rust_root)
+        return
 
     release_root = _emulebb_rust_release_root(layout, package_options.release_version)
     staging_root = release_root / "staging" / "windows-x64"
@@ -527,6 +536,212 @@ def create_emulebb_rust_package(
     print(f"eMuleBB Rust manifest: {manifest_path}")
     print(f"eMuleBB Rust SBOM: {sbom_path}")
     print(f"SHA256: {zip_hash}")
+
+
+def _create_emulebb_rust_linux_packages(
+    layout: WorkspaceLayout,
+    workspace_options: WorkspaceOptions,
+    package_options: EmulebbRustPackageOptions,
+    rust_root: Path,
+) -> None:
+    """Creates unsigned amd64 DEB and x86_64 AppImage beta assets."""
+
+    release_root = _emulebb_rust_release_root(layout, package_options.release_version)
+    staging_root = release_root / "staging" / "linux-x86_64"
+    deb_root = staging_root / "deb"
+    appdir = staging_root / "AppDir"
+    deb_path = release_root / f"emulebb-rust-v{package_options.release_version}-linux-amd64.deb"
+    appimage_path = release_root / f"emulebb-rust-v{package_options.release_version}-linux-x86_64.AppImage"
+    sbom_path = release_root / f"emulebb-rust-v{package_options.release_version}-linux-x86_64.sbom.spdx.json"
+    sums_path = release_root / "SHA256SUMS"
+    for path in (release_root, staging_root, deb_root, appdir, deb_path, appimage_path, sbom_path, sums_path):
+        _assert_path_under_root(path, release_root, "emulebb-rust Linux package path")
+
+    if staging_root.exists():
+        shutil.rmtree(staging_root)
+    release_root.mkdir(parents=True, exist_ok=True)
+    staged_bin = staged_emulebb_rust_root(layout) / "bin"
+    executable = staged_bin / "emulebb-rust"
+    webui = staged_bin / "webui"
+    if not executable.is_file():
+        raise RuntimeError(f"Cannot package missing staged Linux emulebb-rust executable: {executable}")
+    if not (webui / "index.html").is_file():
+        raise RuntimeError(f"Cannot package missing staged emulebb-rust WebUI: {webui / 'index.html'}")
+
+    _stage_emulebb_rust_linux_tree(
+        destination=deb_root / "usr",
+        executable=executable,
+        webui=webui,
+        rust_root=rust_root,
+        tooling_root=layout.tooling_repo_root,
+        version=package_options.release_version,
+    )
+    control_root = deb_root / "DEBIAN"
+    control_root.mkdir(parents=True)
+    (control_root / "control").write_text(
+        "\n".join(
+            (
+                "Package: emulebb-rust",
+                f"Version: {package_options.release_version}",
+                "Section: net",
+                "Priority: optional",
+                "Architecture: amd64",
+                "Maintainer: eMuleBB project <noreply@github.com>",
+                "Description: Headless eMuleBB Rust daemon with embedded WebUI",
+                "",
+            )
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    shutil.copytree(deb_root / "usr", appdir / "usr")
+    (appdir / "AppRun").write_text(
+        "#!/bin/sh\nHERE=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\n"
+        "exec \"$HERE/usr/lib/emulebb-rust/emulebb-rust\" \"$@\"\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (appdir / "emulebb-rust.desktop").write_text(
+        "[Desktop Entry]\nType=Application\nName=eMuleBB Rust\nExec=emulebb-rust\n"
+        "Icon=emulebb-rust\nCategories=Network;FileTransfer;\nTerminal=true\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (appdir / "emulebb-rust.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">'
+        '<rect width="128" height="128" rx="22" fill="#2457c5"/>'
+        '<path d="M28 36h72v16H48v12h44v15H48v13h54v16H28z" fill="white"/></svg>\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    for executable_path in (
+        deb_root / "usr" / "bin" / "emulebb-rust",
+        deb_root / "usr" / "lib" / "emulebb-rust" / "emulebb-rust",
+        appdir / "AppRun",
+        appdir / "usr" / "bin" / "emulebb-rust",
+        appdir / "usr" / "lib" / "emulebb-rust" / "emulebb-rust",
+    ):
+        executable_path.chmod(0o755)
+
+    _write_emulebb_rust_linux_sbom(
+        layout=layout,
+        rust_root=rust_root,
+        package_root=appdir,
+        release_root=release_root,
+        asset_name=appimage_path.name,
+        version=package_options.release_version,
+    )
+    shutil.copy2(appdir / "SBOM.spdx.json", sbom_path)
+    shutil.copy2(appdir / "SBOM.spdx.json", deb_root / "usr" / "share" / "doc" / "emulebb-rust" / "SBOM.spdx.json")
+
+    _run_packaging_tool(("dpkg-deb", "--build", "--root-owner-group", str(deb_root), str(deb_path)), "dpkg-deb")
+    appimagetool = shutil.which("appimagetool") or os.environ.get("APPIMAGETOOL", "").strip()
+    if not appimagetool:
+        raise RuntimeError("Linux AppImage packaging requires appimagetool on PATH or APPIMAGETOOL.")
+    _run_packaging_tool((appimagetool, "--no-appstream", str(appdir), str(appimage_path)), "appimagetool")
+
+    assets = (deb_path, appimage_path)
+    manifests: list[Path] = []
+    for asset in assets:
+        manifest_path = asset.with_name(f"{asset.name}.manifest.json")
+        manifest = {
+            "schema": "emulebb.rust.package/1",
+            "package": "emulebb-rust",
+            "version": package_options.release_version,
+            "tag": f"rust-v{package_options.release_version}",
+            "platform": "linux-x86_64",
+            "configuration": workspace_options.configuration,
+            "signed": False,
+            "builtUtc": datetime.now(timezone.utc).isoformat(),
+            "asset": asset.name,
+            "sha256": _sha256(asset),
+            "executable": "/usr/lib/emulebb-rust/emulebb-rust",
+            "webuiRoot": "/usr/lib/emulebb-rust/webui",
+            "sbom": sbom_path.name,
+            "sbomSha256": _sha256(sbom_path),
+            "source": {
+                "emulebbRust": _package_repo_provenance(rust_root),
+                "emulebbBuild": _package_repo_provenance(layout.build_repo_root),
+                "emulebbTooling": _package_repo_provenance(layout.tooling_repo_root),
+            },
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
+        manifests.append(manifest_path)
+    _write_sha256sums(sums_path, (*assets, *manifests, sbom_path))
+    print(f"eMuleBB Rust DEB: {deb_path}")
+    print(f"eMuleBB Rust AppImage: {appimage_path}")
+    print(f"eMuleBB Rust SBOM: {sbom_path}")
+
+
+def _stage_emulebb_rust_linux_tree(
+    *,
+    destination: Path,
+    executable: Path,
+    webui: Path,
+    rust_root: Path,
+    tooling_root: Path,
+    version: str,
+) -> None:
+    """Stages the common Linux filesystem tree used by DEB and AppImage."""
+
+    lib_root = destination / "lib" / "emulebb-rust"
+    doc_root = destination / "share" / "doc" / "emulebb-rust"
+    bin_root = destination / "bin"
+    lib_root.mkdir(parents=True)
+    doc_root.mkdir(parents=True)
+    bin_root.mkdir(parents=True)
+    shutil.copy2(executable, lib_root / "emulebb-rust")
+    shutil.copytree(webui, lib_root / "webui")
+    shutil.copy2(rust_root / "emulebb-rust-settings.example.toml", doc_root)
+    shutil.copy2(rust_root / "LICENSE", doc_root)
+    shutil.copy2(tooling_root / "docs" / "products" / "emulebb-rust" / "RELEASE-SCOPE.md", doc_root)
+    (doc_root / "README.md").write_text(
+        f"# eMuleBB Rust {version}\n\nUnsigned Linux x86_64 beta package. The native Slint UI is not included.\n"
+        "Run `emulebb-rust --profile <profile-dir>`; the daemon serves the packaged WebUI beside its binary.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (bin_root / "emulebb-rust").write_text(
+        '#!/bin/sh\nexec /usr/lib/emulebb-rust/emulebb-rust "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def _write_emulebb_rust_linux_sbom(
+    *,
+    layout: WorkspaceLayout,
+    rust_root: Path,
+    package_root: Path,
+    release_root: Path,
+    asset_name: str,
+    version: str,
+) -> None:
+    sbom_path = package_root / "SBOM.spdx.json"
+    document = _build_spdx_sbom(
+        name=f"eMuleBB Rust {version} Linux x86_64 package",
+        namespace=f"https://github.com/emulebb/emulebb-rust/releases/download/rust-v{version}/{asset_name}.sbom",
+        package_name=f"emulebb-rust-{version}-linux-x86_64",
+        package_version=version,
+        package_license="GPL-2.0-only",
+        package_comment="Unsigned Linux x86_64 beta package for the headless Rust daemon and embedded WebUI.",
+        package_root=package_root,
+        release_root=release_root,
+        components=[
+            _repo_spdx_package("emulebb-rust source", rust_root, declared_license="GPL-2.0-only"),
+            _repo_spdx_package("eMule build orchestration", layout.build_repo_root),
+            _repo_spdx_package("eMule tooling docs", layout.tooling_repo_root),
+        ],
+    )
+    sbom_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def _run_packaging_tool(command: tuple[str, ...], label: str) -> None:
+    completed = subprocess.run(command, check=False, text=True, capture_output=True)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(f"{label} failed with exit code {completed.returncode}: {detail}")
 
 
 def _qbittorrentbb_license(qbt_root: Path) -> Path | None:

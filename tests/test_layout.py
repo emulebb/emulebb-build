@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from emule_workspace.layout import AppVariant, TestTargets as LayoutTestTargets, WorkspaceLayout, file_token, get_test_build_tag
+from emule_workspace.layout import (
+    AppVariant,
+    TestTargets as LayoutTestTargets,
+    WorkspaceLayout,
+    _resolve_workspace_manifest_path,
+    file_token,
+    get_test_build_tag,
+)
 from emule_workspace.setup_commands import compare_root
 from emule_workspace.topology import (
     WORKSPACE_MANIFEST_SCHEMA_VERSION,
@@ -25,6 +32,12 @@ def test_get_test_build_tag_matches_existing_harness_shape(tmp_path: Path) -> No
 
 def test_file_token_matches_legacy_filename_sanitization() -> None:
     assert file_token('repos\\emulebb-build-tests: bad/name') == "repos-emulebb-build-tests-bad-name"
+
+
+def test_workspace_manifest_windows_paths_are_portable(tmp_path: Path) -> None:
+    assert _resolve_workspace_manifest_path(tmp_path / "workspaces" / "workspace", "..\\..\\repos\\emulebb-rust") == (
+        tmp_path / "repos" / "emulebb-rust"
+    ).resolve()
 
 
 def test_workspace_manifest_uses_json_contract_shape() -> None:

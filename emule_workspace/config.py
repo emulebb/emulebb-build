@@ -15,6 +15,7 @@ BuildPlatform = Literal["x64", "ARM64"]
 BuildOutputMode = Literal["Full", "Warnings", "ErrorsOnly"]
 PackageFlavor = Literal["standard", "diagnostics"]
 ClientBuildTarget = Literal["amule", "emulebb-rust", "qbittorrentbb"]
+RustTargetOs = Literal["windows", "linux"]
 AmutorrentSessionBackend = Literal["native", "rust"]
 ACTIVE_EMULEBB_RELEASE_VERSION = "0.7.3-rc.2"
 WORKSPACE_ROOT_ENV = "EMULEBB_WORKSPACE_ROOT"
@@ -90,6 +91,7 @@ class BuildClientsOptions(BaseModel):
     clean: bool = False
     clients: tuple[ClientBuildTarget, ...] = ()
     diagnostics: bool = False
+    target_os: RustTargetOs = "windows"
 
 
 class PythonTestOptions(BaseModel):
@@ -413,6 +415,7 @@ class EmulebbRustPackageOptions(BaseModel):
     release_version: str = "0.1.0-beta.1"
     clean: bool = False
     skip_build: bool = False
+    target_os: RustTargetOs = "windows"
 
 
 class AmulePackageOptions(BaseModel):

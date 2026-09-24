@@ -73,7 +73,7 @@ def test_build_clients_defaults_to_emulebb_rust(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(
         build,
         "build_emulebb_rust_client",
-        lambda _session, *, clean, diagnostics=False: calls.append((clean, diagnostics)),
+        lambda _session, *, clean, diagnostics=False, target_os="windows": calls.append((clean, diagnostics)),
     )
 
     build.build_clients(layout, options, BuildClientsOptions())
@@ -88,7 +88,7 @@ def test_build_clients_builds_emulebb_rust_target(tmp_path: Path, monkeypatch: p
     monkeypatch.setattr(
         build,
         "build_emulebb_rust_client",
-        lambda _session, *, clean, diagnostics=False: calls.append((clean, diagnostics)),
+        lambda _session, *, clean, diagnostics=False, target_os="windows": calls.append((clean, diagnostics)),
     )
 
     build.build_clients(layout, options, BuildClientsOptions(clients=("emulebb-rust",), clean=True))
@@ -105,7 +105,7 @@ def test_build_clients_passes_emulebb_rust_diagnostics_flag(
     monkeypatch.setattr(
         build,
         "build_emulebb_rust_client",
-        lambda _session, *, clean, diagnostics=False: calls.append((clean, diagnostics)),
+        lambda _session, *, clean, diagnostics=False, target_os="windows": calls.append((clean, diagnostics)),
     )
 
     build.build_clients(
@@ -141,11 +141,11 @@ def test_build_emulebb_rust_client_runs_cargo_and_stages_runtime(
             (built / "emulebb_rust.pdb").write_bytes(b"pdb")
         else:
             webui_dist = layout.output_build_root / "emulebb-rust" / "webui-dist"
-            webui_dist.mkdir(parents=True)
+            webui_dist.mkdir(parents=True, exist_ok=True)
             (webui_dist / "index.html").write_text("<div>webui</div>", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(build, "find_tool", lambda names: npm if "npm.cmd" in names else cargo)
+    monkeypatch.setattr(build, "find_tool", lambda names: npm if any(name.startswith("npm") for name in names) else cargo)
     monkeypatch.setattr(build.subprocess, "run", fake_run)
     session = build.BuildSession(
         layout=layout,
@@ -156,7 +156,8 @@ def test_build_emulebb_rust_client_runs_cargo_and_stages_runtime(
     build.build_emulebb_rust_client(session, clean=True)
 
     command, cwd, env = commands[0]
-    webui_command, webui_cwd, _webui_env = commands[1]
+    npm_ci_command, webui_cwd, _webui_env = commands[1]
+    webui_command, webui_build_cwd, _webui_build_env = commands[2]
     assert cwd == repo_root
     assert command == [
         "cargo.exe",
@@ -171,7 +172,10 @@ def test_build_emulebb_rust_client_runs_cargo_and_stages_runtime(
     ]
     assert env["EMULEBB_WORKSPACE_OUTPUT_ROOT"] == str(layout.output_root)
     assert env["CARGO_TARGET_DIR"] == str(layout.output_rust_target_root)
-    assert webui_cwd == repo_root / "webui"
+    expected_webui_source = layout.output_build_root / "emulebb-rust" / "webui-source"
+    assert webui_cwd == expected_webui_source
+    assert webui_build_cwd == expected_webui_source
+    assert npm_ci_command == [str(npm), "ci", "--ignore-scripts"]
     assert webui_command == [
         str(npm),
         "run",
@@ -243,11 +247,11 @@ def test_build_emulebb_rust_client_can_enable_packet_diagnostics(
             (built / "emulebb-rust-diagnostics.exe").write_bytes(b"diag")
         else:
             webui_dist = layout.output_build_root / "emulebb-rust" / "webui-dist"
-            webui_dist.mkdir(parents=True)
+            webui_dist.mkdir(parents=True, exist_ok=True)
             (webui_dist / "index.html").write_text("<div>diagnostics webui</div>", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(build, "find_tool", lambda names: npm if "npm.cmd" in names else cargo)
+    monkeypatch.setattr(build, "find_tool", lambda names: npm if any(name.startswith("npm") for name in names) else cargo)
     monkeypatch.setattr(build.subprocess, "run", fake_run)
     session = build.BuildSession(
         layout=layout,
@@ -275,6 +279,22 @@ def test_stage_emulebb_rust_runtime_requires_built_executable(tmp_path: Path) ->
 def test_rust_client_target_maps_workspace_platforms() -> None:
     assert build.rust_client_target("x64") == "x86_64-pc-windows-msvc"
     assert build.rust_client_target("ARM64") == "aarch64-pc-windows-msvc"
+    assert build.rust_client_target("x64", target_os="linux") == "x86_64-unknown-linux-gnu"
+
+
+def test_stage_emulebb_rust_linux_runtime_uses_extensionless_binary(tmp_path: Path) -> None:
+    layout = make_layout(tmp_path)
+    built = layout.output_rust_target_root / "x86_64-unknown-linux-gnu" / "release"
+    built.mkdir(parents=True)
+    (built / "emulebb-rust").write_bytes(b"linux")
+
+    build.stage_emulebb_rust_runtime(
+        layout,
+        "x86_64-unknown-linux-gnu",
+        target_os="linux",
+    )
+
+    assert (build.staged_emulebb_rust_root(layout) / "bin" / "emulebb-rust").read_bytes() == b"linux"
 
 
 def test_build_clients_rejects_emuleai_target(tmp_path: Path) -> None:
