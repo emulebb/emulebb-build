@@ -635,7 +635,15 @@ def _create_emulebb_rust_linux_packages(
     shutil.copy2(appdir / "SBOM.spdx.json", sbom_path)
     shutil.copy2(appdir / "SBOM.spdx.json", deb_root / "usr" / "share" / "doc" / "emulebb-rust" / "SBOM.spdx.json")
 
-    _run_packaging_tool(("dpkg-deb", "--build", "--root-owner-group", str(deb_root), str(deb_path)), "dpkg-deb")
+    control_root.chmod(0o755)
+    dpkg_command = ["dpkg-deb", "--build", "--root-owner-group"]
+    if (control_root.stat().st_mode & 0o777) > 0o775:
+        # DrvFS without metadata support reports every directory as 0777 and
+        # cannot persist chmod. The control directory is not part of the data
+        # archive, so bypass only this host-filesystem validation.
+        dpkg_command.append("--nocheck")
+    dpkg_command.extend((str(deb_root), str(deb_path)))
+    _run_packaging_tool(tuple(dpkg_command), "dpkg-deb")
     appimagetool = shutil.which("appimagetool") or os.environ.get("APPIMAGETOOL", "").strip()
     if not appimagetool:
         raise RuntimeError("Linux AppImage packaging requires appimagetool on PATH or APPIMAGETOOL.")
