@@ -69,6 +69,7 @@ from .product_family import (
 from .process import get_python_invocation, run_native
 from .python_tests import invoke_python_tests
 from .release import (
+    assemble_emulebb_rust_release_assets,
     create_amutorrent_package,
     create_emulebb_rust_package,
     create_qbittorrentbb_package,
@@ -1690,6 +1691,26 @@ def package_emulebb_rust_ci(*, release_version: str, clean: bool, target_os: str
         create_emulebb_rust_package(layout, options, package_options)
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+@main.command("assemble-emulebb-rust-release-ci")
+@click.option("--release-version", required=True)
+@click.option("--assets-dir", type=click.Path(path_type=Path), required=True)
+def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path) -> None:
+    """Verify all native beta assets and write the combined SHA256SUMS."""
+
+    output_root_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
+    if not output_root_value:
+        raise click.ClickException(f"{WORKSPACE_OUTPUT_ROOT_ENV} must be inherited for release assembly.")
+    output_root = Path(output_root_value).resolve()
+    assets_dir = assets_dir.resolve()
+    if not assets_dir.is_relative_to(output_root):
+        raise click.ClickException("Rust release assets must be under the inherited output root.")
+    try:
+        sums = assemble_emulebb_rust_release_assets(assets_dir, release_version)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    print(f"Rust release checksums: {sums}")
 
 
 @main.group("vm-lab")

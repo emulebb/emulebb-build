@@ -975,6 +975,47 @@ def _emulebb_rust_release_root(layout: WorkspaceLayout, release_version: str) ->
     return layout.output_release_root / f"rust-v{release_version}"
 
 
+def assemble_emulebb_rust_release_assets(assets_dir: Path, version: str) -> Path:
+    """Verifies the complete six-target beta asset set and writes one checksum file."""
+
+    if not _is_release_version(version):
+        raise RuntimeError(f"Invalid Rust release version: {version}")
+    assets_dir = assets_dir.resolve()
+    if not assets_dir.is_dir():
+        raise RuntimeError(f"Rust release assets directory does not exist: {assets_dir}")
+    stem = f"emulebb-rust-v{version}"
+    payloads = (
+        f"{stem}-windows-x64.zip",
+        f"{stem}-windows-arm64.zip",
+        f"{stem}-linux-amd64.deb",
+        f"{stem}-linux-x86_64.AppImage",
+        f"{stem}-linux-arm64.deb",
+        f"{stem}-linux-aarch64.AppImage",
+        f"{stem}-macos-x64.dmg",
+        f"{stem}-macos-arm64.dmg",
+    )
+    files: set[Path] = set()
+    for name in payloads:
+        payload = assets_dir / name
+        manifest_candidates = (assets_dir / f"{name}.manifest.json", assets_dir / f"{Path(name).stem}.manifest.json")
+        manifest = next((path for path in manifest_candidates if path.is_file()), None)
+        if not payload.is_file() or manifest is None:
+            raise RuntimeError(f"Rust release asset or manifest is missing: {name}")
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        if data.get("asset") != name or data.get("sha256") != _sha256(payload):
+            raise RuntimeError(f"Rust release asset provenance mismatch: {name}")
+        sbom_name = data.get("sbom")
+        if not isinstance(sbom_name, str) or Path(sbom_name).name != sbom_name:
+            raise RuntimeError(f"Rust release SBOM path is invalid: {name}")
+        sbom = assets_dir / sbom_name
+        if not sbom.is_file() or data.get("sbomSha256") != _sha256(sbom):
+            raise RuntimeError(f"Rust release SBOM mismatch: {name}")
+        files.update((payload, manifest, sbom))
+    sums = assets_dir / "SHA256SUMS"
+    _write_sha256sums(sums, tuple(sorted(files, key=lambda path: path.name)))
+    return sums
+
+
 def _assert_emulebb_rust_version_matches(rust_root: Path, release_version: str) -> None:
     """Requires the Rust workspace version to match the requested package version."""
 

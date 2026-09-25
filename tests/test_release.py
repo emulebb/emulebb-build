@@ -1291,6 +1291,40 @@ def test_emulebb_rust_macos_package_emits_app_dmg_and_metadata(
     assert dmg.name in (release_root / "SHA256SUMS").read_text(encoding="ascii")
 
 
+def test_emulebb_rust_release_assembly_requires_all_native_assets(tmp_path: Path) -> None:
+    version = "0.1.0-beta.1"
+    stem = f"emulebb-rust-v{version}"
+    names = (
+        f"{stem}-windows-x64.zip",
+        f"{stem}-windows-arm64.zip",
+        f"{stem}-linux-amd64.deb",
+        f"{stem}-linux-x86_64.AppImage",
+        f"{stem}-linux-arm64.deb",
+        f"{stem}-linux-aarch64.AppImage",
+        f"{stem}-macos-x64.dmg",
+        f"{stem}-macos-arm64.dmg",
+    )
+    for name in names:
+        payload = tmp_path / name
+        payload.write_bytes(name.encode("ascii"))
+        sbom = tmp_path / f"{name}.sbom.spdx.json"
+        sbom.write_text("{}\n", encoding="utf-8")
+        (tmp_path / f"{name}.manifest.json").write_text(
+            json.dumps({
+                "asset": name,
+                "sha256": release._sha256(payload),
+                "sbom": sbom.name,
+                "sbomSha256": release._sha256(sbom),
+            }),
+            encoding="utf-8",
+        )
+    sums = release.assemble_emulebb_rust_release_assets(tmp_path, version)
+    assert len(sums.read_text(encoding="ascii").splitlines()) == 24
+    (tmp_path / names[-1]).unlink()
+    with pytest.raises(RuntimeError, match="missing"):
+        release.assemble_emulebb_rust_release_assets(tmp_path, version)
+
+
 def test_emulebb_rust_package_contents_reject_dead_ui_and_diagnostics(tmp_path: Path) -> None:
     zip_path = tmp_path / "emulebb-rust.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
