@@ -361,6 +361,12 @@ def canonical_topology(*, include_analysis: bool = False) -> WorkspaceTopology:
                 compare_subdir="srchybrid",
             ),
             ManagedRepo(
+                name="amule",
+                url="https://github.com/amule-org/amule.git",
+                relative_path="analysis\\amule",
+                branch="master",
+            ),
+            ManagedRepo(
                 name="mods-archive",
                 url="https://github.com/emulebb/emulebb-mods-archive.git",
                 relative_path="analysis\\mods-archive",
