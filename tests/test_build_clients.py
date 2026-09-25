@@ -297,6 +297,52 @@ def test_stage_emulebb_rust_linux_runtime_uses_extensionless_binary(tmp_path: Pa
     assert (build.staged_emulebb_rust_root(layout) / "bin" / "emulebb-rust").read_bytes() == b"linux"
 
 
+def test_build_emulebb_rust_linux_client_uses_native_wsl_cargo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = make_layout(tmp_path, monkeypatch)
+    repo_root = layout.emulebb_rust_repo_root
+    assert repo_root is not None
+    repo_root.mkdir(parents=True)
+    (repo_root / "webui").mkdir()
+    (repo_root / "webui" / "package.json").write_text("{}", encoding="utf-8")
+    npm = tmp_path / "npm.cmd"
+    npm.write_bytes(b"")
+    commands: list[list[str]] = []
+
+    def fake_run(command, *, cwd, stdout, stderr, text, check, env):
+        commands.append(list(command))
+        if command[0] == "wsl.exe":
+            built = layout.output_rust_target_root.parent / "target-wsl" / "x86_64-unknown-linux-gnu" / "release"
+            built.mkdir(parents=True)
+            (built / "emulebb-rust").write_bytes(b"linux")
+        else:
+            webui_dist = layout.output_build_root / "emulebb-rust" / "webui-dist"
+            webui_dist.mkdir(parents=True, exist_ok=True)
+            (webui_dist / "index.html").write_text("<div>linux webui</div>", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(build, "wsl_path", lambda path: f"/mnt/c/{Path(path).name}")
+    monkeypatch.setattr(build, "find_tool", lambda _names: npm)
+    monkeypatch.setattr(build.subprocess, "run", fake_run)
+    session = build.BuildSession(
+        layout=layout,
+        options=WorkspaceOptions(workspace_root=layout.emule_workspace_root),
+        command_name="build clients",
+    )
+
+    build.build_emulebb_rust_client(session, clean=True, target_os="linux")
+
+    command = commands[0]
+    assert command[0:4] == ["wsl.exe", "--", "bash", "-lc"]
+    assert "cargo.exe" not in command
+    assert "export CARGO_TARGET_DIR=/mnt/c/target-wsl" in command[-1]
+    assert command[-1].endswith(
+        "exec cargo build -p emulebb-daemon --bin emulebb-rust --release --target x86_64-unknown-linux-gnu"
+    )
+    assert (build.staged_emulebb_rust_root(layout) / "bin" / "emulebb-rust").read_bytes() == b"linux"
+
+
 def test_build_clients_rejects_emuleai_target(tmp_path: Path) -> None:
     layout = make_layout(tmp_path)
     options = WorkspaceOptions(workspace_root=layout.emule_workspace_root)

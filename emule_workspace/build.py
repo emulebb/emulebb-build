@@ -292,10 +292,10 @@ def build_emulebb_rust_client(
     if not repo_root.is_dir():
         raise RuntimeError(f"eMuleBB Rust repo was not found: {repo_root}")
     target = rust_client_target(session.options.platform, target_os=target_os)
-    cargo_path = find_tool(("cargo.exe", "cargo"))
-    if cargo_path is None:
+    use_wsl = os.name == "nt" and target_os == "linux"
+    cargo_path = None if use_wsl else find_tool(("cargo.exe", "cargo"))
+    if not use_wsl and cargo_path is None:
         raise RuntimeError("build clients --client emulebb-rust requires Rust cargo on PATH.")
-    cargo_command = "cargo.exe" if os.name == "nt" else "cargo"
     if clean:
         remove_tree_if_present(staged_emulebb_rust_root(session.layout))
 
@@ -305,8 +305,7 @@ def build_emulebb_rust_client(
     # name, mirroring the MFC emulebb.exe vs emulebb-diagnostics.exe split.
     bin_name = "emulebb-rust-diagnostics" if diagnostics else "emulebb-rust"
     log_path = session.log_directory / f"client-emulebb-rust-build-{flavor}-{session.options.platform.lower()}.log"
-    command = [
-        cargo_command,
+    cargo_arguments = [
         "build",
         "-p",
         "emulebb-daemon",
@@ -317,16 +316,41 @@ def build_emulebb_rust_client(
         target,
     ]
     if diagnostics:
-        command.extend(["--features", "packet-diagnostics"])
+        cargo_arguments.extend(["--features", "packet-diagnostics"])
+    source_target_root = session.layout.output_rust_target_root
+    if use_wsl:
+        source_target_root = session.layout.output_rust_target_root.parent / "target-wsl"
+        wsl_workspace = wsl_path(session.layout.emule_workspace_root)
+        wsl_output = wsl_path(session.layout.output_root)
+        wsl_target = wsl_path(source_target_root)
+        wsl_repo = f"{wsl_workspace}/repos/emulebb-rust"
+        command = [
+            "wsl.exe",
+            "--",
+            "bash",
+            "-lc",
+            " && ".join(
+                (
+                    f"export EMULEBB_WORKSPACE_ROOT={shlex.quote(wsl_workspace)}",
+                    f"export EMULEBB_WORKSPACE_OUTPUT_ROOT={shlex.quote(wsl_output)}",
+                    f"export CARGO_TARGET_DIR={shlex.quote(wsl_target)}",
+                    f"cd {shlex.quote(wsl_repo)}",
+                    f"exec cargo {shlex.join(cargo_arguments)}",
+                )
+            ),
+        ]
+    else:
+        cargo_command = "cargo.exe" if os.name == "nt" else "cargo"
+        command = [cargo_command, *cargo_arguments]
     env = subprocess_os_environ()
     env.update({name: str(value) for name, value in session.layout.subprocess_environment().items()})
     started_at = time.monotonic()
     try:
         with log_path.open("w", encoding="utf-8", newline="\n") as stream:
-            stream.write(f"Cargo: {cargo_path}\n")
+            stream.write(f"Cargo: {'WSL ~/.cargo/bin/cargo' if use_wsl else cargo_path}\n")
             stream.write(f"Rust target: {target}\n")
             stream.write(f"Diagnostics: {diagnostics}\n")
-            stream.write(f"CARGO_TARGET_DIR: {env['CARGO_TARGET_DIR']}\n")
+            stream.write(f"CARGO_TARGET_DIR: {source_target_root}\n")
             stream.write(" ".join(shlex.quote(part) for part in command) + "\n\n")
             completed = subprocess.run(
                 command,
@@ -339,7 +363,15 @@ def build_emulebb_rust_client(
             )
         if completed.returncode != 0:
             raise RuntimeError(f"eMuleBB Rust client build failed with exit code {completed.returncode}. See {log_path}")
-        stage_emulebb_rust_runtime(session.layout, target, diagnostics=diagnostics, target_os=target_os)
+        stage_emulebb_rust_runtime(
+            session.layout,
+            target,
+            diagnostics=diagnostics,
+            target_os=target_os,
+            source_target_root=source_target_root,
+        )
+        if use_wsl:
+            remove_tree_if_present(session.layout.output_rust_target_root / target)
         build_emulebb_rust_webui(session, repo_root)
         session.add_step(
             name=f"CLIENT eMuleBB Rust{' diagnostics' if diagnostics else ''}",
@@ -450,6 +482,22 @@ def rust_client_target(platform: str, *, target_os: str = "windows") -> str:
         ) from error
 
 
+def wsl_path(path: Path) -> str:
+    """Translates one Windows path for a persisted WSL orchestration boundary."""
+
+    completed = subprocess.run(
+        ["wsl.exe", "--", "wslpath", "-a", "-u", path.resolve().as_posix()],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    translated = completed.stdout.strip()
+    if completed.returncode != 0 or not translated.startswith("/"):
+        raise RuntimeError(f"Could not translate Windows path for WSL: {path}: {translated}")
+    return translated
+
+
 def rust_pdb_source_names(staged_pdb_name: str) -> tuple[str, ...]:
     """Returns PDB names cargo/rustc may emit for one staged Rust executable."""
 
@@ -479,14 +527,18 @@ def remove_rust_target_runtime_artifacts(layout: WorkspaceLayout) -> None:
         "emulebb-rust-diagnostics.pdb",
         "emulebb_rust_diagnostics.pdb",
     )
-    release_roots = [
-        layout.output_rust_target_root / "release",
-        *(
-            layout.output_rust_target_root / target / "release"
-            for targets in RUST_CLIENT_TARGETS.values()
-            for target in targets.values()
-        ),
-    ]
+    cargo_roots = (
+        layout.output_rust_target_root,
+        layout.output_rust_target_root.parent / "target-wsl",
+    )
+    release_roots = []
+    for cargo_root in cargo_roots:
+        release_roots.extend(
+            [
+                cargo_root / "release",
+                *(cargo_root / target / "release" for targets in RUST_CLIENT_TARGETS.values() for target in targets.values()),
+            ]
+        )
     for release_root in release_roots:
         for name in names:
             path = release_root / name
@@ -688,6 +740,7 @@ def stage_emulebb_rust_runtime(
     *,
     diagnostics: bool = False,
     target_os: str = "windows",
+    source_target_root: Path | None = None,
 ) -> None:
     """Stages the built headless Rust client below the output root.
 
@@ -702,7 +755,7 @@ def stage_emulebb_rust_runtime(
     executable_suffix = ".exe" if target_os == "windows" else ""
     exe_name = ("emulebb-rust-diagnostics" if diagnostics else "emulebb-rust") + executable_suffix
     pdb_name = "emulebb-rust-diagnostics.pdb" if diagnostics else "emulebb-rust.pdb"
-    source_root = layout.output_rust_target_root / target / "release"
+    source_root = (source_target_root or layout.output_rust_target_root) / target / "release"
     exe = source_root / exe_name
     if not exe.is_file():
         raise RuntimeError(f"Built eMuleBB Rust client executable was not found: {exe}")
