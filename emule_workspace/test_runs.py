@@ -905,6 +905,89 @@ def invoke_amutorrent_interactive_session(
     )
 
 
+def invoke_rust_network_proof(
+    layout: WorkspaceLayout,
+    options: WorkspaceOptions,
+    *,
+    lane: str,
+    inputs: str | None,
+    source_root: str | None,
+    max_candidates: int,
+    complete_transfers: bool,
+    probe_count: int,
+    observe_seconds: float,
+    transfer_timeout_seconds: float,
+) -> None:
+    """Runs one persisted Rust network-proof lane under the workspace lock."""
+
+    _assert_test_execution_platform_supported(options)
+    scripts = {
+        "local-cross": "emulebb-rust-emulebb-cross-client.py",
+        "local-kad": "emulebb-rust-emulebb-cross-client.py",
+        "local-protocol": "local-ed2k-rust-protocol-combinations.py",
+        "local-reask": "emulebb-rust-reask-cross-client.py",
+        "windows-direct": "rust-windows-direct-smoke.py",
+        "prepare-corpus": "prepare-rust-direct-corpus.py",
+    }
+    script = layout.tests_repo_root / "scripts" / scripts[lane]
+    if not script.is_file():
+        raise RuntimeError(f"Rust network proof runner is missing: {script}")
+    if lane == "local-protocol":
+        server_repo = layout.emule_workspace_root / "repos" / "goed2k-server"
+        if not (server_repo / "go.mod").is_file():
+            raise RuntimeError(f"Local ED2K support server is missing: {server_repo}")
+        run_native(["go", "test", "./ed2ksrv", "-run", "TestOfferFilesRegistersDynamicSharedEntries", "-count=1"],
+                   label="local ED2K support server offer tests",
+                   cwd=server_repo, env=_workspace_env(layout))
+    args: list[str | Path | float | int] = [script]
+    if lane == "prepare-corpus":
+        if not inputs or not source_root:
+            raise RuntimeError("Corpus preparation requires --inputs and --source-root.")
+        args.extend(["--operator-inputs", Path(inputs).resolve(), "--source-root", Path(source_root).resolve(),
+                     "--max-candidates", max_candidates])
+    elif lane == "windows-direct":
+        if not inputs:
+            raise RuntimeError("Windows direct proof requires an operator-local --inputs allowlist.")
+        args.extend(["--inputs", Path(inputs).resolve(), "--observe-seconds", observe_seconds,
+                     "--transfer-timeout-seconds", transfer_timeout_seconds, "--probe-count", probe_count])
+        if complete_transfers:
+            args.append("--complete-transfers")
+    else:
+        lan_ip = os.environ.get("X_LOCAL_IP", "").strip()
+        if not lan_ip:
+            raise RuntimeError("Local Rust network proof requires inherited X_LOCAL_IP.")
+        mfc_exe = (
+            layout.output_build_root / "app" / "main" / "x64" /
+            "Release" / "diagnostics" / "bin" / "emulebb-diagnostics.exe"
+        )
+        if not mfc_exe.is_file():
+            raise RuntimeError(f"Staged MFC diagnostics executable is missing: {mfc_exe}")
+        args.extend(["--app-exe", mfc_exe, "--lan-bind-addr", lan_ip, "--diagnostics", "--keep-artifacts"])
+        if lane == "local-protocol":
+            args.extend(["--client2-app-exe", mfc_exe])
+        if lane == "local-kad":
+            args.append("--rust-kad-enabled")
+    python = get_python_invocation()
+    run_native(
+        python.command(args),
+        label=f"Rust network proof ({lane})",
+        cwd=layout.tests_repo_root,
+        env=_workspace_env(layout),
+    )
+
+
+def invoke_rust_unit_tests(layout: WorkspaceLayout, *, package: str | None = None) -> None:
+    """Run Rust unit/integration tests against the inherited canonical target dir."""
+
+    args = ["cargo", "test", "--locked"]
+    if package:
+        args.extend(["-p", package])
+    else:
+        args.append("--workspace")
+    run_native(args, label="eMuleBB Rust tests", cwd=layout.emulebb_rust_repo_root,
+               env=_workspace_env(layout))
+
+
 def invoke_fake_kad_trust_soak(
     layout: WorkspaceLayout,
     options: WorkspaceOptions,

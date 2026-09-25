@@ -84,6 +84,8 @@ from .test_runs import (
     invoke_amutorrent_resilience,
     invoke_community_core_coverage,
     invoke_fake_kad_trust_soak,
+    invoke_rust_network_proof,
+    invoke_rust_unit_tests,
     invoke_live_diff_runs,
     invoke_live_e2e_suite,
     invoke_native_test_suites,
@@ -1309,6 +1311,54 @@ def test_amutorrent_session(
     _locked(
         "test amutorrent-session",
         lambda **kwargs: invoke_amutorrent_interactive_session(kwargs["layout"], kwargs["workspace_options"], session_options),
+    )(workspace_options=workspace_options, layout=layout)
+
+
+@test.command("rust-unit")
+@_common_options
+@click.option("--package", default=None, help="Limit to one Rust workspace package.")
+def test_rust_unit(*, package: str | None, workspace_options: WorkspaceOptions, layout) -> None:
+    """Run Rust tests through workspace orchestration."""
+
+    _locked(
+        "test rust-unit",
+        lambda **kwargs: invoke_rust_unit_tests(kwargs["layout"], package=package),
+    )(workspace_options=workspace_options, layout=layout)
+
+
+@test.command("rust-network-proof")
+@_common_options
+@click.option("--lane", type=click.Choice(["local-cross", "local-kad", "local-protocol", "local-reask", "windows-direct", "prepare-corpus"]), required=True)
+@click.option("--inputs", default=None, help="Operator-local safe transfer allowlist for Windows direct mode.")
+@click.option("--source-root", default=None, help="Operator-approved source files for corpus preparation.")
+@click.option("--max-candidates", default=50, type=int, show_default=True)
+@click.option("--complete-transfers", is_flag=True, help="Download and SHA-256 verify the allowlisted transfers.")
+@click.option("--probe-count", default=0, type=int, show_default=True, help="Queue up to 50 allowlisted transfers for bounded source observation.")
+@click.option("--observe-seconds", default=60.0, type=float, show_default=True)
+@click.option("--transfer-timeout-seconds", default=3600.0, type=float, show_default=True)
+def test_rust_network_proof(
+    *,
+    lane: str,
+    inputs: str | None,
+    source_root: str | None,
+    max_candidates: int,
+    complete_transfers: bool,
+    probe_count: int,
+    observe_seconds: float,
+    transfer_timeout_seconds: float,
+    workspace_options: WorkspaceOptions,
+    layout,
+) -> None:
+    """Run a diagnostics-first Rust network proof with persisted harnesses."""
+
+    _locked(
+        "test rust-network-proof",
+        lambda **kwargs: invoke_rust_network_proof(
+            kwargs["layout"], kwargs["workspace_options"], lane=lane, inputs=inputs,
+            source_root=source_root, max_candidates=max_candidates,
+            complete_transfers=complete_transfers, probe_count=probe_count, observe_seconds=observe_seconds,
+            transfer_timeout_seconds=transfer_timeout_seconds,
+        ),
     )(workspace_options=workspace_options, layout=layout)
 
 
