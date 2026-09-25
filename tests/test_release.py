@@ -1130,12 +1130,17 @@ def test_amutorrent_package_contents_accept_runtime_bundle(tmp_path: Path) -> No
     assert "aMuTorrent/SBOM.spdx.json" in hashes
 
 
+@pytest.mark.parametrize(("platform", "machine"), (("x64", 0x8664), ("ARM64", 0xAA64)))
 def test_emulebb_rust_package_reuses_staged_regular_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    machine: int,
 ) -> None:
     layout = _make_rust_package_layout(tmp_path)
     _stage_rust_package_inputs(layout)
+    staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
+    (staged_bin / "emulebb-rust.exe").write_bytes(_pe_payload(machine))
     monkeypatch.setattr(release, "repo_status_lines", lambda _repo: ["## main...origin/main [ahead 1]"])
     monkeypatch.setattr(
         release,
@@ -1146,7 +1151,7 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
         workspace_root=layout.emule_workspace_root,
         output_root=layout.output_root,
         configuration="Release",
-        platform="x64",
+        platform=platform,
     )
 
     release.create_emulebb_rust_package(
@@ -1156,15 +1161,15 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
     )
 
     release_root = layout.output_release_root / "rust-v0.1.0-beta.1"
-    zip_path = release_root / "emulebb-rust-v0.1.0-beta.1-windows-x64.zip"
-    manifest_path = release_root / "emulebb-rust-v0.1.0-beta.1-windows-x64.manifest.json"
-    sbom_path = release_root / "emulebb-rust-v0.1.0-beta.1-windows-x64.sbom.spdx.json"
+    zip_path = release_root / f"emulebb-rust-v0.1.0-beta.1-windows-{platform.lower()}.zip"
+    manifest_path = release_root / f"emulebb-rust-v0.1.0-beta.1-windows-{platform.lower()}.manifest.json"
+    sbom_path = release_root / f"emulebb-rust-v0.1.0-beta.1-windows-{platform.lower()}.sbom.spdx.json"
     sums_path = release_root / "SHA256SUMS"
     assert zip_path.is_file()
     assert manifest_path.is_file()
     assert sbom_path.is_file()
     assert sums_path.is_file()
-    release._assert_emulebb_rust_package_contents(zip_path)
+    release._assert_emulebb_rust_package_contents(zip_path, platform)
     with zipfile.ZipFile(zip_path) as archive:
         names = set(archive.namelist())
     assert "emulebb-rust/emulebb-rust.exe" in names
@@ -1184,9 +1189,16 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
     assert [line.split("  ", 1)[1] for line in sums] == [zip_path.name, manifest_path.name, sbom_path.name]
 
 
+@pytest.mark.parametrize(
+    ("platform", "deb_arch", "image_arch"),
+    (("x64", "amd64", "x86_64"), ("ARM64", "arm64", "aarch64")),
+)
 def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    deb_arch: str,
+    image_arch: str,
 ) -> None:
     layout = _make_rust_package_layout(tmp_path)
     _stage_rust_package_inputs(layout)
@@ -1208,7 +1220,7 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
         workspace_root=layout.emule_workspace_root,
         output_root=layout.output_root,
         configuration="Release",
-        platform="x64",
+        platform=platform,
     )
 
     release.create_emulebb_rust_package(
@@ -1222,9 +1234,9 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     )
 
     release_root = layout.output_release_root / "rust-v0.1.0-beta.1"
-    deb = release_root / "emulebb-rust-v0.1.0-beta.1-linux-amd64.deb"
-    appimage = release_root / "emulebb-rust-v0.1.0-beta.1-linux-x86_64.AppImage"
-    sbom = release_root / "emulebb-rust-v0.1.0-beta.1-linux-x86_64.sbom.spdx.json"
+    deb = release_root / f"emulebb-rust-v0.1.0-beta.1-linux-{deb_arch}.deb"
+    appimage = release_root / f"emulebb-rust-v0.1.0-beta.1-linux-{image_arch}.AppImage"
+    sbom = release_root / f"emulebb-rust-v0.1.0-beta.1-linux-{image_arch}.sbom.spdx.json"
     assert deb.is_file()
     assert appimage.is_file()
     assert sbom.is_file()
@@ -1233,6 +1245,50 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     sums = (release_root / "SHA256SUMS").read_text(encoding="ascii")
     assert deb.name in sums
     assert appimage.name in sums
+
+
+@pytest.mark.parametrize("platform", ("x64", "ARM64"))
+def test_emulebb_rust_macos_package_emits_app_dmg_and_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+) -> None:
+    layout = _make_rust_package_layout(tmp_path)
+    _stage_rust_package_inputs(layout)
+    staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
+    (staged_bin / "emulebb-rust").write_bytes(b"macos-binary")
+    monkeypatch.setattr(release.sys, "platform", "darwin")
+    monkeypatch.setattr(release, "repo_status_lines", lambda _repo: ["## main...origin/main"])
+    monkeypatch.setattr(
+        release,
+        "_package_repo_provenance",
+        lambda repo: {"commit": f"{repo.name}-commit", "branch": "main", "remote": ""},
+    )
+
+    def fake_packaging_tool(command: tuple[str, ...], _label: str) -> None:
+        Path(command[-1]).write_bytes(b"dmg")
+
+    monkeypatch.setattr(release, "_run_packaging_tool", fake_packaging_tool)
+    options = WorkspaceOptions(
+        workspace_root=layout.emule_workspace_root,
+        output_root=layout.output_root,
+        configuration="Release",
+        platform=platform,
+    )
+    release.create_emulebb_rust_package(
+        layout,
+        options,
+        EmulebbRustPackageOptions(release_version="0.1.0-beta.1", skip_build=True, target_os="macos"),
+    )
+    release_root = layout.output_release_root / "rust-v0.1.0-beta.1"
+    dmg = release_root / f"emulebb-rust-v0.1.0-beta.1-macos-{platform.lower()}.dmg"
+    app_root = release_root / "staging" / f"macos-{platform.lower()}" / "eMuleBB Rust.app"
+    assert dmg.read_bytes() == b"dmg"
+    assert (app_root / "Contents" / "Info.plist").is_file()
+    assert (app_root / "Contents" / "MacOS" / "webui" / "index.html").is_file()
+    assert (app_root / "Contents" / "MacOS" / "launch").is_file()
+    assert dmg.with_name(f"{dmg.name}.manifest.json").is_file()
+    assert dmg.name in (release_root / "SHA256SUMS").read_text(encoding="ascii")
 
 
 def test_emulebb_rust_package_contents_reject_dead_ui_and_diagnostics(tmp_path: Path) -> None:

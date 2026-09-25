@@ -761,7 +761,7 @@ def build_tests(
 @click.option("--diagnostics", is_flag=True, help="Build diagnostics-flavored clients when supported.")
 @click.option(
     "--target-os",
-    type=click.Choice(["windows", "linux"]),
+    type=click.Choice(["windows", "linux", "macos"]),
     default="windows",
     show_default=True,
     help="Target OS for emulebb-rust; other clients remain Windows-only.",
@@ -1613,10 +1613,10 @@ def package_release(
 @click.option("--skip-build", is_flag=True, help="Reuse the staged regular Rust runtime instead of rebuilding it.")
 @click.option(
     "--target-os",
-    type=click.Choice(["windows", "linux"]),
+    type=click.Choice(["windows", "linux", "macos"]),
     default="windows",
     show_default=True,
-    help="Package Windows ZIP assets or Linux DEB and AppImage assets.",
+    help="Package Windows ZIP, Linux DEB/AppImage, or macOS DMG assets.",
 )
 def package_emulebb_rust(
     *,
@@ -1649,8 +1649,10 @@ def package_emulebb_rust(
     help="Rust release version in MAJOR.MINOR.PATCH[-rc.N|-beta.N|-nightly.YYYYMMDD.SHA] form.",
 )
 @click.option("--clean", is_flag=True, help="Clean selected Rust build/staging outputs before building.")
-def package_emulebb_rust_ci(*, release_version: str, clean: bool) -> None:
-    """Build Linux Rust assets from fork checkouts on a clean CI runner."""
+@click.option("--target-os", type=click.Choice(["windows", "linux", "macos"]), required=True)
+@click.option("--platform", type=click.Choice(["x64", "ARM64"]), required=True)
+def package_emulebb_rust_ci(*, release_version: str, clean: bool, target_os: str, platform: str) -> None:
+    """Build Rust assets from fork checkouts on a clean native CI runner."""
 
     output_root_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
     rust_repo_value = os.environ.get("EMULEBB_RUST_REPO", "").strip()
@@ -1677,12 +1679,12 @@ def package_emulebb_rust_ci(*, release_version: str, clean: bool) -> None:
         output_root=layout.output_root,
         workspace_name="ci",
         configuration="Release",
-        platform="x64",
+        platform=platform,
     )
     package_options = EmulebbRustPackageOptions(
         release_version=release_version,
         clean=clean,
-        target_os="linux",
+        target_os=target_os,
     )
     try:
         create_emulebb_rust_package(layout, options, package_options)

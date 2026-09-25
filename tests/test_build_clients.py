@@ -280,6 +280,9 @@ def test_rust_client_target_maps_workspace_platforms() -> None:
     assert build.rust_client_target("x64") == "x86_64-pc-windows-msvc"
     assert build.rust_client_target("ARM64") == "aarch64-pc-windows-msvc"
     assert build.rust_client_target("x64", target_os="linux") == "x86_64-unknown-linux-gnu"
+    assert build.rust_client_target("ARM64", target_os="linux") == "aarch64-unknown-linux-gnu"
+    assert build.rust_client_target("x64", target_os="macos") == "x86_64-apple-darwin"
+    assert build.rust_client_target("ARM64", target_os="macos") == "aarch64-apple-darwin"
 
 
 def test_stage_emulebb_rust_linux_runtime_uses_extensionless_binary(tmp_path: Path) -> None:

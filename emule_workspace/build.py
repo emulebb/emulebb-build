@@ -268,6 +268,11 @@ RUST_CLIENT_TARGETS = {
     },
     "linux": {
         "x64": "x86_64-unknown-linux-gnu",
+        "ARM64": "aarch64-unknown-linux-gnu",
+    },
+    "macos": {
+        "x64": "x86_64-apple-darwin",
+        "ARM64": "aarch64-apple-darwin",
     },
 }
 STALE_EMULEBB_RUST_UI_ARTIFACTS = (
