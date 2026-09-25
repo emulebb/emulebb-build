@@ -48,6 +48,14 @@ Environment variables are inherited operator state. Do not set or repair
 `X_LOCAL_IP` inline. If one is missing or wrong, stop and report the preflight
 failure.
 
+A persisted Python launcher may propagate already-valid Windows operator state
+across the Windows-to-WSL process boundary. It may translate Windows paths for
+the WSL child and derive a platform-specific Cargo target below the translated
+output root, but it must not mutate the Windows environment, persist duplicate
+WSL configuration, or guess missing source values. Record the translation in
+run evidence. WSL lanes that keep control traffic on loopback do not require
+`X_LOCAL_IP`.
+
 For Rust live soak/profile work, use the policy quickstart and persisted Python
 scripts in `repos\\emulebb-build-tests`; do not use `.ps1`, inline Python, or
 ad-hoc launch logic.
