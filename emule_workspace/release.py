@@ -1016,6 +1016,50 @@ def assemble_emulebb_rust_release_assets(assets_dir: Path, version: str) -> Path
     return sums
 
 
+def build_emulebb_rust_image_ci(
+    *,
+    rust_root: Path,
+    output_root: Path,
+    assets_dir: Path,
+    version: str,
+    push: bool,
+) -> Path | None:
+    """Builds the two-architecture image from verified native DEB assets."""
+
+    assemble_emulebb_rust_release_assets(assets_dir, version)
+    output_root = output_root.resolve()
+    context = output_root / "packages" / "build" / "emulebb-rust-image"
+    if not context.is_relative_to(output_root) or output_root.is_relative_to(rust_root.resolve()):
+        raise RuntimeError("Rust image context must be outside the source checkout.")
+    source = rust_root.resolve() / "packaging" / "docker"
+    if not (source / "Dockerfile").is_file():
+        raise RuntimeError(f"Rust image Dockerfile is missing: {source}")
+    if context.exists():
+        shutil.rmtree(context)
+    shutil.copytree(source, context)
+    dist = context / "dist"
+    dist.mkdir()
+    for arch in ("amd64", "arm64"):
+        name = f"emulebb-rust-v{version}-linux-{arch}.deb"
+        shutil.copy2(assets_dir / name, dist / name)
+    image = f"ghcr.io/emulebb/emulebb-rust:{version}"
+    command = [
+        "docker", "buildx", "build", "--platform", "linux/amd64,linux/arm64",
+        "--file", str(context / "Dockerfile"), "--build-arg", f"VERSION={version}",
+        "--tag", image,
+    ]
+    archive = None
+    if push:
+        command.append("--push")
+    else:
+        archive = output_root / "artifacts" / f"emulebb-rust-v{version}-multiarch.oci.tar"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        command.extend(("--output", f"type=oci,dest={archive}"))
+    command.append(str(context))
+    subprocess.run(command, check=True)
+    return archive
+
+
 def _assert_emulebb_rust_version_matches(rust_root: Path, release_version: str) -> None:
     """Requires the Rust workspace version to match the requested package version."""
 

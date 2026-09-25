@@ -70,6 +70,7 @@ from .process import get_python_invocation, run_native
 from .python_tests import invoke_python_tests
 from .release import (
     assemble_emulebb_rust_release_assets,
+    build_emulebb_rust_image_ci,
     create_amutorrent_package,
     create_emulebb_rust_package,
     create_qbittorrentbb_package,
@@ -1711,6 +1712,34 @@ def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path) 
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
     print(f"Rust release checksums: {sums}")
+
+
+@main.command("package-emulebb-rust-image-ci")
+@click.option("--release-version", required=True)
+@click.option("--assets-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--push", is_flag=True, help="Push the versioned image to GHCR after release approval.")
+def package_emulebb_rust_image_ci(*, release_version: str, assets_dir: Path, push: bool) -> None:
+    """Build a verified multi-architecture image from the native DEB assets."""
+
+    output_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
+    rust_value = os.environ.get("EMULEBB_RUST_REPO", "").strip()
+    if not output_value or not rust_value:
+        raise click.ClickException(f"{WORKSPACE_OUTPUT_ROOT_ENV} and EMULEBB_RUST_REPO must be inherited.")
+    output_root = Path(output_value).resolve()
+    assets_dir = assets_dir.resolve()
+    if not assets_dir.is_relative_to(output_root):
+        raise click.ClickException("Rust image assets must be under the inherited output root.")
+    try:
+        archive = build_emulebb_rust_image_ci(
+            rust_root=Path(rust_value),
+            output_root=output_root,
+            assets_dir=assets_dir,
+            version=release_version,
+            push=push,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    print(f"Rust image {'pushed' if push else 'archived'}: {archive or release_version}")
 
 
 @main.group("vm-lab")

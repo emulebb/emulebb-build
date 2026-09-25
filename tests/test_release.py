@@ -1325,6 +1325,35 @@ def test_emulebb_rust_release_assembly_requires_all_native_assets(tmp_path: Path
         release.assemble_emulebb_rust_release_assets(tmp_path, version)
 
 
+def test_emulebb_rust_image_context_stages_only_verified_debs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rust_root = tmp_path / "workspace" / "repos" / "emulebb-rust"
+    docker_root = rust_root / "packaging" / "docker"
+    docker_root.mkdir(parents=True)
+    (docker_root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    assets = tmp_path / "output" / "release" / "rust-v0.1.0-beta.1"
+    assets.mkdir(parents=True)
+    for arch in ("amd64", "arm64"):
+        (assets / f"emulebb-rust-v0.1.0-beta.1-linux-{arch}.deb").write_bytes(arch.encode("ascii"))
+    monkeypatch.setattr(release, "assemble_emulebb_rust_release_assets", lambda *_args: assets / "SHA256SUMS")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(release.subprocess, "run", lambda command, **_kwargs: commands.append(command))
+    archive = release.build_emulebb_rust_image_ci(
+        rust_root=rust_root,
+        output_root=tmp_path / "output",
+        assets_dir=assets,
+        version="0.1.0-beta.1",
+        push=False,
+    )
+    assert archive == tmp_path / "output" / "artifacts" / "emulebb-rust-v0.1.0-beta.1-multiarch.oci.tar"
+    context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image"
+    assert (context / "dist" / "emulebb-rust-v0.1.0-beta.1-linux-arm64.deb").read_bytes() == b"arm64"
+    assert commands[0][:3] == ["docker", "buildx", "build"]
+    assert "--push" not in commands[0]
+
+
 def test_emulebb_rust_package_contents_reject_dead_ui_and_diagnostics(tmp_path: Path) -> None:
     zip_path = tmp_path / "emulebb-rust.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
