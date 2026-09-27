@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import socket
 import sys
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from pathlib import Path
 
 from .config import WorkspaceOptions
 from .layout import WorkspaceLayout
+
+WORKSPACE_LOCK_TOKEN_ENV = "EMULEBB_WORKSPACE_LOCK_TOKEN"
 
 
 @dataclass
@@ -24,6 +27,8 @@ class WorkspaceLock:
     options: WorkspaceOptions
     acquired: bool = False
     _mutex_handle: int | None = None
+    _delegation_token: str | None = None
+    _reentrant: bool = False
 
     @property
     def metadata_path(self) -> Path:
@@ -34,10 +39,18 @@ class WorkspaceLock:
     def acquire(self) -> bool:
         """Attempts to acquire the workspace lock without waiting."""
 
+        inherited_token = os.environ.get(WORKSPACE_LOCK_TOKEN_ENV, "")
+        if inherited_token and self._can_reenter(inherited_token):
+            self.acquired = True
+            self._delegation_token = inherited_token
+            self._reentrant = True
+            return True
+
         if not self._acquire_named_mutex():
             return False
 
         self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        delegation_token = secrets.token_urlsafe(32)
         metadata = {
             "command": self.command,
             "pid": os.getpid(),
@@ -47,6 +60,7 @@ class WorkspaceLock:
             "workspace_name": self.options.workspace_name,
             "config": self.options.configuration,
             "platform": self.options.platform,
+            "delegation_token": delegation_token,
         }
         try:
             handle = os.open(self.metadata_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -63,12 +77,18 @@ class WorkspaceLock:
             json.dump(metadata, stream, indent=2)
             stream.write("\n")
         self.acquired = True
+        self._delegation_token = delegation_token
         return True
 
     def release(self) -> None:
         """Releases this lock if it is currently held by this process."""
 
         if not self.acquired:
+            return
+        if self._reentrant:
+            self.acquired = False
+            self._delegation_token = None
+            self._reentrant = False
             return
         try:
             metadata = json.loads(self.metadata_path.read_text(encoding="utf-8"))
@@ -77,7 +97,14 @@ class WorkspaceLock:
         if int(metadata.get("pid", -1)) == os.getpid():
             self.metadata_path.unlink(missing_ok=True)
         self.acquired = False
+        self._delegation_token = None
         self._release_named_mutex()
+
+    @property
+    def delegation_token(self) -> str | None:
+        """Returns the token inherited by orchestrated child commands."""
+
+        return self._delegation_token
 
     def active_owner_text(self) -> str:
         """Returns a human-readable description of the current lock owner."""
@@ -160,6 +187,20 @@ class WorkspaceLock:
         except OSError:
             return True
         return False
+
+    def _can_reenter(self, inherited_token: str) -> bool:
+        """Returns whether this command is a delegated child of the active owner."""
+
+        try:
+            metadata = json.loads(self.metadata_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return False
+        return (
+            secrets.compare_digest(str(metadata.get("delegation_token") or ""), inherited_token)
+            and str(metadata.get("workspace_root") or "").lower()
+            == str(self.layout.emule_workspace_root).lower()
+            and not self._metadata_is_stale()
+        )
 
 
 def _windows_process_exists(pid: int) -> bool:

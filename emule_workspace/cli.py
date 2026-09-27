@@ -57,7 +57,7 @@ from .config import WORKSPACE_OUTPUT_ROOT_ENV
 from .layout import build_ci_layout, load_layout
 from .local_hammer_campaign import invoke_local_hammer_campaign
 from .local_package_install import install_local_package
-from .locks import WorkspaceLock
+from .locks import WORKSPACE_LOCK_TOKEN_ENV, WorkspaceLock
 from .materialize import materialize_workspace, sync_workspace
 from .miniupnpc_release import create_miniupnpc_package
 from .product_family import (
@@ -154,6 +154,9 @@ def _locked(command_name: str, function: F) -> F:
                 f"Workspace busy: command '{command_name}' cannot start for "
                 f"{layout.emule_workspace_root}. Active owner: {lock.active_owner_text()}."
             )
+        previous_lock_token = os.environ.get(WORKSPACE_LOCK_TOKEN_ENV)
+        if lock.delegation_token:
+            os.environ[WORKSPACE_LOCK_TOKEN_ENV] = lock.delegation_token
         try:
             try:
                 return function(*args, workspace_options=workspace_options, layout=layout, **kwargs)
@@ -162,6 +165,10 @@ def _locked(command_name: str, function: F) -> F:
             except Exception as exc:
                 raise click.ClickException(str(exc)) from exc
         finally:
+            if previous_lock_token is None:
+                os.environ.pop(WORKSPACE_LOCK_TOKEN_ENV, None)
+            else:
+                os.environ[WORKSPACE_LOCK_TOKEN_ENV] = previous_lock_token
             lock.release()
 
     return wrapper  # type: ignore[return-value]
