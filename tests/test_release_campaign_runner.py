@@ -523,6 +523,63 @@ def test_campaign_execute_dispatches_multi_client_matrix_script(
     ]
 
 
+def test_campaign_execute_dispatches_approved_rust_overnight_helper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = make_layout(tmp_path)
+    campaign = campaign_payload()
+    campaign["phases"][0]["scenarios"] = [
+        {
+            "id": "stock-oracle",
+            "command": "python scripts/stock-protocol-oracle-proof.py --execute-rust-proofs",
+            "blocking": True,
+        }
+    ]
+    write_campaign(layout, campaign)
+    calls: list[tuple[list[str], str, Path, dict[str, str]]] = []
+
+    monkeypatch.delenv("X_LOCAL_IP", raising=False)
+    monkeypatch.setattr(
+        release_campaign_runner,
+        "run_pre_test_cleanup",
+        lambda _layout: release_campaign_runner.CleanupRunSummary("routine", True, "passed", 0, 0, 0, {}),
+    )
+    monkeypatch.setattr(
+        release_campaign_runner,
+        "get_python_invocation",
+        lambda: SimpleNamespace(command=lambda args: ["PY", *[str(arg) for arg in args]]),
+    )
+    monkeypatch.setattr(
+        release_campaign_runner,
+        "run_native",
+        lambda command, *, label, cwd, env: calls.append((command, label, cwd, env)),
+    )
+
+    release_campaign_runner.invoke_release_campaign(
+        layout,
+        WorkspaceOptions(workspace_root=tmp_path),
+        ReleaseCampaignOptions(campaign="test-campaign", phase="preflight", execute=True),
+    )
+
+    assert calls == [
+        (
+            [
+                "PY",
+                str(layout.tests_repo_root / "scripts/stock-protocol-oracle-proof.py"),
+                "--execute-rust-proofs",
+            ],
+            "release campaign helper stock-protocol-oracle-proof",
+            layout.tests_repo_root,
+            {
+                "EMULEBB_WORKSPACE_ROOT": str(layout.emule_workspace_root),
+                "EMULEBB_WORKSPACE_OUTPUT_ROOT": str(layout.output_root),
+                "CARGO_TARGET_DIR": str(layout.output_rust_target_root),
+            },
+        )
+    ]
+
+
 def test_campaign_execute_forwards_live_e2e_suite_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     layout = make_layout(tmp_path)
     campaign = campaign_payload()
@@ -1454,6 +1511,45 @@ def test_campaign_execution_rejects_shell_commands() -> None:
         release_campaign_runner.build_release_campaign_execution_plan(
             campaign,
             ReleaseCampaignOptions(campaign="test-campaign", execute=True),
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python scripts/rust-overnight-pytest-proof.py",
+        "python scripts/stock-protocol-oracle-proof.py --execute-rust-proofs",
+        (
+            "python scripts/local-ed2k-rust-protocol-combinations.py "
+            "--lan-bind-addr ${X_LOCAL_IP} --app-exe app.exe "
+            "--client2-app-exe peer.exe --ed2k-server-exe server.exe"
+        ),
+        "python scripts/rust-ed2k-private-parity-modules.py",
+        "python scripts/rust-ed2k-total-parity-audit.py",
+    ],
+)
+def test_campaign_execution_accepts_approved_rust_overnight_helpers(command: str) -> None:
+    campaign = campaign_payload()
+    campaign["phases"][0]["scenarios"][0]["command"] = command  # type: ignore[index]
+
+    plan = release_campaign_runner.build_release_campaign_execution_plan(
+        campaign,
+        ReleaseCampaignOptions(campaign="test-campaign", phase="preflight", execute=True),
+    )
+
+    assert plan[0].command == command
+
+
+def test_campaign_execution_rejects_unsupported_rust_helper_argument() -> None:
+    campaign = campaign_payload()
+    campaign["phases"][0]["scenarios"][0]["command"] = (  # type: ignore[index]
+        "python scripts/stock-protocol-oracle-proof.py --manifest-path unexpected.json"
+    )
+
+    with pytest.raises(ValueError, match="Unsupported release campaign helper argument"):
+        release_campaign_runner.build_release_campaign_execution_plan(
+            campaign,
+            ReleaseCampaignOptions(campaign="test-campaign", phase="preflight", execute=True),
         )
 
 

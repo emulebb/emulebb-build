@@ -141,6 +141,16 @@ _MULTI_CLIENT_MATRIX_VALUE_OPTIONS = {
     "--require-scenario",
 }
 _MULTI_CLIENT_MATRIX_FLAG_OPTIONS = {"--keep-artifacts", "--require-optional-clients"}
+_APPROVED_TEST_SCRIPT_OPTIONS: dict[str, tuple[set[str], set[str]]] = {
+    "scripts/rust-overnight-pytest-proof.py": (set(), set()),
+    "scripts/stock-protocol-oracle-proof.py": (set(), {"--execute-rust-proofs"}),
+    "scripts/local-ed2k-rust-protocol-combinations.py": (
+        {"--lan-bind-addr", "--app-exe", "--client2-app-exe", "--ed2k-server-exe"},
+        set(),
+    ),
+    "scripts/rust-ed2k-private-parity-modules.py": (set(), set()),
+    "scripts/rust-ed2k-total-parity-audit.py": (set(), set()),
+}
 
 
 @dataclass(frozen=True)
@@ -490,6 +500,18 @@ def _dispatch_supported_command(
             env=layout.subprocess_environment(),
         )
         return
+    script_key = _approved_test_script_key(tokens)
+    if script_key is not None:
+        env = _release_command_environment(layout)
+        expanded_tokens = _expand_release_command_tokens(tokens, env)
+        python = get_python_invocation()
+        run_native(
+            python.command([layout.tests_repo_root / script_key, *expanded_tokens[2:]]),
+            label=f"release campaign helper {Path(script_key).stem}",
+            cwd=layout.tests_repo_root,
+            env=env,
+        )
+        return
     if tokens[:2] == ["python", "scripts/multi-client-p2p-matrix.py"]:
         env = _release_command_environment(layout)
         expanded_tokens = _expand_release_command_tokens(tokens, env)
@@ -787,6 +809,15 @@ def _assert_supported_command(command: str) -> None:
         return
     if len(_dispatch_shape) == 2 and _dispatch_shape[0] == "python" and _dispatch_shape[1].replace("/", "\\") == r"repos\emulebb-tooling\ci\check-clean-worktree.py":
         return
+    script_key = _approved_test_script_key(_dispatch_shape)
+    if script_key is not None:
+        value_options, flag_options = _APPROVED_TEST_SCRIPT_OPTIONS[script_key]
+        _validate_script_options(
+            _dispatch_shape[2:],
+            value_options=value_options,
+            flag_options=flag_options,
+        )
+        return
     if _dispatch_shape[:2] == ["python", "scripts/multi-client-p2p-matrix.py"]:
         _validate_options(
             _dispatch_shape[2:],
@@ -795,6 +826,32 @@ def _assert_supported_command(command: str) -> None:
         )
         return
     raise ValueError(f"Unsupported release campaign command: {command}")
+
+
+def _approved_test_script_key(tokens: list[str]) -> str | None:
+    """Returns the normalized allowlisted test-helper path for one command."""
+
+    if len(tokens) < 2 or tokens[0] != "python":
+        return None
+    script_key = tokens[1].replace("\\", "/")
+    return script_key if script_key in _APPROVED_TEST_SCRIPT_OPTIONS else None
+
+
+def _validate_script_options(tokens: list[str], *, value_options: set[str], flag_options: set[str]) -> None:
+    """Validates every argument supplied to an allowlisted direct Python helper."""
+
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in flag_options:
+            index += 1
+            continue
+        if token in value_options:
+            if index + 1 >= len(tokens) or tokens[index + 1].startswith("--"):
+                raise ValueError(f"Release campaign option requires a value: {token}")
+            index += 2
+            continue
+        raise ValueError(f"Unsupported release campaign helper argument: {token}")
 
 
 def _release_command_environment(layout: WorkspaceLayout) -> dict[str, str]:
