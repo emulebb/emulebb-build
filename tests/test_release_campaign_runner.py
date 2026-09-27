@@ -236,6 +236,76 @@ def test_campaign_execute_dry_run_writes_planned_report(tmp_path: Path) -> None:
     assert payload["commands"][0]["scenarioEvidence"][0]["evidenceStatus"] == "planned"
 
 
+def test_campaign_status_fails_required_blocking_missing_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    layout = make_layout(tmp_path)
+    result = release_campaign_runner.CampaignCommandResult(
+        command="python proof.py",
+        phase_ids=("proof",),
+        scenario_ids=("required-proof",),
+        status="passed",
+        duration_seconds=1.0,
+    )
+    monkeypatch.setattr(
+        release_campaign_runner,
+        "_command_scenario_evidence",
+        lambda *_args: [
+            {
+                "required": True,
+                "blocking": True,
+                "evidenceStatus": "missing-evidence",
+            }
+        ],
+    )
+
+    assert (
+        release_campaign_runner._aggregate_status(
+            layout,
+            {},
+            [result],
+            dry_run=False,
+        )
+        == "failed"
+    )
+
+
+def test_campaign_status_ignores_nonblocking_missing_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    layout = make_layout(tmp_path)
+    result = release_campaign_runner.CampaignCommandResult(
+        command="python optional.py",
+        phase_ids=("proof",),
+        scenario_ids=("optional-proof",),
+        status="passed",
+        duration_seconds=1.0,
+    )
+    monkeypatch.setattr(
+        release_campaign_runner,
+        "_command_scenario_evidence",
+        lambda *_args: [
+            {
+                "required": False,
+                "blocking": False,
+                "evidenceStatus": "missing-evidence",
+            }
+        ],
+    )
+
+    assert (
+        release_campaign_runner._aggregate_status(
+            layout,
+            {},
+            [result],
+            dry_run=False,
+        )
+        == "passed"
+    )
+
+
 def test_package_manifest_evidence_is_summarized_with_hashes(tmp_path: Path) -> None:
     manifest = tmp_path / "package.manifest.json"
     manifest.write_text(

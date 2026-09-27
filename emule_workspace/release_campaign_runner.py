@@ -252,7 +252,12 @@ def invoke_release_campaign(
                 )
                 break
 
-        status = _aggregate_status(results, dry_run=campaign_options.dry_run)
+        status = _aggregate_status(
+            layout,
+            campaign,
+            results,
+            dry_run=campaign_options.dry_run,
+        )
         _write_report(
             layout,
             report_dir,
@@ -274,7 +279,16 @@ def invoke_release_campaign(
         if status == "failed":
             raise ReleaseCampaignExecutionError(f"Release campaign '{campaign_options.campaign}' completed with failures.")
     except Exception:
-        status = _aggregate_status(results, dry_run=campaign_options.dry_run) if results else "failed"
+        status = (
+            _aggregate_status(
+                layout,
+                campaign,
+                results,
+                dry_run=campaign_options.dry_run,
+            )
+            if results
+            else "failed"
+        )
         _write_report(
             layout,
             report_dir,
@@ -1096,11 +1110,25 @@ def _load_campaign(tests_repo_root: Path, campaign_id: str) -> dict[str, Any]:
     raise ValueError(f"Release campaign not found: {campaign_id}")
 
 
-def _aggregate_status(results: list[CampaignCommandResult], *, dry_run: bool) -> str:
+def _aggregate_status(
+    layout: WorkspaceLayout,
+    campaign: dict[str, Any],
+    results: list[CampaignCommandResult],
+    *,
+    dry_run: bool,
+) -> str:
     if dry_run and all(result.status == "planned" for result in results):
         return "planned"
     if any(result.status == "failed" for result in results):
         return "failed"
+    for result in results:
+        for scenario in _command_scenario_evidence(layout, campaign, result):
+            if (
+                scenario.get("required")
+                and scenario.get("blocking")
+                and scenario.get("evidenceStatus") != "passed"
+            ):
+                return "failed"
     return "passed"
 
 
