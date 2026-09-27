@@ -1379,6 +1379,7 @@ def _workspace_repo_heads(layout: WorkspaceLayout) -> dict[str, dict[str, Any]]:
         "emulebb-build": layout.build_repo_root,
         "emulebb-build-tests": layout.tests_repo_root,
         "emulebb-tooling": layout.tooling_repo_root,
+        "emulebb-rust": layout.emulebb_rust_repo_root,
         "goed2k-server": layout.ed2k_server_repo_root,
         "amule": layout.amule_repo_root,
     }

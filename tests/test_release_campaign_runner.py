@@ -17,12 +17,14 @@ def make_layout(tmp_path: Path) -> WorkspaceLayout:
     workspace_root = emule_workspace_root / "workspaces" / "workspace"
     output_root = emule_workspace_root.parent / f"{emule_workspace_root.name}-output"
     tests_repo_root = emule_workspace_root / "repos" / "emulebb-build-tests"
+    rust_repo_root = emule_workspace_root / "repos" / "emulebb-rust"
     app_root = workspace_root / "app" / "emulebb-main"
     for path in (
         tests_repo_root / "manifests" / "release-campaigns",
         output_root / "reports",
         app_root,
         emule_workspace_root / "repos" / "emulebb-build",
+        rust_repo_root,
         emule_workspace_root / "repos" / "emulebb-tooling" / "ci",
     ):
         path.mkdir(parents=True, exist_ok=True)
@@ -35,6 +37,7 @@ def make_layout(tmp_path: Path) -> WorkspaceLayout:
         tooling_repo_root=emule_workspace_root / "repos" / "emulebb-tooling",
         ed2k_server_repo_root=emule_workspace_root / "repos" / "goed2k-server",
         amule_repo_root=emule_workspace_root / "repos" / "amule",
+        emulebb_rust_repo_root=rust_repo_root,
         seed_repo_path=emule_workspace_root / "repos" / "emulebb",
         seed_repo_branch="main",
         dependencies=(),
@@ -43,6 +46,29 @@ def make_layout(tmp_path: Path) -> WorkspaceLayout:
         toolset_override_variable="",
         output_root=output_root,
     )
+
+
+def test_workspace_repo_heads_includes_rust_product(tmp_path: Path, monkeypatch) -> None:
+    layout = make_layout(tmp_path)
+    monkeypatch.setattr(
+        release_campaign_runner,
+        "_is_git_worktree",
+        lambda path: path == layout.emulebb_rust_repo_root,
+    )
+    monkeypatch.setattr(
+        release_campaign_runner,
+        "_repo_head_payload",
+        lambda path: {"path": str(path), "head": "rust-head"},
+    )
+
+    heads = release_campaign_runner._workspace_repo_heads(layout)
+
+    assert heads == {
+        "emulebb-rust": {
+            "path": str(layout.emulebb_rust_repo_root),
+            "head": "rust-head",
+        }
+    }
 
 
 def write_campaign(layout: WorkspaceLayout, campaign: dict[str, object]) -> None:
