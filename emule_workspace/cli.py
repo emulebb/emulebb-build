@@ -1355,22 +1355,44 @@ def test_rust_unit(*, package: str | None, workspace_options: WorkspaceOptions, 
 
 @test.command("rust-network-proof")
 @_common_options
-@click.option("--lane", type=click.Choice(["local-cross", "local-kad", "local-protocol", "local-reask", "windows-direct", "prepare-corpus"]), required=True)
+@click.option("--lane", type=click.Choice(["local-cross", "local-kad", "local-protocol", "local-reask", "windows-direct", "windows-consumer", "prepare-corpus"]), required=True)
 @click.option("--inputs", default=None, help="Operator-local safe transfer allowlist for Windows direct mode.")
+@click.option("--release-zip", default=None, help="Exact hosted Windows release ZIP for consumer mode.")
+@click.option("--search-term", default=None, help="Explicit runtime query for consumer mode; not retained in reports.")
+@click.option(
+    "--replace-running-profile-settings",
+    default=None,
+    help="Suspend an idle port-owning Rust daemon and restore it after consumer mode.",
+)
+@click.option(
+    "--restore-operator-executable",
+    default=None,
+    help="Restore this operator executable when it was already stopped before consumer mode.",
+)
 @click.option("--source-root", default=None, help="Operator-approved source files for corpus preparation.")
 @click.option("--max-candidates", default=50, type=int, show_default=True)
+@click.option("--max-transfer-bytes", default=4 * 1024 * 1024 * 1024, type=int, show_default=True)
+@click.option("--max-completion-bytes", default=20 * 1024 * 1024, type=int, show_default=True)
 @click.option("--complete-transfers", is_flag=True, help="Download and SHA-256 verify the allowlisted transfers.")
 @click.option("--probe-count", default=0, type=int, show_default=True, help="Queue up to 50 allowlisted transfers for bounded source observation.")
+@click.option("--network-timeout-seconds", default=240.0, type=float, show_default=True)
 @click.option("--observe-seconds", default=60.0, type=float, show_default=True)
 @click.option("--transfer-timeout-seconds", default=3600.0, type=float, show_default=True)
 def test_rust_network_proof(
     *,
     lane: str,
     inputs: str | None,
+    release_zip: str | None,
+    search_term: str | None,
+    replace_running_profile_settings: str | None,
+    restore_operator_executable: str | None,
     source_root: str | None,
     max_candidates: int,
+    max_transfer_bytes: int,
+    max_completion_bytes: int,
     complete_transfers: bool,
     probe_count: int,
+    network_timeout_seconds: float,
     observe_seconds: float,
     transfer_timeout_seconds: float,
     workspace_options: WorkspaceOptions,
@@ -1382,8 +1404,14 @@ def test_rust_network_proof(
         "test rust-network-proof",
         lambda **kwargs: invoke_rust_network_proof(
             kwargs["layout"], kwargs["workspace_options"], lane=lane, inputs=inputs,
-            source_root=source_root, max_candidates=max_candidates,
-            complete_transfers=complete_transfers, probe_count=probe_count, observe_seconds=observe_seconds,
+            release_zip=release_zip, search_term=search_term,
+            replace_running_profile_settings=replace_running_profile_settings,
+            restore_operator_executable=restore_operator_executable,
+            source_root=source_root,
+            max_candidates=max_candidates, max_transfer_bytes=max_transfer_bytes,
+            max_completion_bytes=max_completion_bytes, complete_transfers=complete_transfers,
+            probe_count=probe_count, network_timeout_seconds=network_timeout_seconds,
+            observe_seconds=observe_seconds,
             transfer_timeout_seconds=transfer_timeout_seconds,
         ),
     )(workspace_options=workspace_options, layout=layout)

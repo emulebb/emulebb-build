@@ -911,10 +911,17 @@ def invoke_rust_network_proof(
     *,
     lane: str,
     inputs: str | None,
+    release_zip: str | None,
+    search_term: str | None,
+    replace_running_profile_settings: str | None,
+    restore_operator_executable: str | None,
     source_root: str | None,
     max_candidates: int,
+    max_transfer_bytes: int,
+    max_completion_bytes: int,
     complete_transfers: bool,
     probe_count: int,
+    network_timeout_seconds: float,
     observe_seconds: float,
     transfer_timeout_seconds: float,
 ) -> None:
@@ -927,6 +934,7 @@ def invoke_rust_network_proof(
         "local-protocol": "local-ed2k-rust-protocol-combinations.py",
         "local-reask": "emulebb-rust-reask-cross-client.py",
         "windows-direct": "rust-windows-direct-smoke.py",
+        "windows-consumer": "rust-consumer-live.py",
         "prepare-corpus": "prepare-rust-direct-corpus.py",
     }
     script = layout.tests_repo_root / "scripts" / scripts[lane]
@@ -945,6 +953,45 @@ def invoke_rust_network_proof(
             raise RuntimeError("Corpus preparation requires --inputs and --source-root.")
         args.extend(["--operator-inputs", Path(inputs).resolve(), "--source-root", Path(source_root).resolve(),
                      "--max-candidates", max_candidates])
+    elif lane == "windows-consumer":
+        if not inputs or not release_zip or not search_term:
+            raise RuntimeError(
+                "Windows consumer proof requires --inputs, --release-zip, and --search-term."
+            )
+        args.extend(
+            [
+                "--inputs",
+                Path(inputs).resolve(),
+                "--release-zip",
+                Path(release_zip).resolve(),
+                "--search-term",
+                search_term,
+                "--max-transfer-bytes",
+                max_transfer_bytes,
+                "--max-completion-bytes",
+                max_completion_bytes,
+                "--network-timeout-seconds",
+                network_timeout_seconds,
+                "--transfer-timeout-seconds",
+                transfer_timeout_seconds if complete_transfers else observe_seconds,
+            ]
+        )
+        if complete_transfers:
+            args.append("--complete-transfer")
+        if replace_running_profile_settings:
+            args.extend(
+                [
+                    "--replace-running-profile-settings",
+                    Path(replace_running_profile_settings).resolve(),
+                ]
+            )
+        if restore_operator_executable:
+            args.extend(
+                [
+                    "--restore-operator-executable",
+                    Path(restore_operator_executable).resolve(),
+                ]
+            )
     elif lane == "windows-direct":
         if not inputs:
             raise RuntimeError("Windows direct proof requires an operator-local --inputs allowlist.")

@@ -664,3 +664,15 @@ def test_sync_rejects_workspace_root_outside_current_build_clone(tmp_path: Path)
 
     assert result.exit_code != 0
     assert "repos\\emulebb-build" in result.output
+
+
+def test_rust_network_proof_help_exposes_consumer_live_lane() -> None:
+    result = CliRunner().invoke(cli.main, ["test", "rust-network-proof", "--help"])
+
+    assert result.exit_code == 0
+    assert "windows-consumer" in result.output
+    assert "--release-zip" in result.output
+    assert "--search-term" in result.output
+    assert "--max-transfer-bytes" in result.output
+    assert "--replace-running-profile-settings" in result.output
+    assert "--restore-operator-executable" in result.output
