@@ -676,3 +676,10 @@ def test_rust_network_proof_help_exposes_consumer_live_lane() -> None:
     assert "--max-transfer-bytes" in result.output
     assert "--replace-running-profile-settings" in result.output
     assert "--restore-operator-executable" in result.output
+
+
+def test_rust_webui_help_exposes_stateful_playwright_gate() -> None:
+    result = CliRunner().invoke(cli.main, ["test", "rust-webui", "--help"])
+
+    assert result.exit_code == 0
+    assert "stateful Playwright" in result.output

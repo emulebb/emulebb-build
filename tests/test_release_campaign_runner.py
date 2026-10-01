@@ -1622,6 +1622,12 @@ def test_campaign_execution_rejects_shell_commands() -> None:
         ),
         "python scripts/rust-ed2k-private-parity-modules.py",
         "python scripts/rust-ed2k-total-parity-audit.py",
+        "python scripts/converged-soak-live.py --inputs inputs.json --lan-bind-addr ${X_LOCAL_IP} --duration 4h",
+        (
+            "python scripts/rust-consumer-live.py --inputs inputs.json --release-zip ${EMULEBB_WORKSPACE_OUTPUT_ROOT}/release.zip "
+            "--search-term linux --max-transfer-bytes 5242879 --max-completion-bytes 5242879"
+        ),
+        "python -m emule_workspace test rust-webui",
     ],
 )
 def test_campaign_execution_accepts_approved_rust_overnight_helpers(command: str) -> None:

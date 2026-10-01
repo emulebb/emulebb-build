@@ -46,6 +46,7 @@ from .test_runs import (
     invoke_community_core_coverage,
     invoke_live_e2e_suite,
     invoke_protocol_parity,
+    invoke_rust_webui_tests,
     invoke_test_runs,
 )
 from .validation import validate_workspace
@@ -142,6 +143,24 @@ _MULTI_CLIENT_MATRIX_VALUE_OPTIONS = {
 }
 _MULTI_CLIENT_MATRIX_FLAG_OPTIONS = {"--keep-artifacts", "--require-optional-clients"}
 _APPROVED_TEST_SCRIPT_OPTIONS: dict[str, tuple[set[str], set[str]]] = {
+    "scripts/converged-soak-live.py": (
+        {"--inputs", "--lan-bind-addr", "--duration"},
+        set(),
+    ),
+    "scripts/rust-consumer-live.py": (
+        {
+            "--release-zip",
+            "--inputs",
+            "--search-term",
+            "--max-transfer-bytes",
+            "--max-completion-bytes",
+            "--replace-running-profile-settings",
+            "--restore-operator-executable",
+            "--network-timeout-seconds",
+            "--transfer-timeout-seconds",
+        },
+        {"--complete-transfer"},
+    ),
     "scripts/rust-overnight-pytest-proof.py": (set(), set()),
     "scripts/stock-protocol-oracle-proof.py": (set(), {"--execute-rust-proofs"}),
     "scripts/local-ed2k-rust-protocol-combinations.py": (
@@ -562,6 +581,9 @@ def _dispatch_workspace_command(
     if tokens[:2] == ["test", "python"]:
         invoke_python_tests(layout, _python_test_options_from_tokens(tokens))
         return
+    if tokens[:2] == ["test", "rust-webui"]:
+        invoke_rust_webui_tests(layout)
+        return
     if tokens[:2] == ["test", "protocol-parity"]:
         invoke_protocol_parity(layout, workspace_options, VariantComparisonOptions())
         return
@@ -906,6 +928,10 @@ def _validate_workspace_command_tokens(tokens: list[str]) -> None:
     if tokens[:2] == ["test", "python"]:
         _validate_options(tokens[2:], value_options=_PYTHON_TEST_VALUE_OPTIONS, flag_options=_PYTHON_TEST_FLAG_OPTIONS)
         _python_test_options_from_tokens(tokens)
+        return
+    if tokens[:2] == ["test", "rust-webui"]:
+        _validate_options(tokens[2:], value_options=_WORKSPACE_VALUE_OPTIONS, flag_options=set())
+        _workspace_options_from_tokens(workspace_options, tokens)
         return
     if tokens[:2] == ["test", "protocol-parity"]:
         _validate_options(tokens[2:], value_options=set(), flag_options=set())

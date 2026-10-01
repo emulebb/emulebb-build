@@ -9,6 +9,7 @@ import json
 import os
 import platform
 from pathlib import Path
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -33,7 +34,7 @@ from .hide_me_split_tunnel import ensure_split_tunnel_apps, restart_hide_me_afte
 from .layout import WorkspaceLayout, get_test_build_tag
 from .local_package_install import materialize_test_local_install
 from .network_context import LAN_IP_RESOLVED_ENV, TestNetwork, resolve_workspace_network_context
-from .process import get_python_invocation, run_native
+from .process import find_tool, get_python_invocation, run_native
 
 MATERIALIZED_ARR_SERVICE_WAIT_SECONDS = 120.0
 MATERIALIZED_ARR_SERVICE_POLL_SECONDS = 1.0
@@ -1033,6 +1034,45 @@ def invoke_rust_unit_tests(layout: WorkspaceLayout, *, package: str | None = Non
         args.append("--workspace")
     run_native(args, label="eMuleBB Rust tests", cwd=layout.emulebb_rust_repo_root,
                env=_workspace_env(layout))
+
+
+def invoke_rust_webui_tests(layout: WorkspaceLayout) -> None:
+    """Run locked WebUI unit, stateful Playwright, type, and production-build gates."""
+
+    npm = find_tool(("npm.cmd", "npm.exe", "npm") if os.name == "nt" else ("npm",))
+    if npm is None:
+        raise RuntimeError("test rust-webui requires Node npm on PATH.")
+    rust_root = layout.emulebb_rust_repo_root
+    if rust_root is None:
+        raise RuntimeError("test rust-webui requires the emulebb-rust repository.")
+    source = rust_root / "webui"
+    if not (source / "package-lock.json").is_file():
+        raise RuntimeError(f"Rust WebUI package lock was not found: {source / 'package-lock.json'}")
+
+    parent = layout.output_build_root / "emulebb-rust"
+    staged = parent / "webui-test-source"
+    dist = parent / "webui-test-dist"
+    if staged.is_dir():
+        shutil.rmtree(staged)
+    if dist.is_dir():
+        shutil.rmtree(dist)
+    parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        staged,
+        ignore=shutil.ignore_patterns("node_modules", "dist", "test-results", "playwright-report", "coverage"),
+    )
+    env = _workspace_env(layout)
+    env["NPM_CONFIG_CACHE"] = layout.output_cache_root / "npm"
+    commands = (
+        ([npm, "ci", "--ignore-scripts"], "Rust WebUI locked install"),
+        ([npm, "run", "test:unit"], "Rust WebUI unit tests"),
+        ([npm, "run", "test:e2e"], "Rust WebUI Playwright tests"),
+        ([npm, "run", "typecheck"], "Rust WebUI typecheck"),
+        ([npm, "run", "build", "--", "--outDir", dist], "Rust WebUI production build"),
+    )
+    for command, label in commands:
+        run_native(command, label=label, cwd=staged, env=env)
 
 
 def invoke_fake_kad_trust_soak(

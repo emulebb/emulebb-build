@@ -105,6 +105,7 @@ python -m emule_workspace test live-e2e
 python -m emule_workspace test windows-vm
 python -m emule_workspace test amutorrent-session
 python -m emule_workspace test amutorrent-session --backend rust
+python -m emule_workspace test rust-webui
 python -m emule_workspace test rust-network-proof --lane windows-consumer --help
 python -m emule_workspace test community-core-coverage
 python -m emule_workspace full
@@ -168,7 +169,8 @@ Command behavior:
 - `test live-e2e` runs the aggregate UI, REST API, and live-wire E2E suite from `emulebb-build-tests`.
 - `test windows-vm` runs package-smoke proof inside clean local Hyper-V Windows guests restored from a configured checkpoint.
 - `test amutorrent-session` starts a disposable interactive aMuTorrent session against eMuleBB REST and leaves both processes running for operator testing. Use `--backend rust` to point aMuTorrent at the staged Rust client, falling back to the Rust repo Cargo launcher when needed.
-- `test rust-network-proof --lane windows-consumer` verifies an exact hosted Rust Windows ZIP with a fresh default profile and the rendered WebUI. It imports `server.met` and `nodes.dat`, drives server and Kad connect/disconnect/reconnect, runs the explicit `--search-term` through automatic/server/Kad search, and triggers an exact transfer from the operator-local `--inputs` allowlist. Trigger mode observes live sources/bytes and stops the transfer; `--complete-transfers` additionally requires a small candidate and verifies its size and SHA-256.
+- `test rust-webui` stages the SPA under the external output root, installs the locked npm graph, and runs unit tests, stateful Playwright E2E, type checking, and the production build. Its full-workflow browser scenario covers `server.met` and stopped-Kad `nodes.dat` imports, independent server/Kad disconnect and reconnect, filtered `linux` PDF search, rendered-result download, activity, and stop state.
+- `test rust-network-proof --lane windows-consumer` verifies an exact hosted Rust Windows ZIP with a fresh default profile and the rendered WebUI. It enables best-effort UPnP in Settings and verifies the restart, imports `server.met` and `nodes.dat`, proves server and Kad disconnect/reconnect independently, runs the explicit runtime-only `--search-term` through automatic/server/Kad search, and clicks an exact allowlisted `.pdf` result smaller than 5 MiB. Trigger mode requires bytes or an actively transferring source and then verifies the stopped flag; `--complete-transfers` additionally verifies delivered size and SHA-256. Search text and candidate identity are redacted from retained evidence.
 - `test community-core-coverage` runs community-core coverage checks with live REST E2E coverage enabled.
 - `build all` runs `build libs`, `build app`, and `build tests`.
 - `full` runs `build all`, then `test all`, then prints a workspace summary.

@@ -89,6 +89,7 @@ from .test_runs import (
     invoke_fake_kad_trust_soak,
     invoke_rust_network_proof,
     invoke_rust_unit_tests,
+    invoke_rust_webui_tests,
     invoke_live_diff_runs,
     invoke_live_e2e_suite,
     invoke_native_test_suites,
@@ -1353,6 +1354,17 @@ def test_rust_unit(*, package: str | None, workspace_options: WorkspaceOptions, 
     )(workspace_options=workspace_options, layout=layout)
 
 
+@test.command("rust-webui")
+@_common_options
+def test_rust_webui(*, workspace_options: WorkspaceOptions, layout) -> None:
+    """Run the Rust WebUI unit, stateful Playwright, type, and build gates."""
+
+    _locked(
+        "test rust-webui",
+        lambda **kwargs: invoke_rust_webui_tests(kwargs["layout"]),
+    )(workspace_options=workspace_options, layout=layout)
+
+
 @test.command("rust-network-proof")
 @_common_options
 @click.option("--lane", type=click.Choice(["local-cross", "local-kad", "local-protocol", "local-reask", "windows-direct", "windows-consumer", "prepare-corpus"]), required=True)
@@ -1371,8 +1383,8 @@ def test_rust_unit(*, package: str | None, workspace_options: WorkspaceOptions, 
 )
 @click.option("--source-root", default=None, help="Operator-approved source files for corpus preparation.")
 @click.option("--max-candidates", default=50, type=int, show_default=True)
-@click.option("--max-transfer-bytes", default=4 * 1024 * 1024 * 1024, type=int, show_default=True)
-@click.option("--max-completion-bytes", default=20 * 1024 * 1024, type=int, show_default=True)
+@click.option("--max-transfer-bytes", default=5 * 1024 * 1024 - 1, type=int, show_default=True)
+@click.option("--max-completion-bytes", default=5 * 1024 * 1024 - 1, type=int, show_default=True)
 @click.option("--complete-transfers", is_flag=True, help="Download and SHA-256 verify the allowlisted transfers.")
 @click.option("--probe-count", default=0, type=int, show_default=True, help="Queue up to 50 allowlisted transfers for bounded source observation.")
 @click.option("--network-timeout-seconds", default=240.0, type=float, show_default=True)
