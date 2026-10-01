@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import re
+import shlex
 import shutil
 import sys
 from dataclasses import dataclass
@@ -11,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .layout import WorkspaceLayout
+from .build import wsl_path
 from .process import find_tool, run_captured, run_native
 
 ProductFamilyValidationTier = Literal["quick", "quality", "full"]
@@ -174,6 +177,10 @@ def prepare_product_family_repos(layout: WorkspaceLayout) -> None:
             cwd=root,
         )
 
+    ed2k_index_root = getattr(layout, "ed2k_index_server_repo_root", None)
+    if ed2k_index_root is not None and (ed2k_index_root / "Cargo.toml").is_file():
+        _run_ed2k_server_cargo(layout, ("fetch", "--locked"), label="ed2k-server cargo fetch")
+
     coordinator_root = _coordinator_root(layout)
     if coordinator_root is not None and (coordinator_root / "package-lock.json").is_file():
         npm = _required_product_family_command(("npm.cmd", "npm.exe", "npm"), "Node npm")
@@ -237,6 +244,31 @@ def validate_product_family_repos(layout: WorkspaceLayout, *, tier: ProductFamil
                 [cargo, "test", "--workspace", "--all-targets", "--all-features"],
                 label=f"{label} cargo test",
                 cwd=root,
+            )
+
+    ed2k_index_root = getattr(layout, "ed2k_index_server_repo_root", None)
+    if ed2k_index_root is not None and ed2k_index_root.is_dir():
+        _run_ed2k_server_cargo(
+            layout,
+            ("fmt", "--all", "--check"),
+            label="ed2k-server cargo fmt",
+        )
+        if tier in ("quality", "full"):
+            _run_ed2k_server_cargo(
+                layout,
+                ("test", "--locked", "--all-targets"),
+                label="ed2k-server cargo test",
+            )
+        if tier == "full":
+            _run_ed2k_server_cargo(
+                layout,
+                ("clippy", "--locked", "--all-targets", "--all-features"),
+                label="ed2k-server cargo clippy",
+            )
+            _run_ed2k_server_cargo(
+                layout,
+                ("build", "--locked", "--release"),
+                label="ed2k-server cargo release build",
             )
 
     coordinator_root = _coordinator_root(layout)
@@ -304,6 +336,46 @@ def _rust_product_family_roots(layout: WorkspaceLayout) -> tuple[tuple[str, Path
         ("emulebb-rust", getattr(layout, "emulebb_rust_repo_root", None)),
         ("p2p-overlord-agents", getattr(layout, "p2p_overlord_agents_repo_root", None)),
     )
+
+
+def _run_ed2k_server_cargo(
+    layout: WorkspaceLayout,
+    arguments: tuple[str, ...],
+    *,
+    label: str,
+) -> None:
+    """Run one Linux-first ed2k-server Cargo command through the owned boundary."""
+
+    repo_root = getattr(layout, "ed2k_index_server_repo_root", None)
+    if repo_root is None:
+        raise RuntimeError(f"{label} requires repos/ed2k-server in the workspace manifest.")
+    env = {name: str(value) for name, value in layout.subprocess_environment().items()}
+    if os.name != "nt":
+        cargo = _required_product_family_command(("cargo",), "Rust cargo")
+        run_native([cargo, *arguments], label=label, cwd=repo_root, env=env)
+        return
+
+    target_root = layout.output_rust_target_root.parent / "target-wsl"
+    wsl_workspace = wsl_path(layout.emule_workspace_root)
+    wsl_output = wsl_path(layout.output_root)
+    wsl_target = wsl_path(target_root)
+    wsl_repo = wsl_path(repo_root)
+    command = [
+        "wsl.exe",
+        "--",
+        "bash",
+        "-lc",
+        " && ".join(
+            (
+                f"export EMULEBB_WORKSPACE_ROOT={shlex.quote(wsl_workspace)}",
+                f"export EMULEBB_WORKSPACE_OUTPUT_ROOT={shlex.quote(wsl_output)}",
+                f"export CARGO_TARGET_DIR={shlex.quote(wsl_target)}",
+                f"cd {shlex.quote(wsl_repo)}",
+                f"exec cargo {shlex.join(arguments)}",
+            )
+        ),
+    ]
+    run_native(command, label=label, cwd=repo_root, env=env)
 
 
 def _refresh_rebased_repo(repo: ProductFamilyRebaseRepo) -> ProductFamilyRebaseRefresh:

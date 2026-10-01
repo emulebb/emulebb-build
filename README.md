@@ -34,6 +34,7 @@ In practice this repo needs:
 - `repos\emulebb-build`
 - `repos\emulebb-build-tests`
 - `repos\emulebb-tooling`
+- `repos\ed2k-server`
 - `repos\goed2k-server`
 - `repos\emulebb-rust`
 - `repos\qbittorrentbb`
@@ -73,7 +74,9 @@ The active app layout and workspace repo paths are topology-driven from
 configured variant names rather than duplicating hardcoded worktree paths.
 The generated manifest also tracks the public pages repo and organization
 profile repo so web/documentation repos are materialized with the rest of the
-workspace under `repos\`.
+workspace. `workspace.repos.ed2k_server` remains the deterministic Go test
+fixture, while `workspace.repos.ed2k_index_server` identifies the managed Rust
+Service/Lab fork without selecting it for any test lane.
 
 ## Supported Commands
 
@@ -290,6 +293,10 @@ Interactive aMuTorrent example:
 Headless Rust client build example:
 
 - `python -m emule_workspace build clients --client emulebb-rust --config Release --platform x64` builds `repos\emulebb-rust` through Cargo and stages `emulebb-rust.exe` under `EMULEBB_WORKSPACE_OUTPUT_ROOT\tools\emulebb-rust\bin`.
+
+Rust eD2K index-server build example:
+
+- `python -m emule_workspace build ed2k-server --config Release --platform x64` builds the Linux-only `repos\ed2k-server` fork through WSL on Windows (or native Cargo on Linux) and stages `ed2k-server` under `EMULEBB_WORKSPACE_OUTPUT_ROOT\tools\ed2k-server\bin`. It does not launch the server or select it for test campaigns.
 
 Python test examples:
 

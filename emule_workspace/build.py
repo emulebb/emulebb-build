@@ -261,6 +261,159 @@ def build_clients(layout: WorkspaceLayout, options: WorkspaceOptions, build_opti
         session.write_recap()
 
 
+def build_ed2k_server(layout: WorkspaceLayout, options: WorkspaceOptions, *, clean: bool) -> None:
+    """Build and stage the managed Linux ed2k-server Service/Lab fork."""
+
+    if options.configuration != "Release":
+        raise RuntimeError("build ed2k-server supports only --config Release.")
+    if options.platform != "x64":
+        raise RuntimeError("build ed2k-server currently supports only --platform x64.")
+    session = BuildSession(layout=layout, options=options, command_name="build ed2k-server", clean=clean)
+    try:
+        build_ed2k_server_service(session, clean=clean)
+    finally:
+        session.write_recap()
+
+
+ED2K_SERVER_LINUX_TARGET = "x86_64-unknown-linux-gnu"
+
+
+def build_ed2k_server_service(
+    session: BuildSession,
+    *,
+    clean: bool,
+    use_wsl: bool | None = None,
+) -> None:
+    """Build the Linux Rust index server and stage its sole runnable binary."""
+
+    repo_root = session.layout.ed2k_index_server_repo_root
+    if repo_root is None:
+        raise RuntimeError("build ed2k-server requires repos/ed2k-server in the workspace manifest.")
+    if not (repo_root / "Cargo.toml").is_file():
+        raise RuntimeError(f"ed2k-server repository was not found: {repo_root}")
+
+    use_wsl = os.name == "nt" if use_wsl is None else use_wsl
+    target_root = session.layout.output_rust_target_root
+    if use_wsl:
+        target_root = target_root.parent / "target-wsl"
+    release_root = target_root / ED2K_SERVER_LINUX_TARGET / "release"
+    source_binary = release_root / "ed2k-server"
+    staged_root = staged_ed2k_server_root(session.layout)
+    staged_binary = staged_root / "bin" / "ed2k-server"
+    if clean:
+        remove_tree_if_present(staged_root)
+        source_binary.unlink(missing_ok=True)
+
+    cargo_arguments = [
+        "build",
+        "--locked",
+        "--release",
+        "--target",
+        ED2K_SERVER_LINUX_TARGET,
+    ]
+    cargo_path = None if use_wsl else find_tool(("cargo.exe", "cargo"))
+    if not use_wsl and cargo_path is None:
+        raise RuntimeError("build ed2k-server requires Rust cargo on PATH.")
+
+    translated_paths: tuple[tuple[str, str], ...] = ()
+    if use_wsl:
+        wsl_workspace = wsl_path(session.layout.emule_workspace_root)
+        wsl_output = wsl_path(session.layout.output_root)
+        wsl_target = wsl_path(target_root)
+        wsl_repo = wsl_path(repo_root)
+        translated_paths = (
+            (str(session.layout.emule_workspace_root), wsl_workspace),
+            (str(session.layout.output_root), wsl_output),
+            (str(target_root), wsl_target),
+            (str(repo_root), wsl_repo),
+        )
+        command = [
+            "wsl.exe",
+            "--",
+            "bash",
+            "-lc",
+            " && ".join(
+                (
+                    f"export EMULEBB_WORKSPACE_ROOT={shlex.quote(wsl_workspace)}",
+                    f"export EMULEBB_WORKSPACE_OUTPUT_ROOT={shlex.quote(wsl_output)}",
+                    f"export CARGO_TARGET_DIR={shlex.quote(wsl_target)}",
+                    f"cd {shlex.quote(wsl_repo)}",
+                    "cargo --version",
+                    "rustc --version",
+                    f"exec cargo {shlex.join(cargo_arguments)}",
+                )
+            ),
+        ]
+    else:
+        command = [str(cargo_path), *cargo_arguments]
+
+    env = subprocess_os_environ()
+    env.update({name: str(value) for name, value in session.layout.subprocess_environment().items()})
+    log_path = session.log_directory / "ed2k-server-linux-x64-release.log"
+    started_at = time.monotonic()
+    try:
+        with log_path.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(f"Cargo: {'WSL cargo' if use_wsl else cargo_path}\n")
+            stream.write(f"Rust target: {ED2K_SERVER_LINUX_TARGET}\n")
+            stream.write(f"CARGO_TARGET_DIR: {target_root}\n")
+            for source, translated in translated_paths:
+                stream.write(f"WSL path: {source} -> {translated}\n")
+            stream.write(" ".join(shlex.quote(part) for part in command) + "\n\n")
+            if not use_wsl:
+                for tool in (cargo_path, find_tool(("rustc.exe", "rustc"))):
+                    if tool is None:
+                        continue
+                    subprocess.run(
+                        [str(tool), "--version"],
+                        cwd=repo_root,
+                        stdout=stream,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        check=False,
+                        env=env,
+                    )
+            completed = subprocess.run(
+                command,
+                cwd=repo_root,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                env=env,
+            )
+        if completed.returncode != 0:
+            raise RuntimeError(f"ed2k-server build failed with exit code {completed.returncode}. See {log_path}")
+        if not source_binary.is_file():
+            raise RuntimeError(f"ed2k-server build did not produce the expected binary: {source_binary}")
+        staged_binary.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_binary, staged_binary)
+        source_binary.unlink()
+        if not staged_binary.is_file():
+            raise RuntimeError(f"Staged ed2k-server binary is missing: {staged_binary}")
+        session.add_step(
+            name="SERVICE ed2k-server Linux x64",
+            succeeded=True,
+            log_path=log_path,
+            duration_seconds=time.monotonic() - started_at,
+            warning_count=count_warnings(log_path),
+        )
+    except Exception:
+        session.add_step(
+            name="SERVICE ed2k-server Linux x64",
+            succeeded=False,
+            log_path=log_path,
+            duration_seconds=time.monotonic() - started_at,
+            warning_count=count_warnings(log_path),
+        )
+        raise
+
+
+def staged_ed2k_server_root(layout: WorkspaceLayout) -> Path:
+    """Return the output-root staging directory for the managed index server."""
+
+    return layout.output_tools_root / "ed2k-server"
+
+
 RUST_CLIENT_TARGETS = {
     "windows": {
         "x64": "x86_64-pc-windows-msvc",

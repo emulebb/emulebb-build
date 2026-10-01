@@ -15,6 +15,7 @@ from .build_tests import invoke_build_tests
 from .artifact_audit import audit_workspace_artifacts, print_artifact_audit
 from .build import build_apps as invoke_build_apps
 from .build import build_clients as invoke_build_clients
+from .build import build_ed2k_server as invoke_build_ed2k_server
 from .build import build_libs as invoke_build_libs
 from .build import build_qbittorrentbb_client as invoke_build_qbittorrentbb_client
 from .certification import invoke_certification
@@ -805,6 +806,23 @@ def build_clients(
     _locked(
         "build clients",
         lambda **kwargs: invoke_build_clients(kwargs["layout"], kwargs["workspace_options"], build_options),
+    )(workspace_options=workspace_options, layout=layout)
+
+
+@build.command("ed2k-server")
+@_common_options
+@click.option("--clean", is_flag=True, help="Clean the staged server and executable before building.")
+def build_ed2k_server(
+    *,
+    clean: bool,
+    workspace_options: WorkspaceOptions,
+    layout,
+) -> None:
+    """Build and stage the managed Linux ed2k-server Service/Lab fork."""
+
+    _locked(
+        "build ed2k-server",
+        lambda **kwargs: invoke_build_ed2k_server(kwargs["layout"], kwargs["workspace_options"], clean=clean),
     )(workspace_options=workspace_options, layout=layout)
 
 

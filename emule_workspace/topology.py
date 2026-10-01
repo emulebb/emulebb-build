@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 BUILD_MANIFEST_NAME = "deps.json"
 WORKSPACE_MANIFEST_NAME = "deps.json"
-WORKSPACE_MANIFEST_SCHEMA_VERSION = 7
+WORKSPACE_MANIFEST_SCHEMA_VERSION = 8
 REPO_ROLE_MANIFEST_NAME = "repo-roles.json"
 REPO_ROLE_MANIFEST_SCHEMA_VERSION = 1
 DEFAULT_WORKSPACE_NAME = "workspace"
@@ -21,6 +21,7 @@ SHARED_HOOK_REPO_NAMES = frozenset(
         "emulebb-build",
         "emulebb-build-tests",
         "emulebb-tooling",
+        "ed2k-server",
         "goed2k-server",
         "emulebb-pages",
         "emulebb-org-profile",
@@ -153,6 +154,7 @@ class WorkspaceManifestRepos(BaseModel):
     tests: str
     tooling: str
     ed2k_server: str
+    ed2k_index_server: str
     pages: str
     org_profile: str
     emulebb_rust: str
@@ -237,6 +239,7 @@ def build_workspace_manifest(topology: WorkspaceTopology, workspace_name: str | 
                 "tests": _workspace_relative_repo_path(repo_by_name["emulebb-build-tests"]),
                 "tooling": _workspace_relative_repo_path(repo_by_name["emulebb-tooling"]),
                 "ed2k_server": _workspace_relative_repo_path(repo_by_name["goed2k-server"]),
+                "ed2k_index_server": _workspace_relative_repo_path(repo_by_name["ed2k-server"]),
                 "pages": _workspace_relative_repo_path(repo_by_name["emulebb-pages"]),
                 "org_profile": _workspace_relative_repo_path(repo_by_name["emulebb-org-profile"]),
                 "emulebb_rust": _workspace_relative_repo_path(repo_by_name["emulebb-rust"]),
@@ -321,6 +324,7 @@ def _repo_role(repo: ManagedRepo) -> str:
         "emulebb-build-tests": "test-harness",
         "emulebb-tooling": "workspace-policy-and-docs",
         "amutorrent": "optional-controller",
+        "ed2k-server": "ed2k-index-server-service",
         "goed2k-server": "local-ed2k-test-server",
         "amule": "optional-client-build",
         "emulebb-pages": "public-docs-site",
@@ -444,6 +448,15 @@ def canonical_topology(*, include_analysis: bool = False) -> WorkspaceTopology:
                 relative_path="repos\\qbittorrentbb",
                 branch="master",
                 additional_remotes=(AdditionalRemote(name="upstream", url="https://github.com/qbittorrent/qBittorrent.git"),),
+            ),
+            ManagedRepo(
+                name="ed2k-server",
+                url="https://github.com/emulebb/ed2k-server.git",
+                relative_path="repos\\ed2k-server",
+                branch="master",
+                additional_remotes=(
+                    AdditionalRemote(name="upstream", url="https://github.com/andrey23127/ed2k-server.git"),
+                ),
             ),
             ManagedRepo(
                 name="goed2k-server",

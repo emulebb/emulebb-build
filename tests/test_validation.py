@@ -270,6 +270,39 @@ def test_product_family_prepare_fetches_native_dependencies(
     assert (("go.exe", "mod", "download"), goed2k_root) in calls
 
 
+def test_ed2k_server_product_family_tiers_are_linux_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server_root = tmp_path / "repos" / "ed2k-server"
+    server_root.mkdir(parents=True)
+    (server_root / "Cargo.toml").write_text("[package]\nname = 'ed2k-server'\n", encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        product_family,
+        "_run_ed2k_server_cargo",
+        lambda _layout, arguments, *, label: calls.append(arguments),
+    )
+    layout = SimpleNamespace(
+        ed2k_index_server_repo_root=server_root,
+        emulebb_rust_repo_root=None,
+        p2p_overlord_agents_repo_root=None,
+        p2p_overlord_be_repo_root=None,
+        ed2k_server_repo_root=tmp_path / "repos" / "goed2k-server",
+    )
+
+    product_family.prepare_product_family_repos(layout)
+    product_family.validate_product_family_repos(layout, tier="full")
+
+    assert calls == [
+        ("fetch", "--locked"),
+        ("fmt", "--all", "--check"),
+        ("test", "--locked", "--all-targets"),
+        ("clippy", "--locked", "--all-targets", "--all-features"),
+        ("build", "--locked", "--release"),
+    ]
+
+
 def test_product_family_rebase_refresh_resets_clean_clone_after_remote_rewrite(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

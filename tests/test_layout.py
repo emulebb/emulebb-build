@@ -46,6 +46,7 @@ def test_workspace_manifest_uses_json_contract_shape() -> None:
     assert manifest["schema_version"] == WORKSPACE_MANIFEST_SCHEMA_VERSION
     assert manifest["workspace"]["repos"]["build"] == "..\\..\\repos\\emulebb-build"
     assert manifest["workspace"]["repos"]["ed2k_server"] == "..\\..\\repos\\goed2k-server"
+    assert manifest["workspace"]["repos"]["ed2k_index_server"] == "..\\..\\repos\\ed2k-server"
     assert "amule" not in manifest["workspace"]["repos"]
     assert "amutorrent" not in manifest["workspace"]["repos"]
     assert "emuleai" not in manifest["workspace"]["repos"]
@@ -87,6 +88,8 @@ def test_repo_role_manifest_describes_workspace_repositories() -> None:
     assert repos["qbittorrentbb"]["role"] == "bittorrent-client"
     assert repos["qbittorrentbb"]["group"] == "product-family"
     assert repos["goed2k-server"]["role"] == "local-ed2k-test-server"
+    assert repos["ed2k-server"]["role"] == "ed2k-index-server-service"
+    assert repos["ed2k-server"]["group"] == "product-family"
     assert "amule" not in repos
     assert "amutorrent" not in repos
     assert "p2p-overlord-be" not in repos
@@ -119,6 +122,14 @@ def test_canonical_topology_materializes_ed2k_server_fork_under_repos() -> None:
     assert ed2k_server.branch == "master"
     assert tuple((remote.name, remote.url) for remote in ed2k_server.additional_remotes) == (
         ("upstream", "https://github.com/chenjia404/goed2k-server.git"),
+    )
+
+    ed2k_index_server = repos["ed2k-server"]
+    assert ed2k_index_server.url == "https://github.com/emulebb/ed2k-server.git"
+    assert ed2k_index_server.relative_path == "repos\\ed2k-server"
+    assert ed2k_index_server.branch == "master"
+    assert tuple((remote.name, remote.url) for remote in ed2k_index_server.additional_remotes) == (
+        ("upstream", "https://github.com/andrey23127/ed2k-server.git"),
     )
 
 

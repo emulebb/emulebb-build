@@ -600,6 +600,7 @@ def _product_family_output_candidates(layout: WorkspaceLayout) -> list[CleanupCa
     candidates: list[CleanupCandidate] = []
     repos_root = layout.emule_workspace_root / "repos"
     candidate_paths = (
+        _optional_root(layout, "ed2k_index_server_repo_root") / "target",
         _optional_root(layout, "emulebb_rust_repo_root") / "target",
         _optional_root(layout, "p2p_overlord_agents_repo_root") / "target",
         _optional_root(layout, "p2p_overlord_be_repo_root") / "overlord-be-coordinator" / "node_modules",

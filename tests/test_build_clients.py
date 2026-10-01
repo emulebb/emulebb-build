@@ -346,6 +346,134 @@ def test_build_emulebb_rust_linux_client_uses_native_wsl_cargo(
     assert (build.staged_emulebb_rust_root(layout) / "bin" / "emulebb-rust").read_bytes() == b"linux"
 
 
+def test_build_ed2k_server_uses_wsl_and_stages_only_output_root_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = make_layout(tmp_path, monkeypatch)
+    repo_root = layout.ed2k_index_server_repo_root
+    assert repo_root is not None
+    repo_root.mkdir(parents=True)
+    (repo_root / "Cargo.toml").write_text("[package]\nname = 'ed2k-server'\n", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def fake_run(command, *, cwd, stdout, stderr, text, check, env):
+        commands.append(list(command))
+        built = (
+            layout.output_rust_target_root.parent
+            / "target-wsl"
+            / build.ED2K_SERVER_LINUX_TARGET
+            / "release"
+        )
+        built.mkdir(parents=True)
+        (built / "ed2k-server").write_bytes(b"linux-server")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(build, "wsl_path", lambda path: f"/mnt/c/{Path(path).name}")
+    monkeypatch.setattr(build.subprocess, "run", fake_run)
+    session = build.BuildSession(
+        layout=layout,
+        options=WorkspaceOptions(
+            workspace_root=layout.emule_workspace_root,
+            output_root=layout.output_root,
+            configuration="Release",
+            platform="x64",
+        ),
+        command_name="build ed2k-server",
+    )
+
+    build.build_ed2k_server_service(session, clean=True)
+
+    command = commands[0]
+    assert command[0:4] == ["wsl.exe", "--", "bash", "-lc"]
+    assert "export CARGO_TARGET_DIR=/mnt/c/target-wsl" in command[-1]
+    assert command[-1].endswith(
+        "exec cargo build --locked --release --target x86_64-unknown-linux-gnu"
+    )
+    staged = build.staged_ed2k_server_root(layout) / "bin" / "ed2k-server"
+    assert staged.read_bytes() == b"linux-server"
+    assert not (
+        layout.output_rust_target_root.parent
+        / "target-wsl"
+        / build.ED2K_SERVER_LINUX_TARGET
+        / "release"
+        / "ed2k-server"
+    ).exists()
+
+
+def test_build_ed2k_server_uses_native_cargo_on_linux(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = make_layout(tmp_path, monkeypatch)
+    repo_root = layout.ed2k_index_server_repo_root
+    assert repo_root is not None
+    repo_root.mkdir(parents=True)
+    (repo_root / "Cargo.toml").write_text("[package]\nname = 'ed2k-server'\n", encoding="utf-8")
+    cargo = tmp_path / "cargo"
+    rustc = tmp_path / "rustc"
+    commands: list[list[str]] = []
+
+    def fake_find_tool(names):
+        return rustc if any("rustc" in name for name in names) else cargo
+
+    def fake_run(command, *, cwd, stdout, stderr, text, check, env):
+        commands.append([str(part) for part in command])
+        if "build" in command:
+            built = layout.output_rust_target_root / build.ED2K_SERVER_LINUX_TARGET / "release"
+            built.mkdir(parents=True)
+            (built / "ed2k-server").write_bytes(b"native-linux-server")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(build, "find_tool", fake_find_tool)
+    monkeypatch.setattr(build.subprocess, "run", fake_run)
+    session = build.BuildSession(
+        layout=layout,
+        options=WorkspaceOptions(
+            workspace_root=layout.emule_workspace_root,
+            output_root=layout.output_root,
+            configuration="Release",
+            platform="x64",
+        ),
+        command_name="build ed2k-server",
+    )
+
+    build.build_ed2k_server_service(session, clean=False, use_wsl=False)
+
+    assert commands[-1] == [
+        str(cargo),
+        "build",
+        "--locked",
+        "--release",
+        "--target",
+        build.ED2K_SERVER_LINUX_TARGET,
+    ]
+    assert (build.staged_ed2k_server_root(layout) / "bin" / "ed2k-server").read_bytes() == b"native-linux-server"
+
+
+def test_build_ed2k_server_rejects_non_linux_service_matrix(tmp_path: Path) -> None:
+    layout = make_layout(tmp_path)
+
+    with pytest.raises(RuntimeError, match="only --config Release"):
+        build.build_ed2k_server(
+            layout,
+            WorkspaceOptions(
+                workspace_root=layout.emule_workspace_root,
+                configuration="Debug",
+                platform="x64",
+            ),
+            clean=False,
+        )
+    with pytest.raises(RuntimeError, match="only --platform x64"):
+        build.build_ed2k_server(
+            layout,
+            WorkspaceOptions(
+                workspace_root=layout.emule_workspace_root,
+                configuration="Release",
+                platform="ARM64",
+            ),
+            clean=False,
+        )
+
+
 def test_build_clients_rejects_emuleai_target(tmp_path: Path) -> None:
     layout = make_layout(tmp_path)
     options = WorkspaceOptions(workspace_root=layout.emule_workspace_root)
@@ -473,6 +601,7 @@ def make_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch | None = None) -
         app_variants=(),
         test_targets=LayoutTestTargets(test_build_variant="main", test_run_variant="main", baseline_variant="community"),
         toolset_override_variable="EMULEBB_VS_PLATFORM_TOOLSET",
+        ed2k_index_server_repo_root=emule_workspace_root / "repos" / "ed2k-server",
         emulebb_rust_repo_root=emule_workspace_root / "repos" / "emulebb-rust",
         output_root=output_root,
     )
