@@ -338,6 +338,7 @@ def build_ed2k_server_service(
                     f"export EMULEBB_WORKSPACE_OUTPUT_ROOT={shlex.quote(wsl_output)}",
                     f"export CARGO_TARGET_DIR={shlex.quote(wsl_target)}",
                     f"cd {shlex.quote(wsl_repo)}",
+                    "exec 1>&2",
                     "cargo --version",
                     "rustc --version",
                     f"exec cargo {shlex.join(cargo_arguments)}",
