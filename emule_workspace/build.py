@@ -359,6 +359,7 @@ def build_ed2k_server_service(
             for source, translated in translated_paths:
                 stream.write(f"WSL path: {source} -> {translated}\n")
             stream.write(" ".join(shlex.quote(part) for part in command) + "\n\n")
+            stream.flush()
             if not use_wsl:
                 for tool in (cargo_path, find_tool(("rustc.exe", "rustc"))):
                     if tool is None:
