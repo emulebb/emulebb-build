@@ -324,7 +324,7 @@ def _repo_role(repo: ManagedRepo) -> str:
         "emulebb-build-tests": "test-harness",
         "emulebb-tooling": "workspace-policy-and-docs",
         "amutorrent": "optional-controller",
-        "ed2k-server": "ed2k-index-server-service",
+        "ed2k-server": "ed2k-upstream-reference",
         "goed2k-server": "local-ed2k-test-server",
         "amule": "optional-client-build",
         "emulebb-pages": "public-docs-site",
@@ -443,13 +443,6 @@ def canonical_topology(*, include_analysis: bool = False) -> WorkspaceTopology:
                 branch="main",
             ),
             ManagedRepo(
-                name="qbittorrentbb",
-                url="https://github.com/emulebb/qbittorrentbb.git",
-                relative_path="repos\\qbittorrentbb",
-                branch="master",
-                additional_remotes=(AdditionalRemote(name="upstream", url="https://github.com/qbittorrent/qBittorrent.git"),),
-            ),
-            ManagedRepo(
                 name="ed2k-server",
                 url="https://github.com/emulebb/ed2k-server.git",
                 relative_path="repos\\ed2k-server",
@@ -488,14 +481,6 @@ def canonical_topology(*, include_analysis: bool = False) -> WorkspaceTopology:
         ),
         analysis_repos=analysis_repos,
         third_party_repos=(
-            ManagedRepo(
-                name="emulebb-libtorrent",
-                url="https://github.com/emulebb/emulebb-libtorrent.git",
-                relative_path="repos\\third_party\\emulebb-libtorrent",
-                branch="RC_2_0",
-                has_submodules=True,
-                additional_remotes=(AdditionalRemote(name="upstream", url="https://github.com/arvidn/libtorrent.git"),),
-            ),
             ManagedRepo(
                 name="emulebb-cryptopp",
                 url="https://github.com/emulebb/emulebb-cryptopp.git",

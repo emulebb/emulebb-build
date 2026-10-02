@@ -37,7 +37,6 @@ In practice this repo needs:
 - `repos\ed2k-server`
 - `repos\goed2k-server`
 - `repos\emulebb-rust`
-- `repos\qbittorrentbb`
 - `repos\emulebb-pages`
 - `repos\emulebb-org-profile`
 - `repos\third_party\...`
@@ -115,7 +114,10 @@ python -m emule_workspace vm-lab prepare
 
 `build clients` defaults to the materialized `emulebb-rust` client. The retired
 aMule checkout is no longer materialized; use `--client amule` only with a
-manual `repos\amule` checkout.
+manual `repos\amule` checkout. The paused qBittorrentBB experiment and its
+`emulebb-libtorrent` fork are also excluded from default materialization;
+their explicit build commands remain available for manually maintained local
+checkouts.
 
 ## Suite Installer Examples
 

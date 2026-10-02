@@ -85,10 +85,9 @@ def test_repo_role_manifest_describes_workspace_repositories() -> None:
     assert repos["emulebb-tooling"]["group"] == "workspace"
     assert repos["emulebb-rust"]["role"] == "headless-rust-client"
     assert repos["emulebb-rust"]["group"] == "product-family"
-    assert repos["qbittorrentbb"]["role"] == "bittorrent-client"
-    assert repos["qbittorrentbb"]["group"] == "product-family"
+    assert "qbittorrentbb" not in repos
     assert repos["goed2k-server"]["role"] == "local-ed2k-test-server"
-    assert repos["ed2k-server"]["role"] == "ed2k-index-server-service"
+    assert repos["ed2k-server"]["role"] == "ed2k-upstream-reference"
     assert repos["ed2k-server"]["group"] == "product-family"
     assert "amule" not in repos
     assert "amutorrent" not in repos
@@ -98,8 +97,7 @@ def test_repo_role_manifest_describes_workspace_repositories() -> None:
     assert analysis_repos == {}
 
     third_party_repos = {repo["name"]: repo for repo in manifest["third_party_repos"]}
-    assert third_party_repos["emulebb-libtorrent"]["role"] == "third-party-dependency"
-    assert third_party_repos["emulebb-libtorrent"]["has_submodules"] is True
+    assert "emulebb-libtorrent" not in third_party_repos
     assert third_party_repos["emulebb-zlib"]["role"] == "third-party-dependency"
     assert "update_policy" in third_party_repos["emulebb-zlib"]
 
