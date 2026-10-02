@@ -692,11 +692,7 @@ def _create_emulebb_rust_linux_packages(
             "webuiRoot": "/usr/lib/emulebb-rust/webui",
             "sbom": sbom_path.name,
             "sbomSha256": _sha256(sbom_path),
-            "source": {
-                "emulebbRust": _package_repo_provenance(rust_root),
-                "emulebbBuild": _package_repo_provenance(layout.build_repo_root),
-                "emulebbTooling": _package_repo_provenance(layout.tooling_repo_root),
-            },
+            "source": _emulebb_rust_source_provenance(layout, rust_root),
         }
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
         manifests.append(manifest_path)
@@ -791,11 +787,7 @@ def _create_emulebb_rust_macos_package(
         package_comment=f"Unsigned macOS {arch} beta app and embedded WebUI.",
         package_root=app_root,
         release_root=release_root,
-        components=[
-            _repo_spdx_package("emulebb-rust source", rust_root, declared_license="GPL-2.0-only"),
-            _repo_spdx_package("eMule build orchestration", layout.build_repo_root),
-            _repo_spdx_package("eMule tooling docs", layout.tooling_repo_root),
-        ],
+        components=_emulebb_rust_sbom_components(layout, rust_root),
     )
     sbom_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
     _run_packaging_tool(("hdiutil", "create", "-volname", "eMuleBB Rust", "-srcfolder", str(app_root), "-ov", "-format", "UDZO", str(dmg)), "hdiutil")
@@ -811,11 +803,7 @@ def _create_emulebb_rust_macos_package(
         "sha256": _sha256(dmg),
         "sbom": sbom_path.name,
         "sbomSha256": _sha256(sbom_path),
-        "source": {
-            "emulebbRust": _package_repo_provenance(rust_root),
-            "emulebbBuild": _package_repo_provenance(layout.build_repo_root),
-            "emulebbTooling": _package_repo_provenance(layout.tooling_repo_root),
-        },
+        "source": _emulebb_rust_source_provenance(layout, rust_root),
     }, indent=2) + "\n", encoding="utf-8", newline="\n")
     _write_sha256sums(sums_path, (dmg, manifest_path, sbom_path))
     print(f"eMuleBB Rust DMG: {dmg}")
@@ -929,11 +917,7 @@ def _write_emulebb_rust_linux_sbom(
         package_comment=f"Unsigned Linux {arch} beta package for the headless Rust daemon and embedded WebUI.",
         package_root=package_root,
         release_root=release_root,
-        components=[
-            _repo_spdx_package("emulebb-rust source", rust_root, declared_license="GPL-2.0-only"),
-            _repo_spdx_package("eMule build orchestration", layout.build_repo_root),
-            _repo_spdx_package("eMule tooling docs", layout.tooling_repo_root),
-        ],
+        components=_emulebb_rust_sbom_components(layout, rust_root),
     )
     sbom_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
 
@@ -1076,14 +1060,65 @@ def _assert_emulebb_rust_version_matches(rust_root: Path, release_version: str) 
         )
 
 
+def _emulebb_rust_native_source_roots(layout: WorkspaceLayout) -> tuple[Path, Path]:
+    """Returns the two native NAT source checkouts linked into Rust packages."""
+
+    miniupnp_root = Path(
+        os.environ.get(
+            "MINIUPNP_ROOT",
+            layout.emule_workspace_root / "repos" / "third_party" / "emulebb-miniupnp",
+        )
+    ).resolve()
+    pcpnatpmp_root = Path(
+        os.environ.get(
+            "PCPNATPMP_ROOT",
+            layout.emule_workspace_root / "repos" / "third_party" / "emulebb-libpcpnatpmp",
+        )
+    ).resolve()
+    return miniupnp_root, pcpnatpmp_root
+
+
+def _emulebb_rust_sbom_components(layout: WorkspaceLayout, rust_root: Path) -> list[dict[str, object]]:
+    """Returns source and native-library packages for the Rust SPDX document."""
+
+    miniupnp_root, pcpnatpmp_root = _emulebb_rust_native_source_roots(layout)
+    return [
+        _repo_spdx_package("emulebb-rust source", rust_root, declared_license="GPL-2.0-only"),
+        _repo_spdx_package("eMule build orchestration", layout.build_repo_root),
+        _repo_spdx_package("eMule tooling docs", layout.tooling_repo_root),
+        _repo_spdx_package("eMuleBB MiniUPnP fork", miniupnp_root, declared_license="BSD-3-Clause"),
+        _repo_spdx_package(
+            "eMuleBB libpcpnatpmp fork",
+            pcpnatpmp_root,
+            declared_license="BSD-3-Clause",
+        ),
+    ]
+
+
+def _emulebb_rust_source_provenance(layout: WorkspaceLayout, rust_root: Path) -> dict[str, object]:
+    """Returns all source repositories that materially contribute to a Rust asset."""
+
+    miniupnp_root, pcpnatpmp_root = _emulebb_rust_native_source_roots(layout)
+    return {
+        "emulebbRust": _package_repo_provenance(rust_root),
+        "emulebbBuild": _package_repo_provenance(layout.build_repo_root),
+        "emulebbTooling": _package_repo_provenance(layout.tooling_repo_root),
+        "emulebbMiniupnp": _package_repo_provenance(miniupnp_root),
+        "emulebbLibpcpnatpmp": _package_repo_provenance(pcpnatpmp_root),
+    }
+
+
 def _assert_clean_emulebb_rust_package_inputs(layout: WorkspaceLayout, rust_root: Path) -> None:
     """Requires clean source/provenance inputs before writing Rust release assets."""
 
     dirty: list[str] = []
+    miniupnp_root, pcpnatpmp_root = _emulebb_rust_native_source_roots(layout)
     for label, repo in (
         ("emulebb-rust", rust_root),
         ("emulebb-build", layout.build_repo_root),
         ("emulebb-tooling", layout.tooling_repo_root),
+        ("emulebb-miniupnp", miniupnp_root),
+        ("emulebb-libpcpnatpmp", pcpnatpmp_root),
     ):
         lines = [line for line in repo_status_lines(repo) if not line.startswith("## ")]
         if lines:
@@ -1131,11 +1166,7 @@ def _write_emulebb_rust_sbom(
 
     sbom_path = package_root / "SBOM.spdx.json"
     _assert_path_under_root(sbom_path, package_root, "emulebb-rust package SBOM")
-    components = [
-        _repo_spdx_package("emulebb-rust source", rust_root, declared_license="GPL-2.0-only"),
-        _repo_spdx_package("eMule build orchestration", layout.build_repo_root),
-        _repo_spdx_package("eMule tooling docs", layout.tooling_repo_root),
-    ]
+    components = _emulebb_rust_sbom_components(layout, rust_root)
     document = _build_spdx_sbom(
         name=f"eMuleBB Rust {version} Windows {arch} package",
         namespace=f"https://github.com/emulebb/emulebb-rust/releases/download/rust-v{version}/{asset_name}.sbom",
@@ -1185,11 +1216,7 @@ def _build_emulebb_rust_manifest(
         "sbom": sbom_path.relative_to(release_root).as_posix(),
         "sbomSha256": sbom_hash,
         "perFileSha256": package_file_hashes,
-        "source": {
-            "emulebbRust": _package_repo_provenance(rust_root),
-            "emulebbBuild": _package_repo_provenance(layout.build_repo_root),
-            "emulebbTooling": _package_repo_provenance(layout.tooling_repo_root),
-        },
+        "source": _emulebb_rust_source_provenance(layout, rust_root),
     }
 
 

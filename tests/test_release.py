@@ -162,7 +162,13 @@ def _make_rust_package_layout(tmp_path: Path) -> WorkspaceLayout:
 def _stage_rust_package_inputs(layout: WorkspaceLayout) -> None:
     rust_root = layout.emulebb_rust_repo_root
     assert rust_root is not None
-    for repo in (rust_root, layout.build_repo_root, layout.tooling_repo_root):
+    for repo in (
+        rust_root,
+        layout.build_repo_root,
+        layout.tooling_repo_root,
+        layout.emule_workspace_root / "repos" / "third_party" / "emulebb-miniupnp",
+        layout.emule_workspace_root / "repos" / "third_party" / "emulebb-libpcpnatpmp",
+    ):
         repo.mkdir(parents=True, exist_ok=True)
     (rust_root / "Cargo.toml").write_text(
         "[workspace]\n[workspace.package]\nversion = \"0.1.0-beta.1\"\n",
@@ -1185,6 +1191,12 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
     assert manifest["executable"] == "emulebb-rust/emulebb-rust.exe"
     assert manifest["webuiRoot"] == "emulebb-rust/webui"
     assert "emulebb-rust/webui/index.html" in manifest["perFileSha256"]
+    assert "emulebbMiniupnp" in manifest["source"]
+    assert "emulebbLibpcpnatpmp" in manifest["source"]
+    sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
+    package_names = {package["name"] for package in sbom["packages"]}
+    assert "eMuleBB MiniUPnP fork" in package_names
+    assert "eMuleBB libpcpnatpmp fork" in package_names
     sums = sums_path.read_text(encoding="ascii").splitlines()
     assert [line.split("  ", 1)[1] for line in sums] == [zip_path.name, manifest_path.name, sbom_path.name]
 
