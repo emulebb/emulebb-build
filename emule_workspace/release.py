@@ -90,9 +90,13 @@ RELEASE_THIRD_PARTY_COMPONENTS = (
     ("nlohmann/json", "MIT"),
 )
 RELEASE_VERSION_PATTERN = re.compile(
-    r"\d+\.\d+\.\d+(?:-(?:(?:rc|beta)\.\d+|nightly\.\d{8}\.[0-9a-f]{7,40}))?"
+    r"\d+\.\d+\.\d+(?:-(?:(?:rc|beta)\.\d+|nightly\.\d{8}\.[0-9a-f]{7,40}"
+    r"|beta\.\d+\.nightly\.\d{8}\.g[0-9a-f]{7,40}))?"
 )
-RELEASE_VERSION_FORMAT = "MAJOR.MINOR.PATCH[-rc.N|-beta.N|-nightly.YYYYMMDD.SHA]"
+RELEASE_VERSION_FORMAT = (
+    "MAJOR.MINOR.PATCH[-rc.N|-beta.N|-nightly.YYYYMMDD.SHA"
+    "|-beta.N.nightly.YYYYMMDD.gSHA]"
+)
 SIGNING_CERT_SHA1_ENV = "EMULEBB_RELEASE_SIGN_CERT_SHA1"
 SIGNING_CERT_PATH_ENV = "EMULEBB_RELEASE_SIGN_CERT_PATH"
 SIGNING_CERT_PASSWORD_ENV = "EMULEBB_RELEASE_SIGN_CERT_PASSWORD"
@@ -681,6 +685,7 @@ def _create_emulebb_rust_linux_packages(
             "schema": "emulebb.rust.package/1",
             "package": "emulebb-rust",
             "version": package_options.release_version,
+            "baseVersion": _emulebb_rust_workspace_version(rust_root),
             "tag": f"rust-v{package_options.release_version}",
             "platform": f"linux-{image_arch}",
             "configuration": workspace_options.configuration,
@@ -795,6 +800,7 @@ def _create_emulebb_rust_macos_package(
         "schema": "emulebb.rust.package/1",
         "package": "emulebb-rust",
         "version": version,
+        "baseVersion": _emulebb_rust_workspace_version(rust_root),
         "tag": f"rust-v{version}",
         "platform": f"macos-{arch}",
         "signed": False,
@@ -1007,9 +1013,12 @@ def build_emulebb_rust_image_ci(
     assets_dir: Path,
     version: str,
     push: bool,
+    channel_tag: str | None = None,
 ) -> Path | None:
     """Builds the two-architecture image from verified native DEB assets."""
 
+    if channel_tag and not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", channel_tag):
+        raise RuntimeError(f"Invalid Rust image channel tag: {channel_tag}")
     assemble_emulebb_rust_release_assets(assets_dir, version)
     output_root = output_root.resolve()
     context = output_root / "packages" / "build" / "emulebb-rust-image"
@@ -1032,6 +1041,8 @@ def build_emulebb_rust_image_ci(
         "--file", str(context / "Dockerfile"), "--build-arg", f"VERSION={version}",
         "--tag", image,
     ]
+    if channel_tag:
+        command.extend(("--tag", f"ghcr.io/emulebb/emulebb-rust:{channel_tag}"))
     archive = None
     if push:
         command.append("--push")
@@ -1045,7 +1056,23 @@ def build_emulebb_rust_image_ci(
 
 
 def _assert_emulebb_rust_version_matches(rust_root: Path, release_version: str) -> None:
-    """Requires the Rust workspace version to match the requested package version."""
+    """Requires a promoted Rust version or a nightly derived from that version."""
+
+    version = _emulebb_rust_workspace_version(rust_root)
+    nightly_pattern = re.compile(
+        rf"{re.escape(version)}\.nightly\.\d{{8}}\.g[0-9a-f]{{7,40}}"
+    )
+    if version == release_version or nightly_pattern.fullmatch(release_version):
+        return
+    raise RuntimeError(
+        f"package emulebb-rust version mismatch: --release-version is '{release_version}' "
+        f"but Cargo.toml workspace.package.version is '{version}'. Nightly packages must use "
+        f"'{version}.nightly.YYYYMMDD.gSHA'."
+    )
+
+
+def _emulebb_rust_workspace_version(rust_root: Path) -> str:
+    """Returns the promoted Cargo workspace version used by a Rust package."""
 
     cargo_toml = rust_root / "Cargo.toml"
     if not cargo_toml.is_file():
@@ -1053,11 +1080,9 @@ def _assert_emulebb_rust_version_matches(rust_root: Path, release_version: str) 
     with cargo_toml.open("rb") as stream:
         manifest = tomllib.load(stream)
     version = str(manifest.get("workspace", {}).get("package", {}).get("version", ""))
-    if version != release_version:
-        raise RuntimeError(
-            f"package emulebb-rust version mismatch: --release-version is '{release_version}' "
-            f"but Cargo.toml workspace.package.version is '{version}'."
-        )
+    if not version:
+        raise RuntimeError(f"Rust workspace package version is missing from {cargo_toml}")
+    return version
 
 
 def _emulebb_rust_native_source_roots(layout: WorkspaceLayout) -> tuple[Path, Path]:
@@ -1201,6 +1226,7 @@ def _build_emulebb_rust_manifest(
         "schema": "emulebb.rust.package/1",
         "package": "emulebb-rust",
         "version": package_options.release_version,
+        "baseVersion": _emulebb_rust_workspace_version(rust_root),
         "tag": f"rust-v{package_options.release_version}",
         "platform": workspace_options.platform,
         "configuration": workspace_options.configuration,

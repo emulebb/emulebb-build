@@ -1783,7 +1783,14 @@ def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path) 
 @click.option("--release-version", required=True)
 @click.option("--assets-dir", type=click.Path(path_type=Path), required=True)
 @click.option("--push", is_flag=True, help="Push the versioned image to GHCR after release approval.")
-def package_emulebb_rust_image_ci(*, release_version: str, assets_dir: Path, push: bool) -> None:
+@click.option("--channel-tag", help="Also tag the image with a validated channel name such as nightly.")
+def package_emulebb_rust_image_ci(
+    *,
+    release_version: str,
+    assets_dir: Path,
+    push: bool,
+    channel_tag: str | None,
+) -> None:
     """Build a verified multi-architecture image from the native DEB assets."""
 
     output_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
@@ -1801,6 +1808,7 @@ def package_emulebb_rust_image_ci(*, release_version: str, assets_dir: Path, pus
             assets_dir=assets_dir,
             version=release_version,
             push=push,
+            channel_tag=channel_tag,
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc

@@ -23,6 +23,7 @@ from emule_workspace.layout import AppVariant, TestTargets, WorkspaceLayout
         "0.7.3-beta.2",
         "0.7.3-nightly.20260524.ae562c1",
         "0.7.3-nightly.20260524.0123456789abcdef",
+        "0.1.0-beta.2.nightly.20261003.g9e43ea5e",
     ],
 )
 def test_release_version_accepts_public_and_nightly_formats(release_version: str) -> None:
@@ -36,11 +37,42 @@ def test_release_version_accepts_public_and_nightly_formats(release_version: str
         "0.7.3-nightly",
         "0.7.3-nightly.2026052.ae562c1",
         "0.7.3-nightly.20260524.zzzzzzz",
+        "0.1.0-beta.2.nightly.20261003.9e43ea5e",
+        "0.1.0-beta.2.nightly.2026103.g9e43ea5e",
         "0.7.3-alpha.1",
     ],
 )
 def test_release_version_rejects_unknown_formats(release_version: str) -> None:
     assert not release._is_release_version(release_version)
+
+
+def test_emulebb_rust_version_accepts_nightly_derived_from_cargo_base(tmp_path: Path) -> None:
+    rust_root = tmp_path / "emulebb-rust"
+    rust_root.mkdir()
+    (rust_root / "Cargo.toml").write_text(
+        '[workspace.package]\nversion = "0.1.0-beta.2"\n',
+        encoding="utf-8",
+    )
+
+    release._assert_emulebb_rust_version_matches(
+        rust_root,
+        "0.1.0-beta.2.nightly.20261003.g9e43ea5e",
+    )
+
+
+def test_emulebb_rust_version_rejects_nightly_from_another_beta(tmp_path: Path) -> None:
+    rust_root = tmp_path / "emulebb-rust"
+    rust_root.mkdir()
+    (rust_root / "Cargo.toml").write_text(
+        '[workspace.package]\nversion = "0.1.0-beta.2"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="Nightly packages must use"):
+        release._assert_emulebb_rust_version_matches(
+            rust_root,
+            "0.1.0-beta.3.nightly.20261003.g9e43ea5e",
+        )
 
 
 def _pe_payload(machine: int) -> bytes:
@@ -1186,6 +1218,7 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["schema"] == "emulebb.rust.package/1"
     assert manifest["version"] == "0.1.0-beta.1"
+    assert manifest["baseVersion"] == "0.1.0-beta.1"
     assert manifest["tag"] == "rust-v0.1.0-beta.1"
     assert manifest["asset"] == zip_path.name
     assert manifest["executable"] == "emulebb-rust/emulebb-rust.exe"
@@ -1364,6 +1397,58 @@ def test_emulebb_rust_image_context_stages_only_verified_debs(
     assert (context / "dist" / "emulebb-rust-v0.1.0-beta.1-linux-arm64.deb").read_bytes() == b"arm64"
     assert commands[0][:3] == ["docker", "buildx", "build"]
     assert "--push" not in commands[0]
+
+
+def test_emulebb_rust_image_can_publish_versioned_and_nightly_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rust_root = tmp_path / "workspace" / "repos" / "emulebb-rust"
+    docker_root = rust_root / "packaging" / "docker"
+    docker_root.mkdir(parents=True)
+    (docker_root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    version = "0.1.0-beta.2.nightly.20261003.g9e43ea5e"
+    assets = tmp_path / "output" / "release" / f"rust-v{version}"
+    assets.mkdir(parents=True)
+    for arch in ("amd64", "arm64"):
+        (assets / f"emulebb-rust-v{version}-linux-{arch}.deb").write_bytes(arch.encode("ascii"))
+    monkeypatch.setattr(release, "assemble_emulebb_rust_release_assets", lambda *_args: assets / "SHA256SUMS")
+    commands: list[list[str]] = []
+    monkeypatch.setattr(release.subprocess, "run", lambda command, **_kwargs: commands.append(command))
+
+    release.build_emulebb_rust_image_ci(
+        rust_root=rust_root,
+        output_root=tmp_path / "output",
+        assets_dir=assets,
+        version=version,
+        push=True,
+        channel_tag="nightly",
+    )
+
+    assert commands[0].count("--tag") == 2
+    assert f"ghcr.io/emulebb/emulebb-rust:{version}" in commands[0]
+    assert "ghcr.io/emulebb/emulebb-rust:nightly" in commands[0]
+    assert "--push" in commands[0]
+
+
+def test_emulebb_rust_image_rejects_invalid_channel_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rust_root = tmp_path / "workspace" / "repos" / "emulebb-rust"
+    docker_root = rust_root / "packaging" / "docker"
+    docker_root.mkdir(parents=True)
+    (docker_root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    assets = tmp_path / "output" / "release" / "rust-v0.1.0-beta.2"
+    assets.mkdir(parents=True)
+    monkeypatch.setattr(release, "assemble_emulebb_rust_release_assets", lambda *_args: assets / "SHA256SUMS")
+
+    with pytest.raises(RuntimeError, match="Invalid Rust image channel tag"):
+        release.build_emulebb_rust_image_ci(
+            rust_root=rust_root,
+            output_root=tmp_path / "output",
+            assets_dir=assets,
+            version="0.1.0-beta.2",
+            push=True,
+            channel_tag="nightly/latest",
+        )
 
 
 def test_emulebb_rust_package_contents_reject_dead_ui_and_diagnostics(tmp_path: Path) -> None:
