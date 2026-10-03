@@ -691,17 +691,22 @@ def remove_rust_target_runtime_artifacts(layout: WorkspaceLayout) -> None:
         layout.output_rust_target_root,
         layout.output_rust_target_root.parent / "target-wsl",
     )
-    release_roots = []
+    profile_roots = []
     for cargo_root in cargo_roots:
-        release_roots.extend(
-            [
-                cargo_root / "release",
-                *(cargo_root / target / "release" for targets in RUST_CLIENT_TARGETS.values() for target in targets.values()),
-            ]
-        )
-    for release_root in release_roots:
+        for profile in ("debug", "release"):
+            profile_roots.extend(
+                [
+                    cargo_root / profile,
+                    *(
+                        cargo_root / target / profile
+                        for targets in RUST_CLIENT_TARGETS.values()
+                        for target in targets.values()
+                    ),
+                ]
+            )
+    for profile_root in profile_roots:
         for name in names:
-            path = release_root / name
+            path = profile_root / name
             if path.exists():
                 path.unlink()
 

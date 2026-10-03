@@ -28,7 +28,7 @@ from .config import (
     VariantComparisonOptions,
     WorkspaceOptions,
 )
-from .build import APP_EXE_NAME, app_build_binary_path, build_apps
+from .build import APP_EXE_NAME, app_build_binary_path, build_apps, remove_rust_target_runtime_artifacts
 from .cleanup import run_pre_test_cleanup
 from .hide_me_split_tunnel import ensure_split_tunnel_apps, restart_hide_me_after_upnp_failure_if_requested
 from .layout import WorkspaceLayout, get_test_build_tag
@@ -1032,8 +1032,18 @@ def invoke_rust_unit_tests(layout: WorkspaceLayout, *, package: str | None = Non
         args.extend(["-p", package])
     else:
         args.append("--workspace")
-    run_native(args, label="eMuleBB Rust tests", cwd=layout.emulebb_rust_repo_root,
-               env=_workspace_env(layout))
+    try:
+        run_native(
+            args,
+            label="eMuleBB Rust tests",
+            cwd=layout.emulebb_rust_repo_root,
+            env=_workspace_env(layout),
+        )
+    finally:
+        # `cargo test` can materialize binary targets even when the selected
+        # package is a library. Keep the staged tools path as the sole runnable
+        # workspace location on both successful and failed test runs.
+        remove_rust_target_runtime_artifacts(layout)
 
 
 def invoke_rust_webui_tests(layout: WorkspaceLayout) -> None:

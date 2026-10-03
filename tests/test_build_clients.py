@@ -204,6 +204,9 @@ def test_stage_emulebb_rust_runtime_copies_rustc_underscore_pdb_name(tmp_path: P
     stale = layout.output_rust_target_root / "release"
     stale.mkdir(parents=True)
     (stale / "emulebb-rust.exe").write_bytes(b"stale")
+    stale_debug = layout.output_rust_target_root / "debug"
+    stale_debug.mkdir(parents=True)
+    (stale_debug / "emulebb-rust.exe").write_bytes(b"stale-debug")
     staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
     staged_bin.mkdir(parents=True)
     (staged_bin / "emulebb-rust-ui.exe").write_bytes(b"dead-ui")
@@ -219,6 +222,7 @@ def test_stage_emulebb_rust_runtime_copies_rustc_underscore_pdb_name(tmp_path: P
     assert not (built / "emulebb-rust-diagnostics.exe").exists()
     assert not (built / "emulebb_rust_diagnostics.pdb").exists()
     assert not (stale / "emulebb-rust.exe").exists()
+    assert not (stale_debug / "emulebb-rust.exe").exists()
 
 
 def test_build_emulebb_rust_client_can_enable_packet_diagnostics(
