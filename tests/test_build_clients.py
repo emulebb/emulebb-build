@@ -225,6 +225,55 @@ def test_stage_emulebb_rust_runtime_copies_rustc_underscore_pdb_name(tmp_path: P
     assert not (stale_debug / "emulebb-rust.exe").exists()
 
 
+def test_rust_runtime_artifact_operation_retries_windows_sharing_violation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = 0
+    sleeps: list[float] = []
+
+    def operation() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            error = PermissionError("locked")
+            error.winerror = 32
+            raise error
+
+    monkeypatch.setattr(build.os, "name", "nt")
+    monkeypatch.setattr(build, "WINDOWS_FILE_LOCK_RETRY_DELAYS", (0.05, 0.1))
+    monkeypatch.setattr(build.time, "sleep", sleeps.append)
+
+    build._retry_windows_file_lock(
+        operation,
+        path=tmp_path / "artifact.pdb",
+        description="replace test artifact",
+    )
+
+    assert attempts == 3
+    assert sleeps == [0.05, 0.1]
+
+
+def test_rust_runtime_artifact_operation_names_persistent_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    locked = tmp_path / "artifact.pdb"
+
+    def operation() -> None:
+        error = PermissionError("locked")
+        error.winerror = 32
+        raise error
+
+    monkeypatch.setattr(build.os, "name", "nt")
+    monkeypatch.setattr(build, "WINDOWS_FILE_LOCK_RETRY_DELAYS", ())
+
+    with pytest.raises(RuntimeError, match=str(locked).replace("\\", "\\\\")):
+        build._retry_windows_file_lock(
+            operation,
+            path=locked,
+            description="replace test artifact",
+        )
+
+
 def test_build_emulebb_rust_client_can_enable_packet_diagnostics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

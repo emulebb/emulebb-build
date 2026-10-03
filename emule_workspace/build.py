@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import os
 import shutil
 import shlex
@@ -435,6 +436,47 @@ STALE_EMULEBB_RUST_UI_ARTIFACTS = (
     "emulebb-rust-ui.pdb",
     "emulebb_rust_ui.pdb",
 )
+WINDOWS_FILE_LOCK_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
+
+
+def _retry_windows_file_lock(
+    operation: Callable[[], None],
+    *,
+    path: Path,
+    description: str,
+) -> None:
+    """Retries a bounded artifact operation after transient Windows file locks."""
+
+    delays = WINDOWS_FILE_LOCK_RETRY_DELAYS if os.name == "nt" else ()
+    for attempt in range(len(delays) + 1):
+        try:
+            operation()
+            return
+        except OSError as exc:
+            locked = os.name == "nt" and getattr(exc, "winerror", None) in {32, 33}
+            if not locked:
+                raise
+            if attempt == len(delays):
+                raise RuntimeError(
+                    f"Could not {description} because another process keeps the file open: {path}"
+                ) from exc
+            time.sleep(delays[attempt])
+
+
+def _copy_rust_runtime_artifact(source: Path, destination: Path) -> None:
+    _retry_windows_file_lock(
+        lambda: shutil.copy2(source, destination),
+        path=destination,
+        description="replace the staged eMuleBB Rust artifact",
+    )
+
+
+def _remove_rust_runtime_artifact(path: Path) -> None:
+    _retry_windows_file_lock(
+        lambda: path.unlink(missing_ok=True),
+        path=path,
+        description="remove the Cargo eMuleBB Rust artifact",
+    )
 
 
 def build_emulebb_rust_client(
@@ -708,7 +750,7 @@ def remove_rust_target_runtime_artifacts(layout: WorkspaceLayout) -> None:
         for name in names:
             path = profile_root / name
             if path.exists():
-                path.unlink()
+                _remove_rust_runtime_artifact(path)
 
 
 def _qbt_vcpkg_toolchain() -> Path:
@@ -928,8 +970,8 @@ def stage_emulebb_rust_runtime(
     bin_root = target_root / "bin"
     bin_root.mkdir(parents=True, exist_ok=True)
     for stale_artifact in STALE_EMULEBB_RUST_UI_ARTIFACTS:
-        (bin_root / stale_artifact).unlink(missing_ok=True)
-    shutil.copy2(exe, bin_root / exe_name)
+        _remove_rust_runtime_artifact(bin_root / stale_artifact)
+    _copy_rust_runtime_artifact(exe, bin_root / exe_name)
     if target_os == "windows":
         staged_pdb_source = None
         for pdb_source_name in rust_pdb_source_names(pdb_name):
@@ -939,7 +981,7 @@ def stage_emulebb_rust_runtime(
                 break
         if staged_pdb_source is not None:
             for staged_pdb_name in rust_pdb_stage_names(pdb_name):
-                shutil.copy2(staged_pdb_source, bin_root / staged_pdb_name)
+                _copy_rust_runtime_artifact(staged_pdb_source, bin_root / staged_pdb_name)
     if not (bin_root / exe_name).is_file():
         raise RuntimeError(f"Staged eMuleBB Rust runtime is missing required file: {bin_root / exe_name}")
     remove_rust_target_runtime_artifacts(layout)
