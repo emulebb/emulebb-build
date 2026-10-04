@@ -28,37 +28,30 @@ from .topology import (
 from .topology import ManagedRepo
 
 ROOT_AGENTS_CONTENT = """Read `EMULEBB_WORKSPACE_ROOT\\repos\\emulebb-tooling\\docs\\WORKSPACE-POLICY.md`
-before making workspace decisions.
+once before making workspace decisions. It is the compact core and routes to
+task-specific policy annexes.
 
-Use `repos` and `workspaces` as the workspace boundaries. For the repeatable
-agent path, start from
-`EMULEBB_WORKSPACE_ROOT\\repos\\emulebb-tooling\\docs\\reference\\AGENT-CHECKLIST.md`.
+Use `repos` and `workspaces` as the workspace boundaries. Infer the active
+project from explicit wording and paths; when product intent remains ambiguous,
+default to `repos\\emulebb-rust`. Read the nearest repo-local `AGENTS.md` and only
+the annexes triggered by the task. Do not sweep the workspace or load unrelated
+MFC, live, release, or fork policy.
 
-Infer the active project from the user's wording and stay scoped to it. If the
-user says `emulebb rust`, focus on `repos\\emulebb-rust`, its Rust-native UI, and
-only the support harness/docs needed for that work. If the user says
-`emulebb mfc`, focus on `workspaces\\workspace\\app\\emulebb-main` and required
-MFC support repos. If the user says `qbittorrentbb`, focus on
-`repos\\qbittorrentbb` and required support only. Do not sweep the whole
-workspace unless the user asks for workspace-wide work or the focused task
-actually needs cross-repo context.
+Pull support repos into scope only when their current files or state are needed.
+For Rust work, this normally means `repos\\emulebb-rust` plus
+`repos\\emulebb-build-tests` for harness/live/profile work,
+`repos\\emulebb-tooling` for product docs, or `repos\\emulebb-build` for
+orchestration. Explicit `emulebb mfc` work uses
+`workspaces\\workspace\\app\\emulebb-main` and only required support repos.
 
 Environment variables are inherited operator state. Do not set or repair
 `EMULEBB_WORKSPACE_ROOT`, `EMULEBB_WORKSPACE_OUTPUT_ROOT`, `CARGO_TARGET_DIR`, or
-`X_LOCAL_IP` inline. If one is missing or wrong, stop and report the preflight
-failure.
+`X_LOCAL_IP` inline. If a selected operation requires a missing or invalid value,
+stop and report the preflight failure.
 
-A persisted Python launcher may propagate already-valid Windows operator state
-across the Windows-to-WSL process boundary. It may translate Windows paths for
-the WSL child and derive a platform-specific Cargo target below the translated
-output root, but it must not mutate the Windows environment, persist duplicate
-WSL configuration, or guess missing source values. Record the translation in
-run evidence. WSL lanes that keep control traffic on loopback do not require
-`X_LOCAL_IP`.
-
-For Rust live soak/profile work, use the policy quickstart and persisted Python
-scripts in `repos\\emulebb-build-tests`; do not use `.ps1`, inline Python, or
-ad-hoc launch logic.
+For Rust live, soak, or profile work, read the routed harness/live annex and use
+the persisted Python scripts in `repos\\emulebb-build-tests`. Do not recreate
+launch or monitoring logic in PowerShell, inline Python, or ad-hoc shell code.
 """
 
 
