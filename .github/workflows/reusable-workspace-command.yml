@@ -124,7 +124,7 @@ jobs:
           python -m emule_workspace materialize
 
       - name: Checkout aMuTorrent source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.amutorrent_repository }}
           path: repos/amutorrent
