@@ -17,7 +17,6 @@ from .build import build_apps as invoke_build_apps
 from .build import build_clients as invoke_build_clients
 from .build import build_ed2k_server as invoke_build_ed2k_server
 from .build import build_libs as invoke_build_libs
-from .build import build_qbittorrentbb_client as invoke_build_qbittorrentbb_client
 from .certification import invoke_certification
 from .cleanup import cleanup_workspace
 from .config import (
@@ -35,7 +34,6 @@ from .config import (
     LocalHammerCampaignOptions,
     LocalPackageInstallOptions,
     MiniupnpcPackageOptions,
-    QbittorrentbbPackageOptions,
     PythonTestOptions,
     ReleasePackageOptions,
     ReleaseCampaignOptions,
@@ -46,7 +44,6 @@ from .config import (
 )
 from .campaign_scenario_runner import invoke_campaign_scenario
 from .evidence import build_heavy_evidence_index, print_heavy_evidence_index, write_heavy_evidence_index
-from .build_state import BuildSession
 from .config import WORKSPACE_OUTPUT_ROOT_ENV
 from .layout import build_ci_layout, load_layout
 from .local_hammer_campaign import invoke_local_hammer_campaign
@@ -61,7 +58,6 @@ from .release import (
     assemble_emulebb_rust_release_assets,
     build_emulebb_rust_image_ci,
     create_emulebb_rust_package,
-    create_qbittorrentbb_package,
     create_release_package,
 )
 from .release_campaign_runner import invoke_release_campaign
@@ -749,10 +745,10 @@ def build_tests(
     "--client",
     "clients",
     multiple=True,
-    type=click.Choice(["amule", "emulebb-rust", "qbittorrentbb"]),
+    type=click.Choice(["amule", "emulebb-rust"]),
     help=(
         "Optional P2P client to build. Defaults to emulebb-rust. "
-        "aMule uses the managed official upstream checkout; qbittorrentbb honors EMULEBB_QBT_STATIC for a static single-exe build."
+        "aMule uses the managed official upstream checkout."
     ),
 )
 def build_clients(
@@ -793,39 +789,6 @@ def build_ed2k_server(
         "build ed2k-server",
         lambda **kwargs: invoke_build_ed2k_server(kwargs["layout"], kwargs["workspace_options"], clean=clean),
     )(workspace_options=workspace_options, layout=layout)
-
-
-@build.command("qbittorrentbb-ci")
-@click.option("--clean", is_flag=True, help="Clean qbittorrentbb/libtorrent build trees before building.")
-@click.option("--static/--dynamic", default=True, show_default=True, help="Static single-exe build (vcpkg x64-windows-static incl. Qt6) vs dynamic dev build.")
-@click.option("--stage", type=click.Choice(["all", "libtorrent", "qbittorrent"]), default="all", show_default=True, help="Build only the engine, only the app (reusing the installed engine), or both.")
-@click.option("--config", "configuration", type=click.Choice(["Debug", "Release"]), default="Release", show_default=True)
-@click.option("--platform", type=click.Choice(["x64", "ARM64"]), default="x64", show_default=True)
-def build_qbittorrentbb_ci(*, clean: bool, static: bool, stage: str, configuration: str, platform: str) -> None:
-    """Build qBittorrentBB on CI from fork checkouts, without a materialized workspace.
-
-    Reads the fork roots from EMULEBB_QBT_REPO / EMULEBB_LIBTORRENT_REPO and the
-    output root from EMULEBB_WORKSPACE_OUTPUT_ROOT, so a fork-scoped GitHub runner
-    needs no full workspace topology. Honors VCPKG_ROOT for the vcpkg toolchain.
-    """
-
-    output_root_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
-    if not output_root_value:
-        raise click.ClickException(f"{WORKSPACE_OUTPUT_ROOT_ENV} is required.")
-
-    layout = build_ci_layout(output_root=Path(output_root_value))
-    options = WorkspaceOptions(
-        workspace_root=layout.workspace_root,
-        output_root=layout.output_root,
-        workspace_name="ci",
-        configuration=configuration,
-        platform=platform,
-    )
-    session = BuildSession(layout=layout, options=options, command_name="build qbittorrentbb-ci", clean=clean)
-    try:
-        invoke_build_qbittorrentbb_client(session, clean=clean, static=static, stage=stage)
-    finally:
-        session.write_recap()
 
 
 @build.command("all")
@@ -1769,38 +1732,6 @@ def package_miniupnpc(
         "package miniupnpc",
         lambda **kwargs: create_miniupnpc_package(kwargs["layout"], kwargs["workspace_options"], package_options),
     )(workspace_options=workspace_options, layout=layout)
-
-
-@main.command("package-qbittorrentbb")
-@click.option("--clean", is_flag=True, help="Remove the prior release root for this version before staging.")
-@click.option("--release-version", default="0.0.0-dev", show_default=True, help="Package version: MAJOR.MINOR.PATCH[-suffix].")
-@click.option("--platform", type=click.Choice(["x64", "ARM64"]), default="x64", show_default=True)
-def package_qbittorrentbb(*, clean: bool, release_version: str, platform: str) -> None:
-    """Package the static qbittorrent.exe (ZIP + manifest + SBOM, unsigned).
-
-    Consumes the single-exe produced by `build qbittorrentbb-ci --static` under
-    EMULEBB_WORKSPACE_OUTPUT_ROOT and the fork checkouts referenced by
-    EMULEBB_QBT_REPO / EMULEBB_LIBTORRENT_REPO, so it runs on CI without a
-    materialized workspace.
-    """
-
-    output_root_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
-    if not output_root_value:
-        raise click.ClickException(f"{WORKSPACE_OUTPUT_ROOT_ENV} is required.")
-
-    layout = build_ci_layout(output_root=Path(output_root_value))
-    options = WorkspaceOptions(
-        workspace_root=layout.workspace_root,
-        output_root=layout.output_root,
-        workspace_name="ci",
-        configuration="Release",
-        platform=platform,
-    )
-    package_options = QbittorrentbbPackageOptions(release_version=release_version, clean=clean)
-    try:
-        create_qbittorrentbb_package(layout, options, package_options)
-    except Exception as exc:
-        raise click.ClickException(str(exc)) from exc
 
 
 @main.command("install-local-package")

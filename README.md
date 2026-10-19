@@ -113,9 +113,7 @@ python -m emule_workspace vm-lab prepare
 
 `build clients` defaults to the materialized `emulebb-rust` client. The managed
 `repos\amule` checkout tracks official `amule-org/amule` and is available through
-`--client amule`. The paused qBittorrentBB experiment and its
-`emulebb-libtorrent` fork remain excluded from default materialization; their
-explicit build commands remain available for manually maintained local checkouts.
+`--client amule`.
 
 ## Suite Installer Examples
 

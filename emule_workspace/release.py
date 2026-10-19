@@ -13,7 +13,6 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-import urllib.request
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,14 +32,12 @@ from .artifact_names import utc_run_id
 from .build_state import BuildSession
 from .config import (
     EmulebbRustPackageOptions,
-    QbittorrentbbPackageOptions,
     ReleasePackageOptions,
     WorkspaceOptions,
 )
 from .git import git_output, repo_branch, repo_head, repo_status_lines
 from .layout import AppVariant, WorkspaceLayout
 from .msbuild import env_override, invoke_msbuild_project
-from .qbittorrentbb_runtime import stage_qbittorrentbb_runtime
 
 PE_MACHINES = {"x64": 0x8664, "ARM64": 0xAA64}
 STARTUP_DIAGNOSTICS_BINARY_MARKERS = (
@@ -196,137 +193,6 @@ EMULEBB_PACKAGE_ROOT_NAME = "eMuleBB"
 EMULEBB_RELEASE_ASSET_ROOT_NAME = "emulebb"
 
 
-
-
-def create_qbittorrentbb_package(
-    layout: WorkspaceLayout,
-    workspace_options: WorkspaceOptions,
-    package_options: QbittorrentbbPackageOptions,
-) -> None:
-    """Packages qBittorrentBB into a ZIP plus manifest and SBOM.
-
-    Consumes the qbittorrent.exe produced by `build qbittorrentbb-ci` (under the
-    output build root) and the qbittorrentbb / emulebb-libtorrent fork checkouts
-    (env-overridable, so this runs on CI without a materialized workspace). When
-    EMULEBB_QT_PREFIX is set the package is a folder build (like upstream
-    qBittorrent): the exe plus its runtime DLLs (Qt6, OpenSSL, zlib, libtorrent,
-    discovered via dumpbin) and the Qt plugins. Artifacts are always unsigned.
-    """
-
-    if workspace_options.configuration != "Release":
-        raise RuntimeError("package qbittorrentbb requires --config Release.")
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?", package_options.release_version):
-        raise RuntimeError(
-            "qBittorrentBB package version must be MAJOR.MINOR.PATCH[-suffix]: "
-            f"{package_options.release_version}"
-        )
-
-    asset_arch = "arm64" if workspace_options.platform == "ARM64" else "x64"
-    exe_source = (
-        layout.output_build_root / "qbittorrentbb" / workspace_options.configuration / "qbittorrent.exe"
-    )
-    if not exe_source.is_file():
-        raise RuntimeError(
-            f"qbittorrent.exe not found: {exe_source}. Run build qbittorrentbb-ci first."
-        )
-
-    qbt_env = os.environ.get("EMULEBB_QBT_REPO", "").strip()
-    lt_env = os.environ.get("EMULEBB_LIBTORRENT_REPO", "").strip()
-    qbt_root = Path(qbt_env) if qbt_env else layout.resolve_workspace_path("repos/qbittorrentbb")
-    lt_root = Path(lt_env) if lt_env else layout.resolve_workspace_path("repos/third_party/emulebb-libtorrent")
-
-    version = package_options.release_version
-    release_root = layout.output_release_root / f"qbittorrentbb-{version}"
-    staging_root = release_root / "staging" / f"qbittorrentbb-{asset_arch}"
-    package_root = staging_root / "qBittorrentBB"
-    zip_path = release_root / f"qbittorrentbb-{version}-{asset_arch}.zip"
-    manifest_path = release_root / f"qbittorrentbb-{version}-{asset_arch}.manifest.json"
-    sbom_path = release_root / f"qbittorrentbb-{version}-{asset_arch}.sbom.spdx.json"
-    for path_to_check in (staging_root, package_root, zip_path, manifest_path, sbom_path):
-        _assert_path_under_root(path_to_check, release_root, "qBittorrentBB package path")
-
-    if package_options.clean and release_root.exists():
-        shutil.rmtree(release_root)
-    if staging_root.exists():
-        shutil.rmtree(staging_root)
-    package_root.mkdir(parents=True, exist_ok=True)
-
-    shutil.copy2(exe_source, package_root / "qbittorrent.exe")
-
-    # Folder build (like upstream qBittorrent): when a dynamic Qt prefix is given,
-    # bundle the exe's runtime DLLs (discovered via dumpbin) and the Qt plugins.
-    qt_prefix_env = os.environ.get("EMULEBB_QT_PREFIX", "").strip()
-    bundled_runtime: list[str] = []
-    if qt_prefix_env:
-        qt_prefix = Path(qt_prefix_env)
-        search_dirs = [
-            exe_source.parent,
-            qt_prefix / "bin",
-            layout.output_third_party_build_root / "deps" / "libtorrent" / "bin",
-            layout.output_third_party_build_root / "emulebb-libtorrent" / workspace_options.configuration,
-        ]
-        staged_runtime = stage_qbittorrentbb_runtime(
-            executable=package_root / "qbittorrent.exe",
-            target_root=package_root,
-            qt_prefix=qt_prefix,
-            qbt_root=qbt_root,
-            search_dirs=search_dirs,
-        )
-        bundled_runtime = staged_runtime.bundled_runtime
-    linkage = ("dynamic Qt6 folder build (runtime DLLs + plugins bundled)"
-               if qt_prefix_env else "static (vcpkg x64-windows-static, single exe)")
-
-    license_source = _qbittorrentbb_license(qbt_root)
-    if license_source is not None:
-        _copy_package_file(license_source, package_root, Path("COPYING.txt"))
-    _write_qbittorrentbb_readme(package_root, version, asset_arch)
-    _write_qbittorrentbb_sbom(
-        workspace_options=workspace_options,
-        qbt_root=qbt_root,
-        lt_root=lt_root,
-        package_root=package_root,
-        release_root=release_root,
-        asset_name=zip_path.name,
-        version=version,
-    )
-
-    if zip_path.exists():
-        zip_path.unlink()
-    release_root.mkdir(parents=True, exist_ok=True)
-    _write_zip(staging_root, package_root, zip_path)
-
-    zip_hash = _sha256(zip_path)
-    exe_hash = _sha256(package_root / "qbittorrent.exe")
-    package_file_hashes = _zip_entry_hashes(zip_path)
-    shutil.copy2(package_root / "SBOM.spdx.json", sbom_path)
-    sbom_hash = _sha256(sbom_path)
-    manifest = {
-        "schema": "emulebb.qbittorrentbb.package/1",
-        "name": f"qbittorrentbb-{version}-{asset_arch}",
-        "version": version,
-        "platform": workspace_options.platform,
-        "configuration": workspace_options.configuration,
-        "signed": False,
-        "linkage": linkage,
-        "bundledRuntime": bundled_runtime,
-        "builtUtc": datetime.now(timezone.utc).isoformat(),
-        "asset": zip_path.name,
-        "sha256": zip_hash,
-        "executable": "qBittorrentBB/qbittorrent.exe",
-        "executableSha256": exe_hash,
-        "sbom": sbom_path.name,
-        "sbomSha256": sbom_hash,
-        "perFileSha256": package_file_hashes,
-        "source": {
-            "qbittorrentbb": _package_repo_provenance(qbt_root),
-            "emulebbLibtorrent": _package_repo_provenance(lt_root),
-        },
-    }
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
-    print(f"qBittorrentBB package: {zip_path}")
-    print(f"qBittorrentBB manifest: {manifest_path}")
-    print(f"qBittorrentBB SBOM: {sbom_path}")
-    print(f"SHA256: {zip_hash}")
 
 
 def create_emulebb_rust_package(
@@ -838,15 +704,6 @@ def _run_packaging_tool(command: tuple[str, ...], label: str) -> None:
         raise RuntimeError(f"{label} failed with exit code {completed.returncode}: {detail}")
 
 
-def _qbittorrentbb_license(qbt_root: Path) -> Path | None:
-    """Returns the qBittorrentBB license file, if present in the fork checkout."""
-
-    for candidate in ("COPYING", "LICENSE", "LICENSE.txt"):
-        path = qbt_root / candidate
-        if path.is_file():
-            return path
-    return None
-
 
 def _package_repo_provenance(repo_path: Path) -> dict[str, str]:
     """Returns compact git provenance (commit, branch, remote) for a fork checkout."""
@@ -1155,53 +1012,6 @@ def _write_sha256sums(sums_path: Path, paths: tuple[Path, ...]) -> None:
     release_root = sums_path.parent
     lines = [f"{_sha256(path)}  {path.relative_to(release_root).as_posix()}" for path in paths]
     sums_path.write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
-
-
-def _write_qbittorrentbb_readme(package_root: Path, version: str, asset_arch: str) -> None:
-    """Writes a short README into the staged qBittorrentBB package."""
-
-    readme = (
-        f"qBittorrentBB {version} ({asset_arch})\n"
-        f"{'=' * 40}\n\n"
-        "Statically linked single-executable build (vcpkg x64-windows-static,\n"
-        "Qt6 and engine dependencies linked in). No accompanying DLLs are required.\n\n"
-        "This artifact is unsigned. Verify integrity with the SHA-256 recorded in\n"
-        "the accompanying .manifest.json before running.\n\n"
-        "qBittorrentBB is a fork of qBittorrent. See COPYING.txt for license terms.\n"
-    )
-    (package_root / "README.txt").write_text(readme, encoding="utf-8", newline="\n")
-
-
-def _write_qbittorrentbb_sbom(
-    *,
-    workspace_options: WorkspaceOptions,
-    qbt_root: Path,
-    lt_root: Path,
-    package_root: Path,
-    release_root: Path,
-    asset_name: str,
-    version: str,
-) -> None:
-    """Writes a package-local SPDX SBOM for the static qBittorrentBB asset."""
-
-    sbom_path = package_root / "SBOM.spdx.json"
-    _assert_path_under_root(sbom_path, package_root, "qBittorrentBB package SBOM")
-    components = [
-        _repo_spdx_package("qBittorrentBB source", qbt_root, declared_license="GPL-2.0-or-later"),
-        _repo_spdx_package("emulebb-libtorrent engine", lt_root, declared_license="BSD-3-Clause"),
-    ]
-    document = _build_spdx_sbom(
-        name=f"qBittorrentBB {version} {workspace_options.platform} static package",
-        namespace=f"https://github.com/emulebb/qbittorrentbb/releases/download/v{version}/{asset_name}.sbom",
-        package_name=f"qbittorrentbb-{version}-{workspace_options.platform}",
-        package_version=version,
-        package_license="GPL-2.0-or-later",
-        package_comment="Statically linked single-exe qBittorrentBB package (unsigned).",
-        package_root=package_root,
-        release_root=release_root,
-        components=components,
-    )
-    sbom_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def create_release_package(

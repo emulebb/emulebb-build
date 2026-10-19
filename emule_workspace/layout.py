@@ -217,11 +217,11 @@ def _normcase_path(path: Path) -> str:
 def build_ci_layout(*, output_root: Path, toolset_override_variable: str = "") -> WorkspaceLayout:
     """Builds a minimal layout for fork-scoped CI builds (no materialized workspace).
 
-    GitHub CI checks out only the relevant forks and points the build at them via
-    environment overrides (e.g. EMULEBB_QBT_REPO / EMULEBB_LIBTORRENT_REPO), so it
-    needs no workspace manifest -- only the output root where generated build
-    artifacts go. Workspace/repo roots that such a build never touches are filled
-    with the emulebb-build checkout as a harmless, existing-directory sentinel.
+    GitHub CI checks out only the relevant sources and points the build at them via
+    explicit environment state, so it needs no workspace manifest -- only the
+    output root where generated build artifacts go. Workspace/repo roots that such
+    a build never touches are filled with the emulebb-build checkout as a harmless,
+    existing-directory sentinel.
     """
 
     resolved_output_root = output_root.expanduser().resolve()

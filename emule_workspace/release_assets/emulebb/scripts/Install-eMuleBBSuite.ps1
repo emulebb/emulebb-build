@@ -2237,8 +2237,8 @@ function Install-P2pClient {
         Assert-FileHash -Path $archivePath -ExpectedSha256 $spec.Sha256
         Save-DependencyCache -Kind 'p2p' -Name "$display package" -AssetName $assetName -ExpectedSha256 $spec.Sha256 -Source $archivePath
     }
-    # The release ZIP has a single top-level folder (the package root, e.g.
-    # qBittorrentBB); reuse the named-root extractor so it lands at apps\<Root>.
+    # The release ZIP has a single top-level package folder; reuse the named-root
+    # extractor so it lands at apps\<Root>.
     $destination = if ([string]::IsNullOrWhiteSpace([string]$Meta.Destination)) { "apps\$Name" } else { [string]$Meta.Destination }
     $packageRoot = [IO.Path]::GetFileName($destination.TrimEnd('\'))
     Install-VerifiedReleaseZip -Name $packageRoot -ArchivePath $archivePath -Destination (Join-Path $script:Root 'apps')

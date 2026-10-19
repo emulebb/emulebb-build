@@ -14,7 +14,7 @@ BuildConfiguration = Literal["Debug", "Release"]
 BuildPlatform = Literal["x64", "ARM64"]
 BuildOutputMode = Literal["Full", "Warnings", "ErrorsOnly"]
 PackageFlavor = Literal["standard", "diagnostics"]
-ClientBuildTarget = Literal["amule", "emulebb-rust", "qbittorrentbb"]
+ClientBuildTarget = Literal["amule", "emulebb-rust"]
 RustTargetOs = Literal["windows", "linux", "macos"]
 ACTIVE_EMULEBB_RELEASE_VERSION = "0.7.3-rc.2"
 WORKSPACE_ROOT_ENV = "EMULEBB_WORKSPACE_ROOT"
@@ -359,15 +359,6 @@ class MiniupnpcPackageOptions(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     release_version: str = "2.3.3-emulebb.1"
-    clean: bool = False
-
-
-class QbittorrentbbPackageOptions(BaseModel):
-    """Options for packaging the static qBittorrentBB single-exe artifact."""
-
-    model_config = ConfigDict(frozen=True)
-
-    release_version: str = "0.0.0-dev"
     clean: bool = False
 
 
