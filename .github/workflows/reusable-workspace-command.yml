@@ -30,14 +30,6 @@ on:
         required: false
         type: string
         default: ""
-      amutorrent_repository:
-        required: false
-        type: string
-        default: emulebb/amutorrent
-      amutorrent_ref:
-        required: false
-        type: string
-        default: ""
       build_ref:
         required: false
         type: string
@@ -123,19 +115,11 @@ jobs:
           $ErrorActionPreference = "Stop"
           python -m emule_workspace materialize
 
-      - name: Checkout aMuTorrent source
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ inputs.amutorrent_repository }}
-          path: repos/amutorrent
-
       - name: Align requested source refs
         shell: pwsh
         env:
           APP_REPOSITORY: ${{ inputs.app_repository }}
           APP_REF: ${{ inputs.app_ref }}
-          AMUTORRENT_REPOSITORY: ${{ inputs.amutorrent_repository }}
-          AMUTORRENT_REF: ${{ inputs.amutorrent_ref }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -162,12 +146,6 @@ jobs:
             -RepoPath (Join-Path $env:EMULEBB_WORKSPACE_ROOT "workspaces\workspace\app\emulebb-main") `
             -Repository $env:APP_REPOSITORY `
             -Ref $env:APP_REF `
-            -Branch "main"
-
-          Reset-RepoRef `
-            -RepoPath (Join-Path $env:EMULEBB_WORKSPACE_ROOT "repos\amutorrent") `
-            -Repository $env:AMUTORRENT_REPOSITORY `
-            -Ref $env:AMUTORRENT_REF `
             -Branch "main"
 
       - name: Set up Node
