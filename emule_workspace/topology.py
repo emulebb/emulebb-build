@@ -382,11 +382,10 @@ def canonical_topology(*, include_analysis: bool = False) -> WorkspaceTopology:
             ),
             ManagedRepo(
                 name="emuleai",
-                url="https://github.com/emulebb/emulebb-ai.git",
+                url="https://github.com/eMuleAI/eMuleAI.git",
                 relative_path="analysis\\emuleai",
                 branch="master",
                 compare_subdir="srchybrid",
-                additional_remotes=(AdditionalRemote(name="upstream", url="https://github.com/eMuleAI/eMuleAI.git"),),
             ),
         )
         if include_analysis

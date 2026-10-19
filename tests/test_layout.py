@@ -151,13 +151,11 @@ def test_canonical_topology_manages_amule_and_keeps_other_analysis_references_op
     assert amule_role["role"] == "upstream-parity-reference"
     assert amule_role["group"] == "product-family"
     emuleai = analysis_repos["emuleai"]
-    assert emuleai.url == "https://github.com/emulebb/emulebb-ai.git"
+    assert emuleai.url == "https://github.com/eMuleAI/eMuleAI.git"
     assert emuleai.relative_path == "analysis\\emuleai"
     assert emuleai.branch == "master"
     assert emuleai.compare_subdir == "srchybrid"
-    assert tuple((remote.name, remote.url) for remote in emuleai.additional_remotes) == (
-        ("upstream", "https://github.com/eMuleAI/eMuleAI.git"),
-    )
+    assert emuleai.additional_remotes == ()
 
 
 def test_canonical_topology_materializes_emulebb_rust_under_repos() -> None:
