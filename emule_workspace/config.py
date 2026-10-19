@@ -418,15 +418,6 @@ class EmulebbRustPackageOptions(BaseModel):
     target_os: RustTargetOs = "windows"
 
 
-class AmulePackageOptions(BaseModel):
-    """Options for building the optional aMule Windows package artifact."""
-
-    model_config = ConfigDict(frozen=True)
-
-    release_version: str = "3.0.0-emulebb.1"
-    clean: bool = False
-
-
 class MiniupnpcPackageOptions(BaseModel):
     """Options for building the optional MiniUPnP CLI package artifact."""
 

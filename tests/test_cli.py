@@ -580,16 +580,6 @@ def test_package_amutorrent_help_exposes_release_version() -> None:
     assert "0.7.3" in result.output
 
 
-def test_package_amule_help_exposes_release_version() -> None:
-    runner = CliRunner()
-
-    result = runner.invoke(cli.main, ["package-amule", "--help"])
-
-    assert result.exit_code == 0
-    assert "--release-version" in result.output
-    assert "3.0.0-emulebb.1" in result.output
-
-
 def test_package_miniupnpc_help_exposes_release_version() -> None:
     runner = CliRunner()
 
