@@ -137,7 +137,9 @@ _MULTI_CLIENT_MATRIX_VALUE_OPTIONS = {
     "--ed2k-server-repo",
     "--ed2k-server-exe",
     "--emuleai-exe",
+    "--stock-emule-exe",
     "--amule-daemon-exe",
+    "--amule-exe",
     "--amule-control-exe",
     "--require-scenario",
 }

@@ -619,6 +619,13 @@ def test_campaign_execute_dispatches_multi_client_matrix_script(
     ]
 
 
+def test_release_campaign_allows_external_parity_runtime_overrides() -> None:
+    assert "--stock-emule-exe" in release_campaign_runner._MULTI_CLIENT_MATRIX_VALUE_OPTIONS
+    assert "--amule-daemon-exe" in release_campaign_runner._MULTI_CLIENT_MATRIX_VALUE_OPTIONS
+    assert "--amule-exe" in release_campaign_runner._MULTI_CLIENT_MATRIX_VALUE_OPTIONS
+    assert "--amule-control-exe" in release_campaign_runner._MULTI_CLIENT_MATRIX_VALUE_OPTIONS
+
+
 def test_campaign_execute_dispatches_approved_rust_overnight_helper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
