@@ -45,10 +45,11 @@ In practice this repo needs:
 
 The default `core` profile includes the MFC diagnostic/release worktrees, their
 third-party dependencies, the current stock 0.72 reference, aMule, the Rust
-client, and the upstream-following Rust ED2K server. Archived analysis,
-retired product-family, and public-presence repositories are not declared or
-materialized by workspace setup. The retired Go server is likewise not managed
-or materialized by this workspace.
+client, and the upstream-following Rust ED2K server. Archived analysis and
+retired product-family repositories are not declared or materialized by
+workspace setup. The optional `public-presence` profile adds only the root
+organization Pages site and organization profile repositories. The retired Go
+server is not managed or materialized by any profile.
 
 `repos\emulebb` is not a normal development checkout. Python materialization owns
 it as the canonical app anchor, and it is expected to stay detached at
@@ -85,6 +86,7 @@ Python-first commands:
 ```powershell
 python -m emule_workspace materialize
 python -m emule_workspace sync
+python -m emule_workspace sync --profile public-presence
 python -m emule_workspace status
 python -m emule_workspace dep-updates
 python -m emule_workspace compare

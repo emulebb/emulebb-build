@@ -75,6 +75,7 @@ from .test_runs import (
     invoke_protocol_parity,
     invoke_test_runs,
 )
+from .topology import OPTIONAL_WORKSPACE_PROFILES
 from .validation import validate_workspace
 from .windows_vm_lab import (
     VmManualOptions,
@@ -360,7 +361,14 @@ def main() -> None:
 @main.command()
 @click.option("--workspace-name", default=None, help="Workspace name. Defaults to canonical topology.")
 @click.option("--artifacts-seed-root", default=None, help="Optional third-party artifact seed root.")
-def materialize(*, workspace_name: str | None, artifacts_seed_root: str | None) -> None:
+@click.option(
+    "--profile",
+    "profiles",
+    multiple=True,
+    type=click.Choice(OPTIONAL_WORKSPACE_PROFILES),
+    help="Add an optional repository profile. The core profile is always materialized.",
+)
+def materialize(*, workspace_name: str | None, artifacts_seed_root: str | None, profiles: tuple[str, ...]) -> None:
     """Materialize a new canonical workspace around this emulebb-build clone."""
 
     try:
@@ -369,6 +377,7 @@ def materialize(*, workspace_name: str | None, artifacts_seed_root: str | None) 
             workspace_root=str(workspace_root),
             workspace_name=workspace_name,
             artifacts_seed_root=artifacts_seed_root,
+            profiles=profiles,
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
@@ -377,7 +386,14 @@ def materialize(*, workspace_name: str | None, artifacts_seed_root: str | None) 
 @main.command()
 @click.option("--workspace-name", default=None, help="Workspace name. Defaults to canonical topology.")
 @click.option("--artifacts-seed-root", default=None, help="Optional third-party artifact seed root.")
-def sync(*, workspace_name: str | None, artifacts_seed_root: str | None) -> None:
+@click.option(
+    "--profile",
+    "profiles",
+    multiple=True,
+    type=click.Choice(OPTIONAL_WORKSPACE_PROFILES),
+    help="Add an optional repository profile. The core profile is always synchronized.",
+)
+def sync(*, workspace_name: str | None, artifacts_seed_root: str | None, profiles: tuple[str, ...]) -> None:
     """Synchronize setup-owned workspace state."""
 
     try:
@@ -386,6 +402,7 @@ def sync(*, workspace_name: str | None, artifacts_seed_root: str | None) -> None
             workspace_root=str(workspace_root),
             workspace_name=workspace_name,
             artifacts_seed_root=artifacts_seed_root,
+            profiles=profiles,
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc

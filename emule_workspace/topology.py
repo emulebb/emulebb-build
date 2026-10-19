@@ -16,7 +16,9 @@ REPO_ROLE_MANIFEST_NAME = "repo-roles.json"
 REPO_ROLE_MANIFEST_SCHEMA_VERSION = 2
 DEFAULT_WORKSPACE_NAME = "workspace"
 CORE_WORKSPACE_PROFILE = "core"
-WORKSPACE_PROFILES = (CORE_WORKSPACE_PROFILE,)
+PUBLIC_PRESENCE_PROFILE = "public-presence"
+OPTIONAL_WORKSPACE_PROFILES = (PUBLIC_PRESENCE_PROFILE,)
+WORKSPACE_PROFILES = (CORE_WORKSPACE_PROFILE, *OPTIONAL_WORKSPACE_PROFILES)
 WORKSPACE_PROPS_FILE_NAME = "workspace.props"
 SETUP_LOG_FILE_NAME = "emulebb-workspace.log"
 SHARED_HOOK_REPO_NAMES = frozenset(
@@ -247,7 +249,11 @@ def build_workspace_manifest(topology: WorkspaceTopology, workspace_name: str | 
                 "emulebb_rust": _workspace_relative_repo_path(repo_by_name["emulebb-rust"]),
                 "third_party": str(workspace_prefix / "repos" / "third_party"),
             },
-            "optional_repos": {},
+            "optional_repos": {
+                key: _workspace_relative_repo_path(repo_by_name[repo_name])
+                for key, repo_name in (("pages", "emulebb-pages"), ("org_profile", "emulebb-org-profile"))
+                if repo_name in repo_by_name
+            },
         },
     }
 
@@ -329,6 +335,8 @@ def _repo_role(repo: ManagedRepo) -> str:
         "ed2k-server": "local-ed2k-test-server",
         "amule": "upstream-parity-reference",
         "emule-stock": "upstream-stock-compatibility-reference",
+        "emulebb-pages": "public-docs-site",
+        "emulebb-org-profile": "public-org-profile",
         "emulebb-rust": "headless-rust-client",
         "p2p-overlord-agents": "p2p-overlord-suite",
         "p2p-overlord-be": "p2p-overlord-suite",
@@ -339,6 +347,8 @@ def _repo_role(repo: ManagedRepo) -> str:
 def _repo_group(repo: ManagedRepo) -> str:
     if repo.name in {"emulebb-build", "emulebb-build-tests", "emulebb-tooling"}:
         return "workspace"
+    if repo.name in {"emulebb-pages", "emulebb-org-profile"}:
+        return "public-presence"
     return "product-family"
 
 
@@ -417,6 +427,24 @@ def canonical_topology(*, profiles: Iterable[str] = ()) -> WorkspaceTopology:
                 additional_remotes=(
                     AdditionalRemote(name="upstream", url="https://github.com/andrey23127/ed2k-server.git"),
                 ),
+            ),
+            *(
+                (
+                    ManagedRepo(
+                        name="emulebb-pages",
+                        url="https://github.com/emulebb/emulebb.github.io.git",
+                        relative_path="repos\\emulebb-pages",
+                        branch="main",
+                    ),
+                    ManagedRepo(
+                        name="emulebb-org-profile",
+                        url="https://github.com/emulebb/.github.git",
+                        relative_path="repos\\emulebb-org-profile",
+                        branch="main",
+                    ),
+                )
+                if PUBLIC_PRESENCE_PROFILE in selected_profiles
+                else ()
             ),
             ManagedRepo(
                 name="emulebb-rust",

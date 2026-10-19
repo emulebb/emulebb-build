@@ -33,8 +33,6 @@ RETIRED_REPO_NAMES = frozenset(
         "amutorrent",
         "qbittorrentbb",
         "trackmulebb",
-        "emulebb-pages",
-        "emulebb-org-profile",
     }
 )
 RETIRED_REPO_PATHS = frozenset(
@@ -46,8 +44,6 @@ RETIRED_REPO_PATHS = frozenset(
         "repos\\amutorrent",
         "repos\\qbittorrentbb",
         "repos\\trackmulebb",
-        "repos\\emulebb-pages",
-        "repos\\emulebb-org-profile",
     }
 )
 
@@ -161,10 +157,32 @@ def test_canonical_topology_materializes_ed2k_server_fork_under_repos() -> None:
     )
 
 
-@pytest.mark.parametrize("profile", ("historical-analysis", "public-presence", "legacy-go-server"))
+@pytest.mark.parametrize("profile", ("historical-analysis", "legacy-go-server"))
 def test_canonical_topology_rejects_retired_profiles(profile: str) -> None:
     with pytest.raises(ValueError, match=f"Unknown workspace profiles: {profile}"):
         canonical_topology(profiles=(profile,))
+
+
+def test_public_presence_profile_is_explicit_and_manifested() -> None:
+    topology = canonical_topology(profiles=("public-presence",))
+    repos = {repo.name: repo for repo in topology.repos}
+
+    assert topology.profiles == ("core", "public-presence")
+    assert repos["emulebb-pages"].relative_path == "repos\\emulebb-pages"
+    assert repos["emulebb-org-profile"].relative_path == "repos\\emulebb-org-profile"
+
+    workspace_manifest = build_workspace_manifest(topology, "workspace")
+    assert workspace_manifest["workspace"]["optional_repos"] == {
+        "pages": "..\\..\\repos\\emulebb-pages",
+        "org_profile": "..\\..\\repos\\emulebb-org-profile",
+    }
+
+    role_manifest = build_repo_role_manifest(topology, "workspace")
+    role_repos = {repo["name"]: repo for repo in role_manifest["repos"]}
+    assert role_repos["emulebb-pages"]["role"] == "public-docs-site"
+    assert role_repos["emulebb-pages"]["group"] == "public-presence"
+    assert role_repos["emulebb-org-profile"]["role"] == "public-org-profile"
+    assert role_repos["emulebb-org-profile"]["group"] == "public-presence"
 
 
 def test_canonical_topology_manages_current_compatibility_references() -> None:
