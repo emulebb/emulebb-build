@@ -24,8 +24,6 @@ class SuiteInstallerOptions:
     installer_script: Path
     release_version: str
     platform: str
-    amutorrent_port: int
-    amutorrent_lan_bind_address: str
     lan_bind_address: str | None
     emulebb_lan_bind_address: str | None
     emulebb_port: int
@@ -118,8 +116,6 @@ def build_suite_installer_invocation(*, powershell: Path, options: SuiteInstalle
         options.install_kind,
         "-EmulebbPackageFlavor",
         options.emulebb_package_flavor,
-        "-AmutorrentPort",
-        str(options.amutorrent_port),
         "-EmulebbPort",
         str(options.emulebb_port),
         "-ProwlarrPort",
@@ -142,8 +138,6 @@ def build_suite_installer_invocation(*, powershell: Path, options: SuiteInstalle
         command.extend(("-ControlBindAddress", options.lan_bind_address))
     if options.emulebb_lan_bind_address:
         command.extend(("-EmulebbBindAddress", options.emulebb_lan_bind_address))
-    if options.amutorrent_lan_bind_address:
-        command.extend(("-AmutorrentBindAddress", options.amutorrent_lan_bind_address))
     if options.dependency_manifest:
         command.extend(("-DependencyManifest", str(options.dependency_manifest)))
     if options.import_profile_dir:

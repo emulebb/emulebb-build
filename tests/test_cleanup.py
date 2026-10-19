@@ -93,11 +93,6 @@ def test_product_family_outputs_are_explicit_cleanup(tmp_path: Path) -> None:
         layout.p2p_overlord_be_repo_root / "overlord-be-coordinator" / "node_modules" / "pkg" / "index.js",
         10,
     )
-    amutorrent_dist = write_file(layout.emule_workspace_root / "repos" / "amutorrent" / "website" / "dist" / "bundle.js", 10)
-    amutorrent_data = write_file(layout.emule_workspace_root / "repos" / "amutorrent" / "server" / "data" / "db.sqlite", 10)
-    amutorrent_static_bundle = write_file(layout.emule_workspace_root / "repos" / "amutorrent" / "static" / "dist" / "app.bundle.js", 10)
-    amutorrent_tracked_chart = write_file(layout.emule_workspace_root / "repos" / "amutorrent" / "static" / "dist" / "chart.umd.min.js", 10)
-    amutorrent_css = write_file(layout.emule_workspace_root / "repos" / "amutorrent" / "static" / "output.css", 10)
 
     routine_candidates = plan_cleanup(layout, CleanupOptions())
     product_candidates = plan_cleanup(layout, CleanupOptions(include_product_family_outputs=True))
@@ -107,11 +102,6 @@ def test_product_family_outputs_are_explicit_cleanup(tmp_path: Path) -> None:
     assert rust_target.parents[1] in {candidate.path for candidate in product_candidates}
     assert coordinator_modules.parents[1] not in {candidate.path for candidate in routine_candidates}
     assert coordinator_modules.parents[1] in {candidate.path for candidate in product_candidates}
-    assert amutorrent_dist.parent in {candidate.path for candidate in product_candidates}
-    assert amutorrent_data.parent in {candidate.path for candidate in product_candidates}
-    assert amutorrent_static_bundle in {candidate.path for candidate in product_candidates}
-    assert amutorrent_tracked_chart not in {candidate.path for candidate in product_candidates}
-    assert amutorrent_css in {candidate.path for candidate in product_candidates}
     assert coordinator_modules.parents[1] in {candidate.path for candidate in deep_candidates}
 
 
@@ -256,6 +246,7 @@ def make_layout(tmp_path: Path):
         tooling_repo_root=tmp_path / "repos" / "emulebb-tooling",
         app_variants=(),
         dependencies=(),
+        ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
         emulebb_rust_repo_root=tmp_path / "repos" / "emulebb-rust",
         p2p_overlord_agents_repo_root=tmp_path / "repos" / "p2p-overlord-agents",
         p2p_overlord_be_repo_root=tmp_path / "repos" / "p2p-overlord-be",

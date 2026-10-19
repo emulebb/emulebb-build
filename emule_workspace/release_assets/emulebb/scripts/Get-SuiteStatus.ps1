@@ -32,12 +32,9 @@ foreach ($name in @($config.selectedApps)) {
         }
     }
 }
-$amutorrentServer = Join-Path $Root 'apps\aMuTorrent\server\server.js'
 $processes = @(Get-CimInstance Win32_Process | Where-Object {
     $path = [string]$_.ExecutablePath
-    $commandLine = [string]$_.CommandLine
-    ($_.Name -eq 'node.exe' -and $commandLine.IndexOf($amutorrentServer, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
-        (-not [string]::IsNullOrWhiteSpace($path) -and ($expectedExecutables | Where-Object { [string]::Equals($_, $path, [StringComparison]::OrdinalIgnoreCase) }))
+    -not [string]::IsNullOrWhiteSpace($path) -and ($expectedExecutables | Where-Object { [string]::Equals($_, $path, [StringComparison]::OrdinalIgnoreCase) })
 } | Select-Object ProcessId, Name, ExecutablePath, CommandLine)
 if ($processes.Count -eq 0) {
     Write-Host 'No eMuleBB Suite processes are running.'

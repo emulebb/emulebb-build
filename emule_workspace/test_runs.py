@@ -16,10 +16,6 @@ import urllib.error
 import urllib.request
 
 from .config import (
-    AmutorrentCleanStartupOptions,
-    AmutorrentEmulebbUiOptions,
-    AmutorrentResilienceOptions,
-    AmutorrentSessionOptions,
     CommunityCoverageOptions,
     FakeKadTrustSoakOptions,
     LiveE2eOptions,
@@ -860,50 +856,6 @@ def invoke_release_campaign_report(
     )
 
 
-def invoke_amutorrent_interactive_session(
-    layout: WorkspaceLayout,
-    options: WorkspaceOptions,
-    session_options: AmutorrentSessionOptions,
-) -> None:
-    """Starts a disposable interactive aMuTorrent session."""
-
-    _assert_test_execution_platform_supported(options)
-    script_path = layout.tests_repo_root / "scripts" / "amutorrent-interactive-session.py"
-    if not script_path.is_file():
-        raise RuntimeError(f"Missing aMuTorrent interactive session runner: {script_path}")
-
-    args: list[str | Path] = [
-        script_path,
-        "--backend",
-        session_options.backend,
-        "--configuration",
-        options.configuration,
-    ]
-    if session_options.backend == "native":
-        app_root = layout.get_app_variant(layout.test_targets.test_run_variant).path
-        args.extend(["--app-root", app_root])
-    else:
-        if layout.emulebb_rust_repo_root is None:
-            raise RuntimeError("The workspace manifest must define repos.emulebb_rust for Rust aMuTorrent sessions.")
-        rust_exe_name = "emulebb-rust.exe" if os.name == "nt" else "emulebb-rust"
-        args.extend(
-            [
-                "--rust-repo",
-                layout.emulebb_rust_repo_root,
-                "--rust-exe",
-                layout.output_tools_root / "emulebb-rust" / "bin" / rust_exe_name,
-            ]
-        )
-    network_env = _test_network_env(layout, test_network="lan", require_lan=True)
-    _append_lan_bind_addr(args, network_env)
-    _append_optional_flag(args, session_options.live_network, "--live-network")
-    python = get_python_invocation()
-    run_native(
-        python.command(args),
-        label="aMuTorrent interactive session",
-        cwd=layout.emule_workspace_root,
-        env=network_env,
-    )
 
 
 def invoke_rust_network_proof(
@@ -1136,177 +1088,10 @@ def invoke_fake_kad_trust_soak(
     )
 
 
-def invoke_amutorrent_clean_startup(
-    layout: WorkspaceLayout,
-    options: WorkspaceOptions,
-    clean_options: AmutorrentCleanStartupOptions,
-) -> None:
-    """Runs the automated aMuTorrent first-run wizard integration proof."""
-
-    _assert_test_execution_platform_supported(options)
-    app_root = layout.get_app_variant(layout.test_targets.test_run_variant).path
-    _ensure_hide_me_split_tunnel_for_live(
-        test_network=clean_options.test_network,
-        p2p_bind_interface_name=clean_options.p2p_bind_interface_name,
-        app_exe=_resolve_live_e2e_app_exe(layout, app_root, None, options),
-    )
-    script_path = layout.tests_repo_root / "scripts" / "amutorrent-clean-startup.py"
-    if not script_path.is_file():
-        raise RuntimeError(f"Missing aMuTorrent clean-startup runner: {script_path}")
-
-    args: list[str | Path | float] = [
-        script_path,
-        "--app-root",
-        app_root,
-        "--configuration",
-        options.configuration,
-        "--p2p-bind-interface-name",
-        clean_options.p2p_bind_interface_name,
-        "--rest-webserver-scheme",
-        clean_options.rest_webserver_scheme,
-        "--ready-timeout-seconds",
-        clean_options.ready_timeout_seconds,
-        "--network-ready-timeout-seconds",
-        clean_options.network_ready_timeout_seconds,
-        "--search-observation-timeout-seconds",
-        clean_options.search_observation_timeout_seconds,
-    ]
-    if clean_options.live_wire_inputs_file:
-        args.extend(["--live-wire-inputs-file", _resolve_workspace_argument(layout, clean_options.live_wire_inputs_file)])
-    network_env = _test_network_env(
-        layout,
-        test_network=clean_options.test_network,
-        vpn_interface_name=clean_options.p2p_bind_interface_name,
-        require_vpn=True,
-        require_lan=True,
-    )
-    _append_lan_bind_addr(args, network_env)
-    _append_optional_flag(args, clean_options.keep_artifacts, "--keep-artifacts")
-
-    python = get_python_invocation()
-    _run_live_native(
-        layout,
-        python.command(args),
-        label="aMuTorrent clean startup",
-        cwd=layout.emule_workspace_root,
-        env=network_env,
-    )
 
 
-def invoke_amutorrent_resilience(
-    layout: WorkspaceLayout,
-    options: WorkspaceOptions,
-    resilience_options: AmutorrentResilienceOptions,
-) -> None:
-    """Runs the automated aMuTorrent resilience live E2E proof."""
-
-    _assert_test_execution_platform_supported(options)
-    app_root = layout.get_app_variant(layout.test_targets.test_run_variant).path
-    _ensure_hide_me_split_tunnel_for_live(
-        test_network=resilience_options.test_network,
-        p2p_bind_interface_name=resilience_options.p2p_bind_interface_name,
-        app_exe=_resolve_live_e2e_app_exe(layout, app_root, None, options),
-    )
-    script_path = layout.tests_repo_root / "scripts" / "amutorrent-resilience-live.py"
-    if not script_path.is_file():
-        raise RuntimeError(f"Missing aMuTorrent resilience live runner: {script_path}")
-
-    args: list[str | Path | float] = [
-        script_path,
-        "--app-root",
-        app_root,
-        "--configuration",
-        options.configuration,
-        "--p2p-bind-interface-name",
-        resilience_options.p2p_bind_interface_name,
-        "--rest-webserver-scheme",
-        resilience_options.rest_webserver_scheme,
-        "--ready-timeout-seconds",
-        resilience_options.ready_timeout_seconds,
-        "--network-ready-timeout-seconds",
-        resilience_options.network_ready_timeout_seconds,
-        "--search-observation-timeout-seconds",
-        resilience_options.search_observation_timeout_seconds,
-        "--reconnect-timeout-seconds",
-        resilience_options.reconnect_timeout_seconds,
-    ]
-    if resilience_options.live_wire_inputs_file:
-        args.extend(["--live-wire-inputs-file", _resolve_workspace_argument(layout, resilience_options.live_wire_inputs_file)])
-    network_env = _test_network_env(
-        layout,
-        test_network=resilience_options.test_network,
-        vpn_interface_name=resilience_options.p2p_bind_interface_name,
-        require_vpn=True,
-        require_lan=True,
-    )
-    _append_lan_bind_addr(args, network_env)
-    _append_optional_flag(args, resilience_options.keep_artifacts, "--keep-artifacts")
-
-    python = get_python_invocation()
-    _run_live_native(
-        layout,
-        python.command(args),
-        label="aMuTorrent resilience live",
-        cwd=layout.emule_workspace_root,
-        env=network_env,
-    )
 
 
-def invoke_amutorrent_emulebb_ui(
-    layout: WorkspaceLayout,
-    options: WorkspaceOptions,
-    ui_options: AmutorrentEmulebbUiOptions,
-) -> None:
-    """Runs the automated aMuTorrent eMuleBB UI live E2E proof."""
-
-    _assert_test_execution_platform_supported(options)
-    app_root = layout.get_app_variant(layout.test_targets.test_run_variant).path
-    _ensure_hide_me_split_tunnel_for_live(
-        test_network=ui_options.test_network,
-        p2p_bind_interface_name=ui_options.p2p_bind_interface_name,
-        app_exe=_resolve_live_e2e_app_exe(layout, app_root, None, options),
-    )
-    script_path = layout.tests_repo_root / "scripts" / "amutorrent-emulebb-ui-live.py"
-    if not script_path.is_file():
-        raise RuntimeError(f"Missing aMuTorrent eMuleBB UI live runner: {script_path}")
-
-    args: list[str | Path | float] = [
-        script_path,
-        "--app-root",
-        app_root,
-        "--configuration",
-        options.configuration,
-        "--p2p-bind-interface-name",
-        ui_options.p2p_bind_interface_name,
-        "--rest-webserver-scheme",
-        ui_options.rest_webserver_scheme,
-        "--ready-timeout-seconds",
-        ui_options.ready_timeout_seconds,
-        "--network-ready-timeout-seconds",
-        ui_options.network_ready_timeout_seconds,
-        "--search-observation-timeout-seconds",
-        ui_options.search_observation_timeout_seconds,
-    ]
-    if ui_options.live_wire_inputs_file:
-        args.extend(["--live-wire-inputs-file", _resolve_workspace_argument(layout, ui_options.live_wire_inputs_file)])
-    network_env = _test_network_env(
-        layout,
-        test_network=ui_options.test_network,
-        vpn_interface_name=ui_options.p2p_bind_interface_name,
-        require_vpn=True,
-        require_lan=True,
-    )
-    _append_lan_bind_addr(args, network_env)
-    _append_optional_flag(args, ui_options.keep_artifacts, "--keep-artifacts")
-
-    python = get_python_invocation()
-    _run_live_native(
-        layout,
-        python.command(args),
-        label="aMuTorrent eMuleBB UI live",
-        cwd=layout.emule_workspace_root,
-        env=network_env,
-    )
 
 
 def _append_optional_flag(args: list, enabled: bool, flag: str) -> None:

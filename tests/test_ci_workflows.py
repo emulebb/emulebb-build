@@ -89,10 +89,8 @@ def test_controlled_smoke_uses_reusable_core_offline_and_lan_suite() -> None:
     assert "app_ref: ${{ github.sha }}" in text
     assert "timeout_minutes: 90" in text
     assert "python -m emule_workspace package-release" in text
-    assert "python -m emule_workspace package-amutorrent" in text
     assert "python -m emule_workspace build app" in text
     assert "python -m emule_workspace package-release `\n          --workspace-root" not in text
-    assert "python -m emule_workspace package-amutorrent `\n          --workspace-root" not in text
     assert "python -m emule_workspace build app `\n          --workspace-root" not in text
     assert "--variant tracing-harness" in text
     assert "tmp\\ci\\live-wire-inputs.ci.json" in text

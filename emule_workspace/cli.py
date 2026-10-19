@@ -21,11 +21,6 @@ from .build import build_qbittorrentbb_client as invoke_build_qbittorrentbb_clie
 from .certification import invoke_certification
 from .cleanup import cleanup_workspace
 from .config import (
-    AmutorrentPackageOptions,
-    AmutorrentCleanStartupOptions,
-    AmutorrentEmulebbUiOptions,
-    AmutorrentResilienceOptions,
-    AmutorrentSessionOptions,
     ACTIVE_EMULEBB_RELEASE_VERSION,
     BROAD_LIVE_E2E_PRE_RUN_CLEANUP_PROFILES,
     BuildClientsOptions,
@@ -59,18 +54,12 @@ from .local_package_install import install_local_package
 from .locks import WORKSPACE_LOCK_TOKEN_ENV, WorkspaceLock
 from .materialize import materialize_workspace, sync_workspace
 from .miniupnpc_release import create_miniupnpc_package
-from .product_family import (
-    audit_product_family_toolchain,
-    prepare_product_family_repos,
-    print_product_family_toolchain,
-    refresh_product_family_rebases,
-)
+from .product_family import audit_product_family_toolchain, prepare_product_family_repos, print_product_family_toolchain
 from .process import get_python_invocation, run_native
 from .python_tests import invoke_python_tests
 from .release import (
     assemble_emulebb_rust_release_assets,
     build_emulebb_rust_image_ci,
-    create_amutorrent_package,
     create_emulebb_rust_package,
     create_qbittorrentbb_package,
     create_release_package,
@@ -79,10 +68,6 @@ from .release_campaign_runner import invoke_release_campaign
 from .setup_commands import run_compare, write_dependency_update_report, write_materialization_status
 from .status import write_dependency_status, write_workspace_repo_status, write_workspace_summary
 from .test_runs import (
-    invoke_amutorrent_clean_startup,
-    invoke_amutorrent_emulebb_ui,
-    invoke_amutorrent_interactive_session,
-    invoke_amutorrent_resilience,
     invoke_community_core_coverage,
     invoke_fake_kad_trust_soak,
     invoke_rust_network_proof,
@@ -455,17 +440,6 @@ def prepare_product_family(*, workspace_options: WorkspaceOptions, layout) -> No
     """Install or fetch dependencies for product-family repositories."""
 
     _locked("prepare-product-family", lambda **kwargs: prepare_product_family_repos(kwargs["layout"]))(
-        workspace_options=workspace_options,
-        layout=layout,
-    )
-
-
-@main.command("refresh-product-family-rebases")
-@_common_options
-def refresh_product_family_rebase_clones(*, workspace_options: WorkspaceOptions, layout) -> None:
-    """Refresh the manual aMuTorrent checkout after automated upstream rebases."""
-
-    _locked("refresh-product-family-rebases", lambda **kwargs: refresh_product_family_rebases(kwargs["layout"]))(
         workspace_options=workspace_options,
         layout=layout,
     )
@@ -1310,30 +1284,6 @@ def test_certification(
     )(workspace_options=workspace_options, layout=layout)
 
 
-@test.command("amutorrent-session")
-@_common_options
-@click.option(
-    "--backend",
-    type=click.Choice(["native", "rust"]),
-    default="native",
-    show_default=True,
-    help="eMuleBB backend launched for the aMuTorrent session.",
-)
-@click.option("--live-network", is_flag=True, help="Allow the aMuTorrent session to use the live network.")
-def test_amutorrent_session(
-    *,
-    backend: str,
-    live_network: bool,
-    workspace_options: WorkspaceOptions,
-    layout,
-) -> None:
-    """Start an interactive aMuTorrent test session."""
-
-    session_options = AmutorrentSessionOptions(backend=backend, live_network=live_network)
-    _locked(
-        "test amutorrent-session",
-        lambda **kwargs: invoke_amutorrent_interactive_session(kwargs["layout"], kwargs["workspace_options"], session_options),
-    )(workspace_options=workspace_options, layout=layout)
 
 
 @test.command("rust-unit")
@@ -1482,130 +1432,10 @@ def test_fake_kad_trust_soak(
     )(workspace_options=workspace_options, layout=layout)
 
 
-@test.command("amutorrent-clean-startup")
-@_common_options
-@click.option("--live-wire-inputs-file", default=None, help="Runtime live-wire search/download input JSON.")
-@click.option("--test-network", type=click.Choice(["vpn", "all"]), default="vpn", show_default=True)
-@click.option("--rest-webserver-scheme", type=click.Choice(["http", "https"]), default="https", show_default=True)
-@click.option("--keep-artifacts", is_flag=True, help="Keep source artifacts after the clean-startup run.")
-@click.option("--ready-timeout-seconds", default=60.0, show_default=True, type=float)
-@click.option("--network-ready-timeout-seconds", default=180.0, show_default=True, type=float)
-@click.option("--search-observation-timeout-seconds", default=120.0, show_default=True, type=float)
-@click.option("--p2p-bind-interface-name", default="hide.me", show_default=True)
-def test_amutorrent_clean_startup(
-    *,
-    live_wire_inputs_file: str | None,
-    test_network: str,
-    rest_webserver_scheme: str,
-    keep_artifacts: bool,
-    ready_timeout_seconds: float,
-    network_ready_timeout_seconds: float,
-    search_observation_timeout_seconds: float,
-    p2p_bind_interface_name: str,
-    workspace_options: WorkspaceOptions,
-    layout,
-) -> None:
-    """Run the automated aMuTorrent first-run wizard live proof."""
-
-    clean_options = AmutorrentCleanStartupOptions(
-        live_wire_inputs_file=live_wire_inputs_file,
-        test_network=test_network,
-        rest_webserver_scheme=rest_webserver_scheme,
-        keep_artifacts=keep_artifacts,
-        ready_timeout_seconds=ready_timeout_seconds,
-        network_ready_timeout_seconds=network_ready_timeout_seconds,
-        search_observation_timeout_seconds=search_observation_timeout_seconds,
-        p2p_bind_interface_name=p2p_bind_interface_name,
-    )
-    _locked(
-        "test amutorrent-clean-startup",
-        lambda **kwargs: invoke_amutorrent_clean_startup(kwargs["layout"], kwargs["workspace_options"], clean_options),
-    )(workspace_options=workspace_options, layout=layout)
 
 
-@test.command("amutorrent-resilience")
-@_common_options
-@click.option("--live-wire-inputs-file", default=None, help="Runtime live-wire search/download input JSON.")
-@click.option("--test-network", type=click.Choice(["vpn", "all"]), default="vpn", show_default=True)
-@click.option("--rest-webserver-scheme", type=click.Choice(["http", "https"]), default="https", show_default=True)
-@click.option("--keep-artifacts", is_flag=True, help="Keep source artifacts after the resilience run.")
-@click.option("--ready-timeout-seconds", default=60.0, show_default=True, type=float)
-@click.option("--network-ready-timeout-seconds", default=180.0, show_default=True, type=float)
-@click.option("--search-observation-timeout-seconds", default=120.0, show_default=True, type=float)
-@click.option("--reconnect-timeout-seconds", default=120.0, show_default=True, type=float)
-@click.option("--p2p-bind-interface-name", default="hide.me", show_default=True)
-def test_amutorrent_resilience(
-    *,
-    live_wire_inputs_file: str | None,
-    test_network: str,
-    rest_webserver_scheme: str,
-    keep_artifacts: bool,
-    ready_timeout_seconds: float,
-    network_ready_timeout_seconds: float,
-    search_observation_timeout_seconds: float,
-    reconnect_timeout_seconds: float,
-    p2p_bind_interface_name: str,
-    workspace_options: WorkspaceOptions,
-    layout,
-) -> None:
-    """Run the automated aMuTorrent resilience live proof."""
-
-    resilience_options = AmutorrentResilienceOptions(
-        live_wire_inputs_file=live_wire_inputs_file,
-        test_network=test_network,
-        rest_webserver_scheme=rest_webserver_scheme,
-        keep_artifacts=keep_artifacts,
-        ready_timeout_seconds=ready_timeout_seconds,
-        network_ready_timeout_seconds=network_ready_timeout_seconds,
-        search_observation_timeout_seconds=search_observation_timeout_seconds,
-        reconnect_timeout_seconds=reconnect_timeout_seconds,
-        p2p_bind_interface_name=p2p_bind_interface_name,
-    )
-    _locked(
-        "test amutorrent-resilience",
-        lambda **kwargs: invoke_amutorrent_resilience(kwargs["layout"], kwargs["workspace_options"], resilience_options),
-    )(workspace_options=workspace_options, layout=layout)
 
 
-@test.command("amutorrent-emulebb-ui")
-@_common_options
-@click.option("--live-wire-inputs-file", default=None, help="Runtime live-wire search/download input JSON.")
-@click.option("--test-network", type=click.Choice(["vpn", "all"]), default="vpn", show_default=True)
-@click.option("--rest-webserver-scheme", type=click.Choice(["http", "https"]), default="https", show_default=True)
-@click.option("--keep-artifacts", is_flag=True, help="Keep source artifacts after the eMuleBB UI run.")
-@click.option("--ready-timeout-seconds", default=60.0, show_default=True, type=float)
-@click.option("--network-ready-timeout-seconds", default=180.0, show_default=True, type=float)
-@click.option("--search-observation-timeout-seconds", default=120.0, show_default=True, type=float)
-@click.option("--p2p-bind-interface-name", default="hide.me", show_default=True)
-def test_amutorrent_emulebb_ui(
-    *,
-    live_wire_inputs_file: str | None,
-    test_network: str,
-    rest_webserver_scheme: str,
-    keep_artifacts: bool,
-    ready_timeout_seconds: float,
-    network_ready_timeout_seconds: float,
-    search_observation_timeout_seconds: float,
-    p2p_bind_interface_name: str,
-    workspace_options: WorkspaceOptions,
-    layout,
-) -> None:
-    """Run the automated aMuTorrent eMuleBB UI live proof."""
-
-    ui_options = AmutorrentEmulebbUiOptions(
-        live_wire_inputs_file=live_wire_inputs_file,
-        test_network=test_network,
-        rest_webserver_scheme=rest_webserver_scheme,
-        keep_artifacts=keep_artifacts,
-        ready_timeout_seconds=ready_timeout_seconds,
-        network_ready_timeout_seconds=network_ready_timeout_seconds,
-        search_observation_timeout_seconds=search_observation_timeout_seconds,
-        p2p_bind_interface_name=p2p_bind_interface_name,
-    )
-    _locked(
-        "test amutorrent-emulebb-ui",
-        lambda **kwargs: invoke_amutorrent_emulebb_ui(kwargs["layout"], kwargs["workspace_options"], ui_options),
-    )(workspace_options=workspace_options, layout=layout)
 
 
 @main.command()
@@ -1914,29 +1744,6 @@ def vm_lab_manual(
     )(workspace_options=workspace_options, layout=layout)
 
 
-@main.command("package-amutorrent")
-@_common_options
-@click.option("--clean", is_flag=True, help="Clean selected package build outputs before building.")
-@click.option(
-    "--release-version",
-    default=ACTIVE_EMULEBB_RELEASE_VERSION,
-    show_default=True,
-    help="Release version in MAJOR.MINOR.PATCH[-rc.N|-beta.N|-nightly.YYYYMMDD.SHA] form.",
-)
-def package_amutorrent(
-    *,
-    clean: bool,
-    release_version: str,
-    workspace_options: WorkspaceOptions,
-    layout,
-) -> None:
-    """Build the optional aMuTorrent controller package artifact."""
-
-    package_options = AmutorrentPackageOptions(release_version=release_version, clean=clean)
-    _locked(
-        "package amutorrent",
-        lambda **kwargs: create_amutorrent_package(kwargs["layout"], kwargs["workspace_options"], package_options),
-    )(workspace_options=workspace_options, layout=layout)
 
 
 @main.command("package-miniupnpc")

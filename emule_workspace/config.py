@@ -16,7 +16,6 @@ BuildOutputMode = Literal["Full", "Warnings", "ErrorsOnly"]
 PackageFlavor = Literal["standard", "diagnostics"]
 ClientBuildTarget = Literal["amule", "emulebb-rust", "qbittorrentbb"]
 RustTargetOs = Literal["windows", "linux", "macos"]
-AmutorrentSessionBackend = Literal["native", "rust"]
 ACTIVE_EMULEBB_RELEASE_VERSION = "0.7.3-rc.2"
 WORKSPACE_ROOT_ENV = "EMULEBB_WORKSPACE_ROOT"
 WORKSPACE_OUTPUT_ROOT_ENV = "EMULEBB_WORKSPACE_OUTPUT_ROOT"
@@ -261,15 +260,6 @@ class CampaignScenarioOptions(BaseModel):
     local_swarm_mode: Literal["plan", "execute"] = "execute"
 
 
-class AmutorrentSessionOptions(BaseModel):
-    """Options forwarded to the aMuTorrent interactive session runner."""
-
-    model_config = ConfigDict(frozen=True)
-
-    backend: AmutorrentSessionBackend = "native"
-    live_network: bool = False
-
-
 class FakeKadTrustSoakOptions(BaseModel):
     """Options forwarded to the focused fake-file/Kad trust live soak runner."""
 
@@ -288,52 +278,6 @@ class FakeKadTrustSoakOptions(BaseModel):
     min_kad_publish_info_rows: int = 1
     max_failed_cycles: int = 0
     require_kad_connected: bool = False
-    p2p_bind_interface_name: str = "hide.me"
-
-
-class AmutorrentCleanStartupOptions(BaseModel):
-    """Options forwarded to the aMuTorrent clean-startup live E2E runner."""
-
-    model_config = ConfigDict(frozen=True)
-
-    live_wire_inputs_file: str | None = None
-    test_network: VpnTestNetwork = "vpn"
-    rest_webserver_scheme: str = "https"
-    keep_artifacts: bool = False
-    ready_timeout_seconds: float = 60.0
-    network_ready_timeout_seconds: float = 180.0
-    search_observation_timeout_seconds: float = 120.0
-    p2p_bind_interface_name: str = "hide.me"
-
-
-class AmutorrentEmulebbUiOptions(BaseModel):
-    """Options forwarded to the aMuTorrent eMuleBB UI live E2E runner."""
-
-    model_config = ConfigDict(frozen=True)
-
-    live_wire_inputs_file: str | None = None
-    test_network: VpnTestNetwork = "vpn"
-    rest_webserver_scheme: str = "https"
-    keep_artifacts: bool = False
-    ready_timeout_seconds: float = 60.0
-    network_ready_timeout_seconds: float = 180.0
-    search_observation_timeout_seconds: float = 120.0
-    p2p_bind_interface_name: str = "hide.me"
-
-
-class AmutorrentResilienceOptions(BaseModel):
-    """Options forwarded to the aMuTorrent resilience live E2E runner."""
-
-    model_config = ConfigDict(frozen=True)
-
-    live_wire_inputs_file: str | None = None
-    test_network: VpnTestNetwork = "vpn"
-    rest_webserver_scheme: str = "https"
-    keep_artifacts: bool = False
-    ready_timeout_seconds: float = 60.0
-    network_ready_timeout_seconds: float = 180.0
-    search_observation_timeout_seconds: float = 120.0
-    reconnect_timeout_seconds: float = 120.0
     p2p_bind_interface_name: str = "hide.me"
 
 
@@ -396,15 +340,6 @@ class ReleasePackageOptions(BaseModel):
     release_version: str = ACTIVE_EMULEBB_RELEASE_VERSION
     clean: bool = False
     require_signing: bool = False
-
-
-class AmutorrentPackageOptions(BaseModel):
-    """Options for building the optional aMuTorrent package artifact."""
-
-    model_config = ConfigDict(frozen=True)
-
-    release_version: str = ACTIVE_EMULEBB_RELEASE_VERSION
-    clean: bool = False
 
 
 class EmulebbRustPackageOptions(BaseModel):

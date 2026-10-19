@@ -21,15 +21,6 @@ def test_artifact_audit_flags_repo_local_build_outputs(tmp_path: Path) -> None:
     assert source not in {finding.path for finding in findings}
 
 
-def test_artifact_audit_flags_amutorrent_node_modules(tmp_path: Path) -> None:
-    layout = make_layout(tmp_path)
-    node_module = write_file(layout.emule_workspace_root / "repos" / "amutorrent" / "server" / "node_modules" / "express" / "package.json")
-
-    findings = artifact_audit.audit_workspace_artifacts(layout)
-
-    assert node_module.parents[1] in {finding.path for finding in findings}
-
-
 def test_audit_artifacts_command_fails_on_findings(tmp_path: Path, monkeypatch) -> None:
     layout = make_layout(tmp_path)
     write_file(layout.emule_workspace_root / "workspaces" / "workspace" / "app" / "emulebb-main" / "srchybrid" / "x64" / "Release" / "emulebb.exe")

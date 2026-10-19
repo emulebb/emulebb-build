@@ -103,8 +103,6 @@ python -m emule_workspace test live-diff
 python -m emule_workspace test protocol-parity
 python -m emule_workspace test live-e2e
 python -m emule_workspace test windows-vm
-python -m emule_workspace test amutorrent-session
-python -m emule_workspace test amutorrent-session --backend rust
 python -m emule_workspace test rust-webui
 python -m emule_workspace test rust-network-proof --lane windows-consumer --help
 python -m emule_workspace test community-core-coverage
@@ -133,7 +131,7 @@ The packaged suite installer supports non-interactive app and language selection
 `whisparr`) and presets (`default-arr`, `all-arr`, `none-arr`, `controller`,
 `all`). Whisparr is explicit opt-in through `whisparr` or `all-arr`; the full
 suite default selects Prowlarr, Radarr, Sonarr, and Lidarr. If a media Arr app
-is selected, Prowlarr and aMuTorrent are included automatically.
+is selected, Prowlarr is included automatically.
 
 Release assets publish `suite-scripts-<version>.zip` and
 `suite-scripts-<version>.manifest.json` beside the normal package ZIPs. The
@@ -170,7 +168,6 @@ Command behavior:
 - `test protocol-parity` runs the focused Kad/eD2K gate: protocol surface diff, protocol oracle golden validation, and `protocol-parity` native live-diff.
 - `test live-e2e` runs the aggregate UI, REST API, and live-wire E2E suite from `emulebb-build-tests`.
 - `test windows-vm` runs package-smoke proof inside clean local Hyper-V Windows guests restored from a configured checkpoint.
-- `test amutorrent-session` starts a disposable interactive aMuTorrent session against eMuleBB REST and leaves both processes running for operator testing. Use `--backend rust` to point aMuTorrent at the staged Rust client, falling back to the Rust repo Cargo launcher when needed.
 - `test rust-webui` stages the SPA under the external output root, installs the locked npm graph, and runs unit tests, stateful Playwright E2E, type checking, and the production build. Its full-workflow browser scenario covers `server.met` and stopped-Kad `nodes.dat` imports, independent server/Kad disconnect and reconnect, filtered `linux` PDF search, rendered-result download, activity, and stop state.
 - `test rust-network-proof --lane windows-consumer` verifies an exact hosted Rust Windows ZIP with a fresh default profile and the rendered WebUI. It enables best-effort UPnP in Settings and verifies the restart, imports `server.met` and `nodes.dat`, proves server and Kad disconnect/reconnect independently, runs the explicit runtime-only `--search-term` through automatic/server/Kad search, and clicks an exact allowlisted `.pdf` result smaller than 5 MiB. Trigger mode requires bytes or an actively transferring source and then verifies the stopped flag; `--complete-transfers` additionally verifies delivered size and SHA-256. Search text and candidate identity are redacted from retained evidence.
 - `test community-core-coverage` runs community-core coverage checks with live REST E2E coverage enabled.
@@ -286,15 +283,11 @@ Live E2E examples:
 
 - `live-e2e -Config Release -Platform x64` runs the full maintained UI, REST API, and live-wire lane, including the default six-term server/Kad release search matrix and one paused live search-result download trigger
 - `python -m emule_workspace test live-e2e --profile beta-green --fail-fast` runs the short beta gate: REST contract coverage, REST smoke stress, shared-directories REST, and reduced Prowlarr/eMuleBB search resilience
-- `python -m emule_workspace test live-e2e --profile controller-surface --fail-fast` runs the focused controller API surface gate: native `/api/v1`, qBittorrent-compatible `/api/v2`, Torznab/Arr, and aMuTorrent browser smoke
+- `python -m emule_workspace test live-e2e --profile controller-surface --fail-fast` runs the focused controller API surface gate: native `/api/v1`, qBittorrent-compatible `/api/v2`, and Torznab/Arr
 - `python -m emule_workspace test live-e2e --profile beta-release --fail-fast` extends the beta gate with Radarr and Sonarr full acquisition plus cold-start dump stress
 - `live-e2e -Config Release -Platform x64 -RestDownloadTriggerCount 0` disables the REST live download trigger for diagnosis
 - `live-e2e -Config Release -Platform x64 -LiveSuite preference-ui -LiveSuite rest-api` runs a focused subset
 - `live-e2e -Config Release -Platform x64 -SkipLiveSeedRefresh` reuses the checked-in live seed files for offline diagnosis
-
-Interactive aMuTorrent example:
-
-- `amutorrent-session -Config Debug -Platform x64 -LiveNetwork` launches Debug x64 eMuleBB with a disposable profile, starts aMuTorrent against the eMuleBB REST API, opens the aMuTorrent URL, and writes a `stop-session.cmd` helper into the session report directory. Add `-Backend rust` to use the Rust client package.
 
 Headless Rust client build example:
 

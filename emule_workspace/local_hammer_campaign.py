@@ -344,7 +344,6 @@ def _run_preflight(
         "releaseVersion": campaign_options.release_version,
         "artifacts": {
             "emuleZip": str(artifacts.emule_zip),
-            "amutorrentZip": str(artifacts.amutorrent_zip),
             "packageExe": str(artifacts.package_exe),
             "packagePdb": str(artifacts.package_pdb),
         },

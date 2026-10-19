@@ -28,13 +28,8 @@ param(
     [int]$PortBlockStart = 0,
 
     [string]$ReleaseBaseUrl,
-    [string]$AmutorrentReleaseBaseUrl,
-    [string]$AmutorrentVersion,
     [string]$EmulebbPackageZip,
     [string]$EmulebbPackageManifest,
-    [string]$AmutorrentPackageZip,
-    [string]$AmutorrentPackageManifest,
-    [string]$NodeBaseUrl,
     [string]$DependencyManifest,
     [string]$SuiteScriptsZip,
     [string]$SuiteScriptsManifest,
@@ -49,7 +44,6 @@ param(
 
     [string]$ControlBindAddress,
     [string]$EmulebbBindAddress,
-    [string]$AmutorrentBindAddress,
     [string]$ProwlarrBindAddress,
     [string]$RadarrBindAddress,
     [string]$SonarrBindAddress,
@@ -61,8 +55,6 @@ param(
 
     [ValidateRange(0, 65535)]
     [int]$EmulebbPort = 0,
-    [ValidateRange(0, 65535)]
-    [int]$AmutorrentPort = 0,
     [ValidateRange(0, 65535)]
     [int]$ProwlarrPort = 0,
     [ValidateRange(0, 65535)]
@@ -113,16 +105,13 @@ $script:InstallerBoundParameters = $PSBoundParameters
 
 $AutoPortRangeStart = 49152
 $AutoPortRangeEnd = 65535
-$NodeVersion = 'v24.16.0'
-$MinimumNodeMajor = 24
 $CoreServiceNames = @('emulebb')
-$ControllerServiceNames = @('emulebb', 'amutorrent')
 $DefaultArrAppNames = @('prowlarr', 'radarr', 'sonarr', 'lidarr')
 $AllArrAppNames = @('prowlarr', 'radarr', 'sonarr', 'lidarr', 'whisparr')
-$SuiteServiceOrder = @('emulebb', 'amutorrent', 'prowlarr', 'radarr', 'sonarr', 'lidarr', 'whisparr')
+$SuiteServiceOrder = @('emulebb', 'prowlarr', 'radarr', 'sonarr', 'lidarr', 'whisparr')
 # P2P companion clients are parked for the 0.7.3 RC3/final release path. Keep
 # the parser/install helpers below for the future suite expansion, but ship no
-# selectable side P2P client in the MFC+aMuTorrent PowerShell bundle.
+# selectable side P2P client in the MFC PowerShell bundle.
 $AllP2pClientNames = @()
 $P2pClientMetadata = @{}
 $FallbackLanguageOptions = @{
@@ -191,16 +180,6 @@ $ArrAppMetadata = @{
         ApiPath = 'api/v3'
         DataDir = 'data\whisparr'
         MediaRoot = 'media\whisparr'
-    }
-}
-$NodeArchives = @{
-    x64 = @{
-        FileName = 'node-v24.16.0-win-x64.zip'
-        Sha256 = 'edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56'
-    }
-    ARM64 = @{
-        FileName = 'node-v24.16.0-win-arm64.zip'
-        Sha256 = '14834611d4c6b3c06054e7007732b90474c16e0b32f395e05b55a571ef71c6d2'
     }
 }
 $PinnedDependencies = @{
@@ -626,10 +605,7 @@ function Get-LocalPackageVersionFromZipName {
     if ($PackageName -eq 'eMuleBB' -and $name -match '^emulebb-(.+?)(?:-diagnostics)?-(?:x64|ARM64)\.zip$') {
         return $Matches[1]
     }
-    if ($PackageName -eq 'aMuTorrent' -and $name -match '^emulebb-(.+?)-amutorrent-x64\.zip$') {
-        return $Matches[1]
-    }
-    throw "Cannot infer $PackageName package version from local ZIP name: $name. Pass -Version or -AmutorrentVersion explicitly."
+    throw "Cannot infer $PackageName package version from local ZIP name: $name. Pass -Version explicitly."
 }
 
 function New-SuiteConfig {
@@ -642,13 +618,6 @@ function New-SuiteConfig {
         $inferredVersion = Get-LocalPackageVersionFromZipName -ZipPath $EmulebbPackageZip -PackageName 'eMuleBB'
         if (-not [string]::IsNullOrWhiteSpace($inferredVersion)) {
             $resolvedVersion = $inferredVersion
-        }
-    }
-    $resolvedAmutorrentVersion = $AmutorrentVersion
-    if (-not $script:InstallerBoundParameters.ContainsKey('AmutorrentVersion')) {
-        $inferredAmutorrentVersion = Get-LocalPackageVersionFromZipName -ZipPath $AmutorrentPackageZip -PackageName 'aMuTorrent'
-        if (-not [string]::IsNullOrWhiteSpace($inferredAmutorrentVersion)) {
-            $resolvedAmutorrentVersion = $inferredAmutorrentVersion
         }
     }
     $config = [ordered]@{
@@ -672,16 +641,10 @@ function New-SuiteConfig {
         installRoot = $InstallRoot
         dependencyChannel = $DependencyChannel
         releaseBaseUrl = $ReleaseBaseUrl
-        amutorrentReleaseBaseUrl = $AmutorrentReleaseBaseUrl
-        amutorrentVersion = $resolvedAmutorrentVersion
         packageSources = [ordered]@{
             emulebb = [ordered]@{
                 zip = $EmulebbPackageZip
                 manifest = $EmulebbPackageManifest
-            }
-            amutorrent = [ordered]@{
-                zip = $AmutorrentPackageZip
-                manifest = $AmutorrentPackageManifest
             }
         }
         suiteScripts = [ordered]@{
@@ -694,7 +657,6 @@ function New-SuiteConfig {
         }
         emulebbPackageFlavor = $EmulebbPackageFlavor
         emulebbExecutableName = (Get-EmulebbExecutableNameForFlavor -PackageFlavor $EmulebbPackageFlavor)
-        nodeBaseUrl = $NodeBaseUrl
         dependencyManifest = $DependencyManifest
         importProfileDir = $ImportProfileDir
         credentials = [ordered]@{
@@ -713,7 +675,6 @@ function New-SuiteConfig {
         allowRemoteServiceBind = [bool]$AllowRemoteServiceBind
         services = [ordered]@{
             emulebb = [ordered]@{ bindAddress = (Resolve-OptionalValue -Value $EmulebbBindAddress -Default $controlBind); clientHost = ''; port = $EmulebbPort; apiKey = '' }
-            amutorrent = [ordered]@{ bindAddress = (Resolve-OptionalValue -Value $AmutorrentBindAddress -Default $controlBind); clientHost = ''; port = $AmutorrentPort }
             prowlarr = [ordered]@{ bindAddress = (Resolve-OptionalValue -Value $ProwlarrBindAddress -Default $controlBind); clientHost = ''; port = $ProwlarrPort; apiKey = '' }
             radarr = [ordered]@{ bindAddress = (Resolve-OptionalValue -Value $RadarrBindAddress -Default $controlBind); clientHost = ''; port = $RadarrPort; apiKey = '' }
             sonarr = [ordered]@{ bindAddress = (Resolve-OptionalValue -Value $SonarrBindAddress -Default $controlBind); clientHost = ''; port = $SonarrPort; apiKey = '' }
@@ -787,14 +748,10 @@ function Initialize-SuiteAppMetadata {
     if ($manifest.PinnedDependencies.Count -gt 0) { $script:PinnedDependencies = $manifest.PinnedDependencies }
     if ($manifest.MediaTools.Count -gt 0) { $script:PinnedMediaTools = $manifest.MediaTools }
     if (@($manifest.CoreServiceNames).Count -gt 0) { $script:CoreServiceNames = $manifest.CoreServiceNames }
-    if (@($manifest.ControllerServiceNames).Count -gt 0) { $script:ControllerServiceNames = $manifest.ControllerServiceNames }
     if (@($manifest.DefaultArrAppNames).Count -gt 0) { $script:DefaultArrAppNames = $manifest.DefaultArrAppNames }
     if (@($manifest.SuiteServiceOrder).Count -gt 0) { $script:SuiteServiceOrder = $manifest.SuiteServiceOrder }
     if (@($manifest.AllP2pClientNames).Count -gt 0) { $script:AllP2pClientNames = $manifest.AllP2pClientNames }
     if ($manifest.P2pClients.Count -gt 0) { $script:P2pClientMetadata = $manifest.P2pClients }
-    if (-not [string]::IsNullOrWhiteSpace([string]$manifest.NodeVersion)) { $script:NodeVersion = [string]$manifest.NodeVersion }
-    if ($null -ne $manifest.MinimumNodeMajor) { $script:MinimumNodeMajor = [int]$manifest.MinimumNodeMajor }
-    if ($manifest.NodeArchives.Count -gt 0) { $script:NodeArchives = $manifest.NodeArchives }
 }
 
 function Merge-Hashtable {
@@ -812,9 +769,8 @@ function Normalize-AppName {
     param([string]$Name)
     $normalized = (Resolve-OptionalValue -Value $Name -Default '').ToLowerInvariant()
     if ($normalized -eq 'emulebb' -or $normalized -eq 'core') { return 'emulebb' }
-    if ($normalized -eq 'amutorrent' -or $normalized -eq 'controller') { return 'amutorrent' }
     if ($AllArrAppNames -contains $normalized) { return $normalized }
-    throw "Unknown suite app '$Name'. Valid apps are: emulebb, amutorrent, $($AllArrAppNames -join ', '), or presets all, controller, default-arr, all-arr, none-arr."
+    throw "Unknown suite app '$Name'. Valid apps are: emulebb, $($AllArrAppNames -join ', '), or presets all, default-arr, all-arr, none-arr."
 }
 
 function ConvertTo-LanguageOptions {
@@ -888,10 +844,7 @@ function Get-BundleServiceNames {
     if ($BundleName -eq 'Core') {
         return $CoreServiceNames
     }
-    if ($BundleName -eq 'Controller') {
-        return $ControllerServiceNames
-    }
-    return @($ControllerServiceNames + $DefaultArrAppNames)
+    return @($CoreServiceNames + $DefaultArrAppNames)
 }
 
 function Resolve-SelectedApps {
@@ -929,14 +882,6 @@ function Resolve-SelectedApps {
                     }
                     continue
                 }
-                if ($preset -eq 'controller') {
-                    foreach ($name in $ControllerServiceNames) {
-                        if (-not $selected.Contains($name)) {
-                            $selected.Add($name)
-                        }
-                    }
-                    continue
-                }
                 if ($preset -eq 'all' -or $preset -eq 'full') {
                     foreach ($name in $SuiteServiceOrder) {
                         if (-not $selected.Contains($name)) {
@@ -953,9 +898,6 @@ function Resolve-SelectedApps {
         }
         if (-not $selected.Contains('emulebb')) {
             $selected.Insert(0, 'emulebb')
-        }
-        if (@($selected | Where-Object { $AllArrAppNames -contains $_ }).Count -gt 0 -and -not $selected.Contains('amutorrent')) {
-            $selected.Insert(1, 'amutorrent')
         }
     }
     if (@($selected | Where-Object { ($_ -ne 'prowlarr') -and ($AllArrAppNames -contains $_) }).Count -gt 0 -and -not $selected.Contains('prowlarr')) {
@@ -1013,7 +955,6 @@ function Get-ServiceDisplayName {
     param([string]$ServiceName)
     switch ($ServiceName) {
         'emulebb' { return 'eMuleBB' }
-        'amutorrent' { return 'aMuTorrent' }
         'prowlarr' { return 'Prowlarr' }
         'radarr' { return 'Radarr' }
         'sonarr' { return 'Sonarr' }
@@ -1182,17 +1123,12 @@ function Resolve-SuiteConfig {
         @('InstallKind', { param($c, $v) $c.installKind = $v }),
         @('DependencyChannel', { param($c, $v) $c.dependencyChannel = $v }),
         @('ReleaseBaseUrl', { param($c, $v) $c.releaseBaseUrl = $v }),
-        @('AmutorrentReleaseBaseUrl', { param($c, $v) $c.amutorrentReleaseBaseUrl = $v }),
-        @('AmutorrentVersion', { param($c, $v) $c.amutorrentVersion = $v }),
         @('EmulebbPackageZip', { param($c, $v) $c.packageSources.emulebb.zip = $v }),
         @('EmulebbPackageManifest', { param($c, $v) $c.packageSources.emulebb.manifest = $v }),
-        @('AmutorrentPackageZip', { param($c, $v) $c.packageSources.amutorrent.zip = $v }),
-        @('AmutorrentPackageManifest', { param($c, $v) $c.packageSources.amutorrent.manifest = $v }),
         @('SuiteScriptsZip', { param($c, $v) $c.suiteScripts.zip = $v }),
         @('SuiteScriptsManifest', { param($c, $v) $c.suiteScripts.manifest = $v }),
         @('AutomationExamplesZip', { param($c, $v) $c.automationExamples.zip = $v }),
         @('AutomationExamplesManifest', { param($c, $v) $c.automationExamples.manifest = $v }),
-        @('NodeBaseUrl', { param($c, $v) $c.nodeBaseUrl = $v }),
         @('DependencyManifest', { param($c, $v) $c.dependencyManifest = $v }),
         @('ImportProfileDir', { param($c, $v) $c.importProfileDir = $v }),
         @('EmulebbPdbPath', { param($c, $v) $c.symbols.emulebbPdbPath = $v }),
@@ -1204,14 +1140,12 @@ function Resolve-SuiteConfig {
             }
         }),
         @('EmulebbBindAddress', { param($c, $v) $c.services.emulebb.bindAddress = $v }),
-        @('AmutorrentBindAddress', { param($c, $v) $c.services.amutorrent.bindAddress = $v }),
         @('ProwlarrBindAddress', { param($c, $v) $c.services.prowlarr.bindAddress = $v }),
         @('RadarrBindAddress', { param($c, $v) $c.services.radarr.bindAddress = $v }),
         @('SonarrBindAddress', { param($c, $v) $c.services.sonarr.bindAddress = $v }),
         @('LidarrBindAddress', { param($c, $v) $c.services.lidarr.bindAddress = $v }),
         @('WhisparrBindAddress', { param($c, $v) $c.services.whisparr.bindAddress = $v }),
         @('EmulebbPort', { param($c, $v) $c.services.emulebb.port = $v }),
-        @('AmutorrentPort', { param($c, $v) $c.services.amutorrent.port = $v }),
         @('ProwlarrPort', { param($c, $v) $c.services.prowlarr.port = $v }),
         @('RadarrPort', { param($c, $v) $c.services.radarr.port = $v }),
         @('SonarrPort', { param($c, $v) $c.services.sonarr.port = $v }),
@@ -1466,17 +1400,16 @@ function Invoke-InstallWizard {
                 Write-Host 'All selected components are installed in portable mode under the suite install root. Existing Arr apps, media tools, PATH entries, and system software are not modified.'
                 $bundleChoices = @(
                     ('Full suite - installs {0}' -f (Get-BundleInstallDescription -BundleName 'Full')),
-                    ('Controller only - installs {0}' -f (Get-BundleInstallDescription -BundleName 'Controller')),
                     ('Core app only - installs {0}' -f (Get-BundleInstallDescription -BundleName 'Core'))
                 )
-                $choice = Read-WizardChoice -Prompt 'Bundle' -Choices $bundleChoices -DefaultIndex (@('Full', 'Controller', 'Core').IndexOf([string]$Config.bundle))
+                $choice = Read-WizardChoice -Prompt 'Bundle' -Choices $bundleChoices -DefaultIndex (@('Full', 'Core').IndexOf([string]$Config.bundle))
                 if ($choice -lt 0) { $step = [Math]::Max(0, $step - 1); continue }
-                $Config.bundle = @('Full', 'Controller', 'Core')[$choice]
+                $Config.bundle = @('Full', 'Core')[$choice]
                 $Config.selectedApps = @(Resolve-SelectedApps -BundleName ([string]$Config.bundle) -RequestedApps @())
                 if ($Config.bundle -eq 'Full') {
                     $selectedArr = Read-WizardChecklist -Prompt 'Arr apps' -Items $AllArrAppNames -Selected @(Get-SelectedArrAppNames -Config $Config)
                     if ($null -eq $selectedArr) { $step = [Math]::Max(0, $step - 1); continue }
-                    $Config.selectedApps = @(Resolve-SelectedApps -BundleName ([string]$Config.bundle) -RequestedApps @($ControllerServiceNames + $selectedArr))
+                    $Config.selectedApps = @(Resolve-SelectedApps -BundleName ([string]$Config.bundle) -RequestedApps @($CoreServiceNames + $selectedArr))
                 }
                 $mediaToolsChoice = Read-WizardChoice -Prompt 'Optional media tools' -Choices @('Skip media tools', 'Download and install portable MPC-HC, ffmpeg, and MediaInfo under the suite path') -DefaultIndex $(if ([bool]$Config.optionalTools.install) { 1 } else { 0 })
                 if ($mediaToolsChoice -lt 0) { continue }
@@ -1488,11 +1421,11 @@ function Invoke-InstallWizard {
             1 {
                 $defaultBind = Get-DefaultControlBindAddress
                 if ([string]::IsNullOrWhiteSpace($defaultBind)) {
-                    $choices = @('One custom bind address for eMuleBB REST, aMuTorrent, and selected Arr services', 'Per-service bind addresses')
-                    $choice = Read-WizardChoice -Prompt 'Control services bind policy (eMuleBB REST, aMuTorrent, selected Arr services)' -Choices $choices -DefaultIndex 0
+                    $choices = @('One custom bind address for eMuleBB REST and selected Arr services', 'Per-service bind addresses')
+                    $choice = Read-WizardChoice -Prompt 'Control services bind policy (eMuleBB REST, selected Arr services)' -Choices $choices -DefaultIndex 0
                     if ($choice -ge 0) { $choice++ }
                 } else {
-                    $choice = Read-WizardChoice -Prompt 'Control services bind policy (eMuleBB REST, aMuTorrent, selected Arr services)' -Choices @("Detected LAN/VPN bind for eMuleBB REST, aMuTorrent, and selected Arr services ($defaultBind)", 'One custom bind address for eMuleBB REST, aMuTorrent, and selected Arr services', 'Per-service bind addresses') -DefaultIndex 0
+                    $choice = Read-WizardChoice -Prompt 'Control services bind policy (eMuleBB REST and selected Arr services)' -Choices @("Detected LAN/VPN bind for eMuleBB REST and selected Arr services ($defaultBind)", 'One custom bind address for eMuleBB REST and selected Arr services', 'Per-service bind addresses') -DefaultIndex 0
                 }
                 if ($choice -lt 0) { $step--; continue }
                 if ($choice -eq 0) {
@@ -1500,7 +1433,7 @@ function Invoke-InstallWizard {
                         $Config.services[$serviceName].bindAddress = $defaultBind
                     }
                 } elseif ($choice -eq 1) {
-                    $bind = Read-WizardValue -Prompt 'Bind address for eMuleBB REST, aMuTorrent, and selected Arr services (localhost, LAN/VPN IP, or other network address)' -Default $defaultBind
+                    $bind = Read-WizardValue -Prompt 'Bind address for eMuleBB REST and selected Arr services (localhost, LAN/VPN IP, or other network address)' -Default $defaultBind
                     foreach ($serviceName in @(Get-SuiteServiceNames -Config $Config)) {
                         $Config.services[$serviceName].bindAddress = $bind
                     }
@@ -1696,14 +1629,11 @@ function Assert-SuiteConfig {
     # reference; the top-level credentials/packageSources/optionalTools defaulting
     # writes must reach the caller instead of a shallow copy.
     param([System.Collections.IDictionary]$Config)
-    if (@('Core', 'Controller', 'Full') -notcontains $Config.bundle) {
-        throw "Bundle must be Core, Controller, or Full: $($Config.bundle)"
+    if (@('Core', 'Full') -notcontains $Config.bundle) {
+        throw "Bundle must be Core or Full: $($Config.bundle)"
     }
     if (@('x64', 'ARM64') -notcontains $Config.platform) {
         throw "Platform must be x64 or ARM64: $($Config.platform)"
-    }
-    if (((@($Config.selectedApps) -contains 'amutorrent') -or @(Get-SelectedArrAppNames -Config $Config).Count -gt 0) -and $Config.platform -ne 'x64') {
-        throw 'Controller and Full bundles are x64-only in v1 because aMuTorrent native node_modules are packaged for the selected Node architecture.'
     }
     if (@('standard', 'diagnostics') -notcontains $Config.emulebbPackageFlavor) {
         throw "EmulebbPackageFlavor must be standard or diagnostics: $($Config.emulebbPackageFlavor)"
@@ -1718,7 +1648,6 @@ function Assert-SuiteConfig {
     if ($null -eq $Config.packageSources) {
         $Config.packageSources = [ordered]@{
             emulebb = [ordered]@{ zip = ''; manifest = '' }
-            amutorrent = [ordered]@{ zip = ''; manifest = '' }
         }
     }
     if ($null -eq $Config.optionalTools) {
@@ -2126,38 +2055,6 @@ function Load-MediaToolDependencies {
     return $result
 }
 
-function Load-NodeSpec {
-    param([object]$Payload, [string]$Platform)
-    $defaultSpec = $NodeArchives[$Platform]
-    $result = @{
-        FileName = [string]$defaultSpec.FileName
-        Sha256 = [string]$defaultSpec.Sha256
-        Url = ''
-    }
-    if ($null -eq $Payload) {
-        return $result
-    }
-    $item = $Payload.node
-    if ($null -eq $item) {
-        return $result
-    }
-    $url = Get-OptionalObjectProperty -Item $item -Name 'url'
-    $fileName = Get-OptionalObjectProperty -Item $item -Name 'fileName'
-    if ([string]::IsNullOrWhiteSpace($fileName) -and -not [string]::IsNullOrWhiteSpace($url)) {
-        $fileName = [IO.Path]::GetFileName($url)
-    }
-    if ([string]::IsNullOrWhiteSpace($fileName)) {
-        throw 'Node dependency manifest entry requires fileName or url.'
-    }
-    $sha256 = Get-OptionalObjectProperty -Item $item -Name 'sha256'
-    if ([string]::IsNullOrWhiteSpace($sha256)) {
-        throw 'Node dependency download requires a SHA256 hash.'
-    }
-    $result.FileName = $fileName
-    $result.Sha256 = $sha256
-    $result.Url = $url
-    return $result
-}
 
 function Save-ReleaseZip {
     param([string]$Name, [string]$ZipUrl, [string]$ManifestUrl)
@@ -2897,12 +2794,6 @@ function Write-CredentialsFile {
     $lines.Add('Services')
     $lines.Add("eMuleBB URL: $(Get-ServiceUrl -Service $Config.services.emulebb)")
     $lines.Add("eMuleBB API key: $($Config.services.emulebb.apiKey)")
-    if (@($Config.selectedApps) -contains 'amutorrent') {
-        $lines.Add('')
-        $lines.Add("aMuTorrent URL: $(Get-ServiceUrl -Service $Config.services.amutorrent)")
-        $lines.Add("aMuTorrent username: $($Config.credentials.username)")
-        $lines.Add("aMuTorrent password: $($Config.credentials.password)")
-    }
     if (@(Get-SelectedArrAppNames -Config $Config).Count -gt 0) {
         foreach ($serviceName in @(Get-SelectedArrAppNames -Config $Config)) {
             $service = $Config.services[$serviceName]
@@ -2953,13 +2844,6 @@ function Write-CredentialsFile {
     )
     $cards.Add((New-ServiceCardHtml -Name 'eMuleBB' -Url (Get-ServiceUrl -Service $Config.services.emulebb) -Fields $emuleFields))
 
-    if (@($Config.selectedApps) -contains 'amutorrent') {
-        $amutorrentFields = @(
-            (New-CopyFieldHtml -Label 'Username' -Value ([string]$Config.credentials.username)),
-            (New-CopyFieldHtml -Label 'Password' -Value ([string]$Config.credentials.password))
-        )
-        $cards.Add((New-ServiceCardHtml -Name 'aMuTorrent' -Url (Get-ServiceUrl -Service $Config.services.amutorrent) -Fields $amutorrentFields))
-    }
     if (@(Get-SelectedArrAppNames -Config $Config).Count -gt 0) {
         foreach ($serviceName in @(Get-SelectedArrAppNames -Config $Config)) {
             $service = $Config.services[$serviceName]
@@ -3337,37 +3221,13 @@ foreach ($name in @(Get-SelectedArrAppNames -Config $script:SuiteConfig)) {
 $script:SuiteConfig.credentials.password = Resolve-Secret -Value $script:SuiteConfig.credentials.password -Name 'Suite password'
 
 $releaseBase = Resolve-OptionalValue -Value $script:SuiteConfig.releaseBaseUrl -Default "https://github.com/emulebb/emulebb/releases/download/emulebb-v$($script:SuiteConfig.version)"
-$amutorrentVersion = Resolve-OptionalValue -Value $script:SuiteConfig.amutorrentVersion -Default $script:SuiteConfig.version
-$amutorrentReleaseBase = Resolve-OptionalValue -Value $script:SuiteConfig.amutorrentReleaseBaseUrl -Default $releaseBase
-$nodeBase = Resolve-OptionalValue -Value $script:SuiteConfig.nodeBaseUrl -Default "https://nodejs.org/dist/$NodeVersion"
 $dependencyManifestPayload = Load-DependencyManifestPayload -ManifestPath $script:SuiteConfig.dependencyManifest
 $assetArch = if ($script:SuiteConfig.platform -eq 'ARM64') { 'arm64' } else { 'x64' }
 $emulebbAssetSuffix = if ($script:SuiteConfig.emulebbPackageFlavor -eq 'diagnostics') { '-diagnostics' } else { '' }
 $appRoot = Join-Path $script:Root 'apps'
 $emulebbPackage = Save-PackageZip -Name 'eMuleBB' -ZipUrl "$releaseBase/emulebb-$($script:SuiteConfig.version)$emulebbAssetSuffix-$assetArch.zip" -ManifestUrl "$releaseBase/emulebb-$($script:SuiteConfig.version)$emulebbAssetSuffix-$assetArch.manifest.json" -LocalZip ([string]$script:SuiteConfig.packageSources.emulebb.zip) -LocalManifest ([string]$script:SuiteConfig.packageSources.emulebb.manifest)
-$amutorrentPackage = $null
-if (@($script:SuiteConfig.selectedApps) -contains 'amutorrent') {
-    $amutorrentPackage = Save-PackageZip -Name 'aMuTorrent' -ZipUrl "$amutorrentReleaseBase/emulebb-$amutorrentVersion-amutorrent-x64.zip" -ManifestUrl "$amutorrentReleaseBase/emulebb-$amutorrentVersion-amutorrent-x64.manifest.json" -LocalZip ([string]$script:SuiteConfig.packageSources.amutorrent.zip) -LocalManifest ([string]$script:SuiteConfig.packageSources.amutorrent.manifest)
-}
-
 Install-VerifiedReleaseZip -Name 'eMuleBB' -ArchivePath $emulebbPackage.ArchivePath -Destination $appRoot
 Assert-EmulebbExecutableInstalled -Config $script:SuiteConfig
-
-if (@($script:SuiteConfig.selectedApps) -contains 'amutorrent') {
-    Install-VerifiedReleaseZip -Name 'aMuTorrent' -ArchivePath $amutorrentPackage.ArchivePath -Destination $appRoot
-    $nodeSpec = Load-NodeSpec -Payload $dependencyManifestPayload -Platform $script:SuiteConfig.platform
-    $nodeArchive = Join-Path (Join-Path $script:Root 'downloads-cache') $nodeSpec.FileName
-    $nodeUrl = if ([string]::IsNullOrWhiteSpace($nodeSpec.Url)) { "$nodeBase/$($nodeSpec.FileName)" } else { [string]$nodeSpec.Url }
-    if (-not (Restore-DependencyCache -Kind 'node' -Name 'Node runtime' -AssetName $nodeSpec.FileName -ExpectedSha256 $nodeSpec.Sha256 -Destination $nodeArchive)) {
-        Write-Step "Downloading Node runtime $($nodeSpec.FileName)"
-        Invoke-Download -Url $nodeUrl -Destination $nodeArchive
-        Write-Step "Verifying Node runtime"
-        Assert-FileHash -Path $nodeArchive -ExpectedSha256 $nodeSpec.Sha256
-        Save-DependencyCache -Kind 'node' -Name 'Node runtime' -AssetName $nodeSpec.FileName -ExpectedSha256 $nodeSpec.Sha256 -Source $nodeArchive
-    }
-    Write-Step "Extracting Node runtime"
-    Expand-ZipSafe -Archive $nodeArchive -Destination (Join-Path $script:Root 'runtime\node')
-}
 
 if (@(Get-SelectedArrAppNames -Config $script:SuiteConfig).Count -gt 0) {
     $selectedArrDependencies = @(Get-SelectedArrAppNames -Config $script:SuiteConfig)

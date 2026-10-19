@@ -31,15 +31,15 @@ SPECS = (
         key="installer-controller-surface",
         scenario_id="emulebb.flow.controller.installer-swarm.v1",
         local_profile="installer-controller-surface",
-        local_suites=("command-line-smoke", "amutorrent-browser-smoke", "package-helper-integration"),
+        local_suites=("command-line-smoke", "package-helper-integration"),
         vm_profile="installer-controller-surface-vm",
     ),
     Spec(
-        key="amutorrent-clean-startup",
-        scenario_id="emulebb.flow.amutorrent.clean-startup.swarm.v1",
+        key="rust-ed2k-transfer",
+        scenario_id="emulebb.flow.rust.ed2k-transfer.swarm.v1",
         local_profile="multi-client-p2p",
-        local_suites=("amutorrent-local-ed2k-ui-live",),
-        vm_profile="amutorrent-clean-startup-vm",
+        local_suites=("deterministic-two-client-transfer",),
+        vm_profile="rust-ed2k-transfer-vm",
     ),
     Spec(
         key="prowlarr-controller-handoff",
@@ -192,7 +192,7 @@ def test_campaign_scenario_local_mode_dispatches_all_reusable_catalog_rows(
 
     for scenario_id in (
         "emulebb.flow.controller.installer-swarm.v1",
-        "emulebb.flow.amutorrent.clean-startup.swarm.v1",
+        "emulebb.flow.rust.ed2k-transfer.swarm.v1",
         "emulebb.flow.arr.prowlarr-handoff.swarm.v1",
         "emulebb.flow.ui.search.local-swarm.v1",
     ):
@@ -206,7 +206,7 @@ def test_campaign_scenario_local_mode_dispatches_all_reusable_catalog_rows(
         (
             "installer-controller-surface",
             "default",
-            ("command-line-smoke", "amutorrent-browser-smoke", "package-helper-integration", "godzilla-local-swarm"),
+            ("command-line-smoke", "package-helper-integration", "godzilla-local-swarm"),
             "launch-scale",
             True,
             True,
@@ -216,7 +216,7 @@ def test_campaign_scenario_local_mode_dispatches_all_reusable_catalog_rows(
         (
             "multi-client-p2p",
             "default",
-            ("amutorrent-local-ed2k-ui-live", "godzilla-local-swarm"),
+            ("deterministic-two-client-transfer", "godzilla-local-swarm"),
             "launch-scale",
             True,
             True,
@@ -348,7 +348,7 @@ def test_campaign_scenario_vm_mode_dispatches_all_reusable_catalog_rows(
 
     for scenario_id in (
         "emulebb.flow.controller.installer-swarm.v1",
-        "emulebb.flow.amutorrent.clean-startup.swarm.v1",
+        "emulebb.flow.rust.ed2k-transfer.swarm.v1",
         "emulebb.flow.arr.prowlarr-handoff.swarm.v1",
         "emulebb.flow.ui.search.local-swarm.v1",
     ):
@@ -366,7 +366,7 @@ def test_campaign_scenario_vm_mode_dispatches_all_reusable_catalog_rows(
 
     assert calls == [
         (("win10", "win11"), "installer-controller-surface-vm", "0.7.4-rc.2", 2, "execute"),
-        (("win10", "win11"), "amutorrent-clean-startup-vm", "0.7.4-rc.2", 2, "execute"),
+        (("win10", "win11"), "rust-ed2k-transfer-vm", "0.7.4-rc.2", 2, "execute"),
         (("win10", "win11"), "prowlarr-controller-handoff-vm", "0.7.4-rc.2", 2, "execute"),
         (("win10", "win11"), "search-ui-local-swarm-vm", "0.7.4-rc.2", 2, "execute"),
     ]

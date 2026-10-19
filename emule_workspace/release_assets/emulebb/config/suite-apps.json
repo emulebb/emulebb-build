@@ -1,25 +1,7 @@
 {
   "schema": "emulebb.suite-apps.v1",
-  "node": {
-    "version": "v24.16.0",
-    "minimumMajor": 24,
-    "archives": {
-      "x64": {
-        "fileName": "node-v24.16.0-win-x64.zip",
-        "sha256": "edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56"
-      },
-      "ARM64": {
-        "fileName": "node-v24.16.0-win-arm64.zip",
-        "sha256": "14834611d4c6b3c06054e7007732b90474c16e0b32f395e05b55a571ef71c6d2"
-      }
-    }
-  },
   "coreServiceNames": [
     "emulebb"
-  ],
-  "controllerServiceNames": [
-    "emulebb",
-    "amutorrent"
   ],
   "defaultArrAppNames": [
     "prowlarr",
@@ -29,7 +11,6 @@
   ],
   "suiteServiceOrder": [
     "emulebb",
-    "amutorrent",
     "prowlarr",
     "radarr",
     "sonarr",

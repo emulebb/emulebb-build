@@ -32,7 +32,6 @@ from .build import (
 from .artifact_names import utc_run_id
 from .build_state import BuildSession
 from .config import (
-    AmutorrentPackageOptions,
     EmulebbRustPackageOptions,
     QbittorrentbbPackageOptions,
     ReleasePackageOptions,
@@ -68,17 +67,6 @@ KAD_DIAGNOSTICS_BINARY_MARKERS = (
     b"emulebb-diagnostics-kad.log",
     "emulebb-diagnostics-kad.log".encode("utf-16le"),
 )
-AMUTORRENT_NODE_VERSION = "v24.16.0"
-AMUTORRENT_NODE_ARCHIVES = {
-    "x64": (
-        "node-v24.16.0-win-x64.zip",
-        "edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56",
-    ),
-    "ARM64": (
-        "node-v24.16.0-win-arm64.zip",
-        "14834611d4c6b3c06054e7007732b90474c16e0b32f395e05b55a571ef71c6d2",
-    ),
-}
 RELEASE_THIRD_PARTY_COMPONENTS = (
     ("Crypto++", "Boost-1.0"),
     ("id3lib", "LGPL-2.0-only"),
@@ -112,7 +100,6 @@ EMULEBB_RUNTIME_SCRIPT_PATHS = (
     "scripts/Enable-LongPaths.ps1",
     "scripts/Register-Prowlarr.ps1",
     "scripts/Register-ArrStack.ps1",
-    "scripts/Register-aMuTorrent.ps1",
     "scripts/Initialize-Suite.ps1",
     "scripts/Start-eMuleBB.ps1",
     "scripts/Start-Suite.ps1",
@@ -209,90 +196,6 @@ EMULEBB_PACKAGE_ROOT_NAME = "eMuleBB"
 EMULEBB_RELEASE_ASSET_ROOT_NAME = "emulebb"
 
 
-def create_amutorrent_package(
-    layout: WorkspaceLayout,
-    workspace_options: WorkspaceOptions,
-    package_options: AmutorrentPackageOptions,
-) -> None:
-    """Builds the optional aMuTorrent controller ZIP plus manifest."""
-
-    if workspace_options.configuration != "Release":
-        raise RuntimeError("package amutorrent requires --config Release.")
-    if not _is_release_version(package_options.release_version):
-        raise RuntimeError(
-            f"Release version must use {RELEASE_VERSION_FORMAT} format: {package_options.release_version}"
-        )
-
-    amutorrent_root = layout.resolve_workspace_path("repos/amutorrent")
-    if not amutorrent_root.is_dir():
-        raise RuntimeError(
-            "package amutorrent requires a manual repos/amutorrent checkout; "
-            "it is no longer materialized by workspace setup."
-        )
-    _assert_clean_amutorrent_package_inputs(layout, amutorrent_root)
-    asset_arch = "arm64" if workspace_options.platform == "ARM64" else "x64"
-    package_build_root = layout.output_packages_root / "build" / "amutorrent" / asset_arch
-    staged_source_root = package_build_root / "source"
-    static_build_root = package_build_root / "static"
-    _assert_path_under_root(package_build_root, layout.output_packages_root, "aMuTorrent package build path")
-    if package_options.clean and package_build_root.exists():
-        shutil.rmtree(package_build_root)
-    node_bin_dir = _ensure_amutorrent_build_node(layout, workspace_options.platform)
-    _stage_amutorrent_source(amutorrent_root, staged_source_root)
-    _build_amutorrent_webapp(staged_source_root, package_options.clean, static_build_root, node_bin_dir)
-
-    release_root = _release_root_for_version(layout, package_options.release_version)
-    staging_root = release_root / "staging" / f"amutorrent-{asset_arch}"
-    package_root = staging_root / "aMuTorrent"
-    zip_path = release_root / f"emulebb-{package_options.release_version}-amutorrent-{asset_arch}.zip"
-    manifest_path = release_root / f"emulebb-{package_options.release_version}-amutorrent-{asset_arch}.manifest.json"
-    sbom_path = release_root / f"emulebb-{package_options.release_version}-amutorrent-{asset_arch}.sbom.spdx.json"
-    for path_to_check in (staging_root, package_root, zip_path, manifest_path, sbom_path):
-        _assert_path_under_root(path_to_check, release_root, "aMuTorrent package path")
-
-    if staging_root.exists():
-        shutil.rmtree(staging_root)
-    package_root.mkdir(parents=True, exist_ok=True)
-    _copy_amutorrent_runtime(staged_source_root, package_root, static_build_root)
-    _write_amutorrent_readme(package_root, package_options.release_version, workspace_options.platform)
-    _copy_package_file(amutorrent_root / "LICENSE", package_root, Path("LICENSE-aMuTorrent.txt"))
-    _write_amutorrent_sbom(
-        layout=layout,
-        workspace_options=workspace_options,
-        package_options=package_options,
-        amutorrent_root=amutorrent_root,
-        package_root=package_root,
-        release_root=release_root,
-        asset_name=zip_path.name,
-    )
-
-    if zip_path.exists():
-        zip_path.unlink()
-    release_root.mkdir(parents=True, exist_ok=True)
-    _write_zip(staging_root, package_root, zip_path)
-    _assert_amutorrent_package_contents(zip_path)
-
-    zip_hash = _sha256(zip_path)
-    package_file_hashes = _zip_entry_hashes(zip_path)
-    shutil.copy2(package_root / "SBOM.spdx.json", sbom_path)
-    sbom_hash = _sha256(sbom_path)
-    manifest = _build_amutorrent_manifest(
-        layout=layout,
-        workspace_options=workspace_options,
-        package_options=package_options,
-        amutorrent_root=amutorrent_root,
-        zip_path=zip_path,
-        release_root=release_root,
-        zip_hash=zip_hash,
-        sbom_path=sbom_path,
-        sbom_hash=sbom_hash,
-        package_file_hashes=package_file_hashes,
-    )
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
-    print(f"aMuTorrent package: {zip_path}")
-    print(f"aMuTorrent manifest: {manifest_path}")
-    print(f"aMuTorrent SBOM: {sbom_path}")
-    print(f"SHA256: {zip_hash}")
 
 
 def create_qbittorrentbb_package(
@@ -1568,89 +1471,8 @@ def _build_release_manifest(
     }
 
 
-def _build_amutorrent_manifest(
-    *,
-    layout: WorkspaceLayout,
-    workspace_options: WorkspaceOptions,
-    package_options: AmutorrentPackageOptions,
-    amutorrent_root: Path,
-    zip_path: Path,
-    release_root: Path,
-    zip_hash: str,
-    sbom_path: Path,
-    sbom_hash: str,
-    package_file_hashes: dict[str, str],
-) -> dict[str, object]:
-    """Builds the provenance manifest for one optional aMuTorrent asset."""
-
-    node_archive_name, node_archive_sha256 = AMUTORRENT_NODE_ARCHIVES[workspace_options.platform]
-    upstream_base = _amutorrent_upstream_base(amutorrent_root)
-    return {
-        "product": "eMule broadband edition",
-        "compactName": "eMuleBB",
-        "package": "aMuTorrent optional controller",
-        "version": package_options.release_version,
-        "tag": f"emulebb-v{package_options.release_version}",
-        "configuration": workspace_options.configuration,
-        "platform": workspace_options.platform,
-        "asset": zip_path.name,
-        "assetPath": zip_path.relative_to(release_root).as_posix(),
-        "sha256": zip_hash,
-        "sbomFormat": "SPDX-2.3 JSON",
-        "sbomPath": sbom_path.relative_to(release_root).as_posix(),
-        "sbomSha256": sbom_hash,
-        "packageFileSha256": package_file_hashes,
-        "runtimePolicy": {
-            "minimumPathNodeMajor": 24,
-            "pinnedFallbackNodeVersion": AMUTORRENT_NODE_VERSION,
-            "pinnedFallbackNodeArchive": node_archive_name,
-            "pinnedFallbackNodeArchiveSha256": node_archive_sha256,
-            "runnerOwner": "eMuleBB suite installer",
-            "pathPm2Allowed": False,
-            "packageLocalPm2Allowed": False,
-            "packageLocalDataRoot": "aMuTorrent/data",
-            "packageLocalLogRoot": "aMuTorrent/logs",
-            "packageLocalRuntimeRoot": "aMuTorrent/runtime",
-            "localAppDataUsed": False,
-            "spacesInInstallPathAllowed": False,
-        },
-        "upstreamBase": upstream_base,
-        "amutorrentBranch": repo_branch(amutorrent_root),
-        "amutorrentCommit": repo_head(amutorrent_root),
-        "buildBranch": repo_branch(layout.build_repo_root),
-        "buildCommit": repo_head(layout.build_repo_root),
-        "buildTestsBranch": repo_branch(layout.tests_repo_root),
-        "buildTestsCommit": repo_head(layout.tests_repo_root),
-        "toolingBranch": repo_branch(layout.tooling_repo_root),
-        "toolingCommit": repo_head(layout.tooling_repo_root),
-        "generatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "includedPaths": [
-            "aMuTorrent/server",
-            "aMuTorrent/server/node_modules",
-            "aMuTorrent/static",
-            "aMuTorrent/README.md",
-            "aMuTorrent/LICENSE-aMuTorrent.txt",
-            "aMuTorrent/SBOM.spdx.json",
-        ],
-    }
 
 
-def _amutorrent_upstream_base(amutorrent_root: Path) -> dict[str, str]:
-    """Reads the fork manifest's recorded upstream base for package provenance."""
-
-    manifest_path = amutorrent_root / "fork-delta.json"
-    if not manifest_path.is_file():
-        return {}
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    upstream = payload.get("upstream")
-    if not isinstance(upstream, dict):
-        return {}
-    result: dict[str, str] = {}
-    for key in ("url", "branch", "baseCommit", "baseVersion"):
-        value = upstream.get(key)
-        if isinstance(value, str) and value:
-            result[key] = value
-    return result
 
 
 def _write_release_sbom(
@@ -1693,38 +1515,6 @@ def _write_release_sbom(
     sbom_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
-def _write_amutorrent_sbom(
-    *,
-    layout: WorkspaceLayout,
-    workspace_options: WorkspaceOptions,
-    package_options: AmutorrentPackageOptions,
-    amutorrent_root: Path,
-    package_root: Path,
-    release_root: Path,
-    asset_name: str,
-) -> None:
-    """Writes a package-local SPDX SBOM for the optional aMuTorrent asset."""
-
-    sbom_path = package_root / "SBOM.spdx.json"
-    _assert_path_under_root(sbom_path, package_root, "aMuTorrent package SBOM")
-    components = [
-        _repo_spdx_package("aMuTorrent source", amutorrent_root),
-        _repo_spdx_package("eMule build orchestration", layout.build_repo_root),
-        _repo_spdx_package("eMule build tests", layout.tests_repo_root),
-        _repo_spdx_package("eMule tooling docs", layout.tooling_repo_root),
-    ]
-    document = _build_spdx_sbom(
-        name=f"eMuleBB aMuTorrent {package_options.release_version} {workspace_options.platform} package",
-        namespace=f"https://github.com/emulebb/emulebb/releases/download/emulebb-v{package_options.release_version}/{asset_name}.sbom",
-        package_name=f"emulebb-{package_options.release_version}-amutorrent-{workspace_options.platform}",
-        package_version=package_options.release_version,
-        package_license="NOASSERTION",
-        package_comment="Optional aMuTorrent controller package.",
-        package_root=package_root,
-        release_root=release_root,
-        components=components,
-    )
-    sbom_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def _build_spdx_sbom(
@@ -1922,26 +1712,6 @@ def _assert_clean_release_inputs(layout: WorkspaceLayout, app_root: Path) -> Non
         )
 
 
-def _assert_clean_amutorrent_package_inputs(layout: WorkspaceLayout, amutorrent_root: Path) -> None:
-    """Rejects dirty inputs whose exact commits are recorded in the aMuTorrent manifest."""
-
-    repos = (
-        ("aMuTorrent source", amutorrent_root),
-        ("build orchestration", layout.build_repo_root),
-        ("build tests", layout.tests_repo_root),
-        ("tooling docs", layout.tooling_repo_root),
-    )
-    dirty_inputs: list[str] = []
-    for label, repo_path in repos:
-        changes = [line for line in repo_status_lines(repo_path) if not line.startswith("## ")]
-        if changes:
-            sample = "\n    ".join(changes[:20])
-            dirty_inputs.append(f"- {label}: {repo_path}\n    {sample}")
-    if dirty_inputs:
-        raise RuntimeError(
-            "package amutorrent requires clean provenance inputs before writing assets:\n"
-            + "\n".join(dirty_inputs)
-        )
 
 
 def ensure_canonical_app_anchor(layout: WorkspaceLayout) -> None:
@@ -2104,172 +1874,20 @@ def _default_platform_toolset_property(layout: WorkspaceLayout) -> str:
     return f"/p:PlatformToolset={override}" if override else "/p:PlatformToolset=v143"
 
 
-def _ensure_amutorrent_build_node(layout: WorkspaceLayout, platform: str) -> Path:
-    """Materializes the pinned Node toolchain used to build aMuTorrent native modules.
-
-    WHY pin (and not use the ambient PATH Node): aMuTorrent ships native modules
-    (better-sqlite3) whose ``NODE_MODULE_VERSION`` is keyed to the Node *major*, and
-    the installed suite loads them under the pinned ``AMUTORRENT_NODE_VERSION`` runtime.
-    Building against whatever Node happens to be on PATH (e.g. Node 25 while the suite
-    ships Node 24) produces an ABI-mismatched package that fails to launch. Building
-    against the exact pinned Node — downloaded once and verified by SHA-256 — makes the
-    native module deterministically match the shipped runtime regardless of the build
-    host's installed Node. Returns the directory containing ``node.exe``/``npm.cmd``.
-    """
-
-    if platform not in AMUTORRENT_NODE_ARCHIVES:
-        raise RuntimeError(f"No pinned aMuTorrent build Node is defined for platform {platform!r}.")
-    archive_name, archive_sha256 = AMUTORRENT_NODE_ARCHIVES[platform]
-    node_root = layout.output_tools_root / "node"
-    node_dir = node_root / archive_name[: -len(".zip")]
-    node_exe = node_dir / "node.exe"
-    npm_cmd = node_dir / "npm.cmd"
-
-    if not (node_exe.is_file() and npm_cmd.is_file()):
-        archive_path = node_root / archive_name
-        if not (archive_path.is_file() and _sha256(archive_path) == archive_sha256):
-            node_root.mkdir(parents=True, exist_ok=True)
-            tmp_path = archive_path.with_suffix(archive_path.suffix + ".tmp")
-            tmp_path.unlink(missing_ok=True)
-            url = f"https://nodejs.org/dist/{AMUTORRENT_NODE_VERSION}/{archive_name}"
-            with urllib.request.urlopen(url, timeout=300) as response, tmp_path.open("wb") as handle:
-                shutil.copyfileobj(response, handle)
-            actual = _sha256(tmp_path)
-            if actual != archive_sha256:
-                tmp_path.unlink(missing_ok=True)
-                raise RuntimeError(
-                    "Pinned aMuTorrent Node archive SHA256 mismatch. "
-                    f"Expected {archive_sha256}, got {actual}."
-                )
-            tmp_path.replace(archive_path)
-        if node_dir.exists():
-            shutil.rmtree(node_dir)
-        with zipfile.ZipFile(archive_path) as archive:
-            archive.extractall(node_root)
-        if not (node_exe.is_file() and npm_cmd.is_file()):
-            raise RuntimeError(
-                f"Pinned Node archive {archive_name} did not yield node.exe/npm.cmd under {node_dir}."
-            )
-
-    # Re-check the materialized Node actually runs the pinned version on this host:
-    # catches a corrupt extract or a cross-arch archive that cannot execute here.
-    completed = subprocess.run(
-        [str(node_exe), "-p", "process.versions.node"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    reported = "v" + completed.stdout.strip()
-    if reported != AMUTORRENT_NODE_VERSION:
-        raise RuntimeError(
-            f"Pinned aMuTorrent build Node reported {reported}, expected {AMUTORRENT_NODE_VERSION}."
-        )
-    return node_dir
 
 
-def _stage_amutorrent_source(amutorrent_root: Path, staged_source_root: Path) -> None:
-    """Stages package build inputs without repo-local generated outputs."""
-
-    if staged_source_root.exists():
-        shutil.rmtree(staged_source_root)
-    _copy_tree_filtered(amutorrent_root, staged_source_root, _exclude_amutorrent_source_stage)
 
 
-def _exclude_amutorrent_source_stage(relative_path: Path, source_path: Path) -> bool:
-    parts = relative_path.parts
-    if any(part in {".git", "node_modules", ".cache", "__pycache__"} for part in parts):
-        return True
-    if parts and parts[0] in {"data", "logs", "tmp", "temp"}:
-        return True
-    if len(parts) >= 2 and parts[0] == "server" and parts[1] in {"data", "logs"}:
-        return True
-    if relative_path == Path("static/output.css"):
-        return True
-    if len(parts) >= 2 and parts[0] == "static" and parts[1] == "dist":
-        return relative_path.name != "chart.umd.min.js"
-    if source_path.is_file() and source_path.suffix.lower() in {".log", ".db", ".sqlite", ".sqlite3", ".map"}:
-        return True
-    return False
 
 
-def _build_amutorrent_webapp(
-    staged_source_root: Path,
-    clean: bool,
-    static_output_root: Path,
-    node_bin_dir: Path,
-) -> None:
-    """Installs runtime dependencies and refreshes bundled assets with the pinned Node."""
-
-    if clean:
-        for generated_path in (
-            staged_source_root / "node_modules",
-            staged_source_root / "server" / "node_modules",
-            static_output_root,
-        ):
-            if generated_path.exists():
-                shutil.rmtree(generated_path)
-    npm = node_bin_dir / "npm.cmd"
-    if not npm.is_file():
-        raise RuntimeError(f"Pinned aMuTorrent build Node toolchain is missing npm: {npm}.")
-    env = os.environ.copy()
-    env["AMUTORRENT_STATIC_OUTPUT_ROOT"] = str(static_output_root)
-    # Put the pinned Node first on PATH so npm and any lifecycle scripts resolve it,
-    # not the build host's ambient Node.
-    env["PATH"] = str(node_bin_dir) + os.pathsep + env.get("PATH", "")
-    static_output_root.mkdir(parents=True, exist_ok=True)
-    subprocess.run([str(npm), "ci"], cwd=staged_source_root, check=True, env=env)
-    subprocess.run([str(npm), "ci", "--prefix", "server", "--omit=dev"], cwd=staged_source_root, check=True, env=env)
-    subprocess.run([str(npm), "run", "build"], cwd=staged_source_root, check=True, env=env)
 
 
-def _copy_amutorrent_runtime(amutorrent_root: Path, package_root: Path, static_build_root: Path) -> None:
-    """Copies the aMuTorrent runtime payload."""
-
-    server_root = amutorrent_root / "server"
-    static_root = amutorrent_root / "static"
-    if not (server_root / "node_modules").is_dir():
-        raise RuntimeError(f"Cannot package missing aMuTorrent production node_modules: {server_root / 'node_modules'}")
-    if not (static_build_root / "dist" / "app.bundle.js").is_file():
-        raise RuntimeError(f"Cannot package missing built aMuTorrent frontend bundle: {static_build_root / 'dist' / 'app.bundle.js'}")
-    if not (static_build_root / "output.css").is_file():
-        raise RuntimeError(f"Cannot package missing built aMuTorrent CSS bundle: {static_build_root / 'output.css'}")
-
-    _copy_tree_filtered(server_root, package_root / "server", _exclude_amutorrent_server_runtime)
-    _copy_tree_filtered(static_root, package_root / "static", _exclude_amutorrent_static_source_runtime)
-    _copy_tree_filtered(static_build_root, package_root / "static", _exclude_amutorrent_static_runtime)
 
 
-def _exclude_amutorrent_server_runtime(relative_path: Path, source_path: Path) -> bool:
-    parts = relative_path.parts
-    if parts and parts[0] in {"data", "logs"}:
-        return True
-    if any(part in {".cache", "__pycache__"} for part in parts):
-        return True
-    if source_path.is_file() and source_path.suffix.lower() == ".map":
-        return True
-    if "node_modules" not in parts and source_path.is_file() and source_path.suffix.lower() in {".log", ".db", ".sqlite", ".sqlite3"}:
-        return True
-    return False
 
 
-def _exclude_amutorrent_static_runtime(relative_path: Path, source_path: Path) -> bool:
-    parts = relative_path.parts
-    if parts and parts[0] in {"components", "contexts", "hooks", "utils"}:
-        return True
-    if relative_path.name == "app.js":
-        return True
-    if source_path.is_file() and source_path.suffix.lower() in {".map", ".sh"}:
-        return True
-    return False
 
 
-def _exclude_amutorrent_static_source_runtime(relative_path: Path, source_path: Path) -> bool:
-    parts = relative_path.parts
-    if parts and parts[0] == "dist":
-        return True
-    if relative_path.name == "output.css":
-        return True
-    return _exclude_amutorrent_static_runtime(relative_path, source_path)
 
 
 def _expected_language_dlls(tooling_repo_root: Path) -> tuple[str, ...]:
@@ -2706,42 +2324,6 @@ def _write_package_gpl_text(layout: WorkspaceLayout, package_root: Path) -> None
     destination_path.write_text(gpl_text, encoding="utf-8", newline="\n")
 
 
-def _write_amutorrent_readme(package_root: Path, release_version: str, platform: str) -> None:
-    """Writes the optional aMuTorrent package README."""
-
-    asset_arch = "arm64" if platform == "ARM64" else "x64"
-    readme_path = package_root / "README.md"
-    _assert_path_under_root(readme_path, package_root, "aMuTorrent package README")
-    readme_path.write_text(
-        "\n".join(
-            (
-                "# aMuTorrent optional controller",
-                "",
-                f"eMule broadband edition package version: {release_version}",
-                f"Architecture: {asset_arch}",
-                "",
-                "This ZIP is a controller runtime payload. Use the eMuleBB suite",
-                "installer from the main app package to create start/stop scripts,",
-                "download Node when needed, and wire package-local runtime state.",
-                "",
-                "The suite installer uses Node 24 or newer from PATH when available.",
-                f"Otherwise it downloads the pinned {AMUTORRENT_NODE_VERSION} Windows runtime",
-                "under the suite install root.",
-                "`SBOM.spdx.json` records the packaged controller files and runtime",
-                "components in SPDX 2.3 JSON format.",
-                "",
-                "Runtime state is provided by the suite installer through",
-                "`AMUTORRENT_DATA_DIR`; this package does not write Windows AppData",
-                "defaults and does not include a standalone installer.",
-                "",
-                "This package is a portable multi-client aMuTorrent controller. It keeps",
-                "runtime defaults under the package root.",
-            )
-        )
-        + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
 
 
 def _write_zip(staging_root: Path, package_root: Path, zip_path: Path) -> None:
@@ -2859,57 +2441,6 @@ def _assert_emulebb_rust_package_contents(zip_path: Path, platform: str = "x64")
     print(f"eMuleBB Rust package content check: {zip_path} ({len(entry_names)} entries)")
 
 
-def _assert_amutorrent_package_contents(zip_path: Path) -> None:
-    """Checks the optional aMuTorrent package for required runtime files and forbidden state."""
-
-    with zipfile.ZipFile(zip_path, "r") as archive:
-        entry_names = [name.replace("\\", "/") for name in archive.namelist()]
-        entry_set = set(entry_names)
-        required_entries = (
-            "aMuTorrent/README.md",
-            "aMuTorrent/LICENSE-aMuTorrent.txt",
-            "aMuTorrent/SBOM.spdx.json",
-            "aMuTorrent/server/server.js",
-            "aMuTorrent/server/package.json",
-            "aMuTorrent/server/package-lock.json",
-            "aMuTorrent/server/node_modules/express/package.json",
-            "aMuTorrent/server/node_modules/better-sqlite3/package.json",
-            "aMuTorrent/static/index.html",
-            "aMuTorrent/static/output.css",
-            "aMuTorrent/static/dist/app.bundle.js",
-        )
-        for required_entry in required_entries:
-            if required_entry not in entry_set:
-                raise RuntimeError(f"aMuTorrent package is missing required entry '{required_entry}': {zip_path}")
-        forbidden_entries = [
-            name
-            for name in entry_names
-            if name.startswith("aMuTorrent/server/data/")
-            or name.startswith("aMuTorrent/server/logs/")
-            or name.startswith("aMuTorrent/data/")
-            or name.startswith("aMuTorrent/logs/")
-            or name.startswith("aMuTorrent/runtime/")
-            or name.startswith("aMuTorrent/installer/")
-            or name.startswith("aMuTorrent/node_modules/")
-            or name.startswith("aMuTorrent/static/components/")
-            or name.startswith("aMuTorrent/static/contexts/")
-            or name.startswith("aMuTorrent/static/hooks/")
-            or name.startswith("aMuTorrent/static/utils/")
-            or name == "aMuTorrent/static/app.js"
-            or "/.git/" in name
-            or "/tests/" in name
-            or name.endswith(".map")
-            or name.endswith(".log")
-            or name.endswith(".db")
-            or name.endswith(".sqlite")
-            or name.endswith(".sqlite3")
-            or name == "aMuTorrent/server/node_modules/nodemon/package.json"
-            or " " in name
-        ]
-        if forbidden_entries:
-            sample = "\n".join(forbidden_entries[:20])
-            raise RuntimeError(f"aMuTorrent package contains forbidden generated or source artifacts:\n{sample}")
-    print(f"aMuTorrent package content check: {zip_path} ({len(entry_names)} entries)")
 
 
 def _assert_pe_machine(path: Path, platform: str) -> None:

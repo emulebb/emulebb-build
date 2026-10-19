@@ -605,29 +605,12 @@ def _product_family_output_candidates(layout: WorkspaceLayout) -> list[CleanupCa
         _optional_root(layout, "p2p_overlord_agents_repo_root") / "target",
         _optional_root(layout, "p2p_overlord_be_repo_root") / "overlord-be-coordinator" / "node_modules",
         _optional_root(layout, "p2p_overlord_be_repo_root") / "overlord-be-coordinator" / ".svelte-kit",
-        repos_root / "amutorrent" / "node_modules",
-        repos_root / "amutorrent" / "server" / "node_modules",
-        repos_root / "amutorrent" / "server" / "data",
-        repos_root / "amutorrent" / "server" / "logs",
-        repos_root / "amutorrent" / "website" / "node_modules",
-        repos_root / "amutorrent" / "website" / ".astro",
-        repos_root / "amutorrent" / "website" / "dist",
-        repos_root / "amutorrent" / "website" / "public",
-        repos_root / "amutorrent" / "website" / "src" / "assets",
-        repos_root / "amutorrent" / "website" / "src" / "content" / "docs" / "docs",
         repos_root / "amule" / "build",
         repos_root / "amule" / "dist",
     )
     for path in candidate_paths:
         if path.is_dir():
             candidates.append(_directory_candidate(path, "product-family-output", "generated product-family repository output"))
-    for path in (
-        repos_root / "amutorrent" / "static" / "dist" / "app.bundle.js",
-        repos_root / "amutorrent" / "static" / "dist" / "app.bundle.js.map",
-        repos_root / "amutorrent" / "static" / "output.css",
-    ):
-        if path.is_file():
-            candidates.append(_file_candidate(path, "product-family-output", "generated product-family repository output"))
     return candidates
 
 

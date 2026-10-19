@@ -73,9 +73,6 @@ def test_certification_step_plan_is_two_tier() -> None:
     assert "live-stabilization-stress" in [step.name for step in overnight]
     assert "live-release-expanded" in [step.name for step in overnight]
     assert "live-ui-resource-depth" in [step.name for step in overnight]
-    assert "amutorrent-clean-startup" in [step.name for step in overnight]
-    assert "amutorrent-emulebb-ui" in [step.name for step in overnight]
-    assert "amutorrent-resilience" in [step.name for step in overnight]
 
 
 def test_certification_quick_tier_is_lean_subset_of_fast() -> None:
@@ -302,7 +299,7 @@ def test_overnight_stress_step_enables_cpu_profile(tmp_path: Path, monkeypatch: 
     assert live_options.rest_cold_start_dump_stress_cpu_profile_stack is True
 
 
-def test_overnight_vpn_only_steps_are_skipped_by_default_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_overnight_plan_has_no_retired_vpn_only_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     layout = make_layout(tmp_path)
     calls: list[str] = []
 
@@ -319,12 +316,7 @@ def test_overnight_vpn_only_steps_are_skipped_by_default_network(tmp_path: Path,
 
     report = json.loads(latest_certification_report(layout).read_text(encoding="utf-8"))
     skipped = [step for step in report["steps"] if step["status"] == "skipped"]
-    assert [step["name"] for step in skipped] == [
-        "amutorrent-clean-startup",
-        "amutorrent-emulebb-ui",
-        "amutorrent-resilience",
-    ]
-    assert all("requires vpn" in step["error"] for step in skipped)
+    assert skipped == []
     assert not any(name.startswith("amutorrent-") for name in calls)
 
 

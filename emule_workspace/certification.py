@@ -14,9 +14,6 @@ from .build import build_apps
 from .build_tests import invoke_build_tests
 from .cleanup import CleanupFailedError, CleanupRunSummary, cleanup_summary_payload, run_pre_test_cleanup
 from .config import (
-    AmutorrentCleanStartupOptions,
-    AmutorrentEmulebbUiOptions,
-    AmutorrentResilienceOptions,
     BuildTestsOptions,
     CertificationOptions,
     CommunityCoverageOptions,
@@ -28,9 +25,6 @@ from .config import (
 from .layout import WorkspaceLayout
 from .python_tests import invoke_python_tests
 from .test_runs import (
-    invoke_amutorrent_clean_startup,
-    invoke_amutorrent_emulebb_ui,
-    invoke_amutorrent_resilience,
     invoke_community_core_coverage,
     invoke_live_e2e_suite,
     invoke_protocol_parity,
@@ -89,9 +83,6 @@ OVERNIGHT_EXTRA_STEP_PLAN = (
     CertificationStepPlan("live-release-expanded", "live"),
     CertificationStepPlan("live-ui-resource-depth", "live"),
     CertificationStepPlan("live-stabilization-stress", "stress"),
-    CertificationStepPlan("amutorrent-clean-startup", "amutorrent"),
-    CertificationStepPlan("amutorrent-emulebb-ui", "amutorrent"),
-    CertificationStepPlan("amutorrent-resilience", "amutorrent"),
 )
 
 
@@ -173,9 +164,6 @@ def _aggregate_status(steps: list[CertificationStepResult]) -> str:
 def _skip_reason_for_network(step_plan: CertificationStepPlan, certification_options: CertificationOptions) -> str:
     """Returns a skip reason when a certification step is outside the selected test network."""
 
-    if step_plan.name in {"amutorrent-clean-startup", "amutorrent-emulebb-ui", "amutorrent-resilience"}:
-        if certification_options.test_network not in {"vpn", "all"}:
-            return f"Skipped by test_network={certification_options.test_network}; step requires vpn."
     return ""
 
 
@@ -332,27 +320,6 @@ def _invoke_step(
             ),
         )
         return
-    if name == "amutorrent-clean-startup":
-        invoke_amutorrent_clean_startup(
-            layout,
-            _step_options(options, configuration="Release", platform="x64"),
-            _amutorrent_clean_options(certification_options),
-        )
-        return
-    if name == "amutorrent-emulebb-ui":
-        invoke_amutorrent_emulebb_ui(
-            layout,
-            _step_options(options, configuration="Release", platform="x64"),
-            _amutorrent_ui_options(certification_options),
-        )
-        return
-    if name == "amutorrent-resilience":
-        invoke_amutorrent_resilience(
-            layout,
-            _step_options(options, configuration="Release", platform="x64"),
-            _amutorrent_resilience_options(certification_options),
-        )
-        return
     raise ValueError(f"Unsupported certification step: {name}")
 
 
@@ -419,38 +386,12 @@ def _live_options(
     )
 
 
-def _amutorrent_clean_options(certification_options: CertificationOptions) -> AmutorrentCleanStartupOptions:
-    return AmutorrentCleanStartupOptions(
-        live_wire_inputs_file=certification_options.live_wire_inputs_file,
-        test_network=_vpn_step_test_network(certification_options),
-        rest_webserver_scheme="https",
-        keep_artifacts=True,
-        p2p_bind_interface_name=certification_options.p2p_bind_interface_name,
-    )
 
 
-def _amutorrent_ui_options(certification_options: CertificationOptions) -> AmutorrentEmulebbUiOptions:
-    return AmutorrentEmulebbUiOptions(
-        live_wire_inputs_file=certification_options.live_wire_inputs_file,
-        test_network=_vpn_step_test_network(certification_options),
-        rest_webserver_scheme="https",
-        keep_artifacts=True,
-        p2p_bind_interface_name=certification_options.p2p_bind_interface_name,
-    )
 
 
-def _amutorrent_resilience_options(certification_options: CertificationOptions) -> AmutorrentResilienceOptions:
-    return AmutorrentResilienceOptions(
-        live_wire_inputs_file=certification_options.live_wire_inputs_file,
-        test_network=_vpn_step_test_network(certification_options),
-        rest_webserver_scheme="https",
-        keep_artifacts=True,
-        p2p_bind_interface_name=certification_options.p2p_bind_interface_name,
-    )
 
 
-def _vpn_step_test_network(certification_options: CertificationOptions) -> str:
-    return "all" if certification_options.test_network == "all" else "vpn"
 
 
 def _new_report_dir(layout: WorkspaceLayout, profile: str) -> Path:

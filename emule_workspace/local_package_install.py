@@ -14,13 +14,12 @@ from typing import Any
 
 from . import suite_installer
 from .build import APP_EXE_NAME, app_pdb_name_for_exe, package_app_exe_name
-from .config import AmutorrentPackageOptions, LocalPackageInstallOptions, ReleasePackageOptions, WorkspaceOptions
+from .config import LocalPackageInstallOptions, ReleasePackageOptions, WorkspaceOptions
 from .layout import WorkspaceLayout, file_token
 from .release import (
     EMULEBB_PACKAGE_ROOT_NAME,
     EMULEBB_RELEASE_ASSET_ROOT_NAME,
     EMULEBB_RUNTIME_SCRIPT_PATHS,
-    create_amutorrent_package,
     create_release_package,
 )
 
@@ -31,8 +30,6 @@ INSTALL_MANIFEST_SCHEMA = "emulebb.local-package-install.v1"
 TEST_INSTALLS_DIR_NAME = "test-installs"
 TEST_PROFILE_SEED_DIR_NAME = "harness-profile-seed"
 HARNESS_PROFILE_SEED_FILES = frozenset({"preferences.ini", "preferences.dat", "server.met", "nodes.dat"})
-DEFAULT_AMUTORRENT_PORT = 4000
-DEFAULT_AMUTORRENT_LAN_BIND_ADDRESS = ""
 DEFAULT_REST_PORT = 4711
 DEFAULT_PROWLARR_PORT = 9696
 DEFAULT_RADARR_PORT = 7878
@@ -49,8 +46,6 @@ class LocalInstallConfig:
 
     live_wire_inputs_file: Path
     target_path: Path
-    amutorrent_port: int
-    amutorrent_lan_bind_address: str
     lan_bind_address: str | None
     emulebb_lan_bind_address: str | None
     emulebb_port: int
@@ -83,11 +78,8 @@ class InstallArtifacts:
 
     release_root: Path
     emule_zip: Path
-    amutorrent_zip: Path
     emule_manifest: Path
     emule_sbom: Path
-    amutorrent_manifest: Path
-    amutorrent_sbom: Path
     package_exe: Path
     package_pdb: Path
     arch: str
@@ -152,20 +144,12 @@ def materialize_test_local_install(
 
     base_config = load_local_install_config(layout, options.live_wire_inputs_file)
     lan_bind = (lan_bind_address or "").strip() or "127.0.0.1"
-    (
-        emulebb_port,
-        amutorrent_port,
-        prowlarr_port,
-        radarr_port,
-        sonarr_port,
-        lidarr_port,
-        whisparr_port,
-    ) = choose_free_tcp_ports(7, host=lan_bind)
+    emulebb_port, prowlarr_port, radarr_port, sonarr_port, lidarr_port, whisparr_port = choose_free_tcp_ports(
+        6, host=lan_bind
+    )
     test_config = replace(
         base_config,
         target_path=test_install_root(layout, run_id=run_id, suite_name=suite_name, client_id=client_id),
-        amutorrent_port=amutorrent_port,
-        amutorrent_lan_bind_address=lan_bind,
         lan_bind_address=lan_bind,
         emulebb_lan_bind_address=lan_bind,
         emulebb_port=emulebb_port,
@@ -195,11 +179,6 @@ def _materialize_local_install_from_config(
             layout,
             workspace_options,
             ReleasePackageOptions(release_version=options.release_version, clean=options.clean),
-        )
-        create_amutorrent_package(
-            layout,
-            workspace_options,
-            AmutorrentPackageOptions(release_version=options.release_version, clean=options.clean),
         )
 
     artifacts = resolve_install_artifacts(layout, workspace_options, options.release_version, package_flavor=options.package_flavor)
@@ -236,8 +215,6 @@ def load_local_install_config(layout: WorkspaceLayout, raw_inputs_path: str | No
         )
 
     target_path = _required_path(raw_config, "target_path")
-    if " " in str(target_path):
-        raise RuntimeError(f"Local install target path must not contain spaces for aMuTorrent packaging: {target_path}")
     rest_host = _optional_nullable_string(raw_config, "rest_host")
     emulebb_lan_bind_address = _optional_nullable_string(raw_config, "emulebb_lan_bind_address") or rest_host
     rest_port = _optional_nullable_int(raw_config, "rest_port")
@@ -246,8 +223,6 @@ def load_local_install_config(layout: WorkspaceLayout, raw_inputs_path: str | No
     return LocalInstallConfig(
         live_wire_inputs_file=inputs_path,
         target_path=target_path,
-        amutorrent_port=_optional_int(raw_config, "amutorrent_port", DEFAULT_AMUTORRENT_PORT),
-        amutorrent_lan_bind_address=_optional_string(raw_config, "amutorrent_lan_bind_address", DEFAULT_AMUTORRENT_LAN_BIND_ADDRESS),
         lan_bind_address=_optional_nullable_string(raw_config, "lan_bind_address"),
         emulebb_lan_bind_address=emulebb_lan_bind_address,
         emulebb_port=emulebb_port,
@@ -301,11 +276,8 @@ def resolve_install_artifacts(
     artifacts = InstallArtifacts(
         release_root=release_root,
         emule_zip=release_root / f"emulebb-{release_version}{flavor_asset_suffix}-{arch}.zip",
-        amutorrent_zip=release_root / f"emulebb-{release_version}-amutorrent-{arch}.zip",
         emule_manifest=release_root / f"emulebb-{release_version}{flavor_asset_suffix}-{arch}.manifest.json",
         emule_sbom=release_root / f"emulebb-{release_version}{flavor_asset_suffix}-{arch}.sbom.spdx.json",
-        amutorrent_manifest=release_root / f"emulebb-{release_version}-amutorrent-{arch}.manifest.json",
-        amutorrent_sbom=release_root / f"emulebb-{release_version}-amutorrent-{arch}.sbom.spdx.json",
         package_exe=package_build_root / executable_name,
         package_pdb=package_build_root / pdb_name,
         arch=arch,
@@ -316,11 +288,8 @@ def resolve_install_artifacts(
         path
         for path in (
             artifacts.emule_zip,
-            artifacts.amutorrent_zip,
             artifacts.emule_manifest,
             artifacts.emule_sbom,
-            artifacts.amutorrent_manifest,
-            artifacts.amutorrent_sbom,
             artifacts.package_exe,
             artifacts.package_pdb,
         )
@@ -418,8 +387,6 @@ def build_suite_installer_options(
         installer_script=artifacts.installer_script,
         release_version=release_version,
         platform=artifacts.arch,
-        amutorrent_port=config.amutorrent_port,
-        amutorrent_lan_bind_address=config.amutorrent_lan_bind_address,
         lan_bind_address=config.lan_bind_address,
         emulebb_lan_bind_address=config.emulebb_lan_bind_address,
         emulebb_port=config.emulebb_port,
@@ -560,7 +527,7 @@ def deploy_local_install(
         )
     if _sha256(adjacent_pdb) != _sha256(artifacts.package_pdb) or _sha256(versioned_pdb) != _sha256(artifacts.package_pdb):
         raise RuntimeError("The suite installer deployed eMuleBB debug symbols that do not match package-build emulebb.pdb.")
-    for manifest in (artifacts.emule_manifest, artifacts.emule_sbom, artifacts.amutorrent_manifest, artifacts.amutorrent_sbom):
+    for manifest in (artifacts.emule_manifest, artifacts.emule_sbom):
         shutil.copy2(manifest, manifests_dir / manifest.name)
 
     write_install_manifest(layout, config, rest_config, artifacts, release_version)
@@ -613,9 +580,7 @@ def write_install_manifest(
         },
         "artifacts": {
             "emuleZip": _file_record(artifacts.emule_zip),
-            "amutorrentZip": _file_record(artifacts.amutorrent_zip),
             "emuleManifest": _file_record(artifacts.emule_manifest),
-            "amutorrentManifest": _file_record(artifacts.amutorrent_manifest),
             "packageExe": _file_record(artifacts.package_exe),
             "packagePdb": _file_record(artifacts.package_pdb),
             "deployedExe": _file_record(emule_exe),

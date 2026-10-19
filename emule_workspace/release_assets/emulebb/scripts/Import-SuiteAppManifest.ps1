@@ -103,26 +103,6 @@ function ConvertTo-SuiteAppManifest {
         throw "suite app manifest does not define any Arr apps: $Path"
     }
 
-    $nodeArchives = @{}
-    $nodeVersion = ''
-    $minimumNodeMajor = $null
-    if ($null -ne $Payload.PSObject.Properties['node'] -and $null -ne $Payload.node) {
-        if ($null -ne $Payload.node.PSObject.Properties['version']) {
-            $nodeVersion = [string]$Payload.node.version
-        }
-        if ($null -ne $Payload.node.PSObject.Properties['minimumMajor']) {
-            $minimumNodeMajor = [int]$Payload.node.minimumMajor
-        }
-        if ($null -ne $Payload.node.PSObject.Properties['archives']) {
-            foreach ($property in $Payload.node.archives.PSObject.Properties) {
-                $nodeArchives[$property.Name] = @{
-                    FileName = Get-SuiteManifestProperty -Value $property.Value -Name 'fileName'
-                    Sha256 = Get-SuiteManifestProperty -Value $property.Value -Name 'sha256'
-                }
-            }
-        }
-    }
-
     $mediaTools = @{}
     if ($null -ne $Payload.PSObject.Properties['mediaTools']) {
         foreach ($entry in @($Payload.mediaTools)) {
@@ -175,12 +155,8 @@ function ConvertTo-SuiteAppManifest {
         ArrIndexerCategories = $indexerCategories
         MediaTools = $mediaTools
         CoreServiceNames = if ($null -ne $Payload.PSObject.Properties['coreServiceNames']) { ConvertTo-SuiteManifestStringArray -Value $Payload.coreServiceNames } else { @() }
-        ControllerServiceNames = if ($null -ne $Payload.PSObject.Properties['controllerServiceNames']) { ConvertTo-SuiteManifestStringArray -Value $Payload.controllerServiceNames } else { @() }
         DefaultArrAppNames = if ($null -ne $Payload.PSObject.Properties['defaultArrAppNames']) { ConvertTo-SuiteManifestStringArray -Value $Payload.defaultArrAppNames } else { @() }
         SuiteServiceOrder = if ($null -ne $Payload.PSObject.Properties['suiteServiceOrder']) { ConvertTo-SuiteManifestStringArray -Value $Payload.suiteServiceOrder } else { @() }
-        NodeVersion = $nodeVersion
-        MinimumNodeMajor = $minimumNodeMajor
-        NodeArchives = $nodeArchives
     }
 }
 

@@ -209,17 +209,6 @@ def test_test_live_e2e_help_exposes_live_options() -> None:
     assert "--rest-cold-start-dump-stress-cpu-profile-stack" in result.output
 
 
-def test_amutorrent_session_help_exposes_backend_option() -> None:
-    runner = CliRunner()
-
-    result = runner.invoke(cli.main, ["test", "amutorrent-session", "--help"])
-
-    assert result.exit_code == 0
-    assert "--backend" in result.output
-    assert "native" in result.output
-    assert "rust" in result.output
-
-
 def test_live_e2e_command_defaults_model_options(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     captured: dict[str, object] = {}
@@ -423,44 +412,6 @@ def test_test_release_campaign_help_exposes_report_options() -> None:
     assert "--sonarr-series-root" in result.output
 
 
-def test_amutorrent_clean_startup_help_exposes_live_options() -> None:
-    runner = CliRunner()
-
-    result = runner.invoke(cli.main, ["test", "amutorrent-clean-startup", "--help"])
-
-    assert result.exit_code == 0
-    assert "--live-wire-inputs-file" in result.output
-    assert "--rest-webserver-scheme" in result.output
-    assert "--p2p-bind-interface-name" in result.output
-    assert "--search-observation-timeout-seconds" in result.output
-
-
-def test_amutorrent_resilience_help_exposes_live_options() -> None:
-    runner = CliRunner()
-
-    result = runner.invoke(cli.main, ["test", "amutorrent-resilience", "--help"])
-
-    assert result.exit_code == 0
-    assert "--live-wire-inputs-file" in result.output
-    assert "--rest-webserver-scheme" in result.output
-    assert "--p2p-bind-interface-name" in result.output
-    assert "--search-observation-timeout-seconds" in result.output
-    assert "--reconnect-timeout-seconds" in result.output
-
-
-def test_amutorrent_emulebb_ui_help_exposes_live_options() -> None:
-    runner = CliRunner()
-
-    result = runner.invoke(cli.main, ["test", "amutorrent-emulebb-ui", "--help"])
-
-    assert result.exit_code == 0
-    assert "--live-wire-inputs-file" in result.output
-    assert "--rest-webserver-scheme" in result.output
-    assert "--p2p-bind-interface-name" in result.output
-    assert "--search-observation-timeout-seconds" in result.output
-    assert "--keep-artifacts" in result.output
-
-
 def test_build_all_help_exposes_composed_build_options() -> None:
     runner = CliRunner()
 
@@ -507,15 +458,6 @@ def test_prepare_product_family_help_is_available() -> None:
 
     assert result.exit_code == 0
     assert "product-family" in result.output
-
-
-def test_refresh_product_family_rebases_help_is_available() -> None:
-    runner = CliRunner()
-
-    result = runner.invoke(cli.main, ["refresh-product-family-rebases", "--help"])
-
-    assert result.exit_code == 0
-    assert "Refresh the manual aMuTorrent checkout" in result.output
 
 
 def test_install_local_package_help_exposes_live_wire_config() -> None:
@@ -567,16 +509,6 @@ def test_package_release_help_exposes_release_version() -> None:
     assert result.exit_code == 0
     assert "--release-version" in result.output
     assert "--require-signing" in result.output
-    assert "0.7.3" in result.output
-
-
-def test_package_amutorrent_help_exposes_release_version() -> None:
-    runner = CliRunner()
-
-    result = runner.invoke(cli.main, ["package-amutorrent", "--help"])
-
-    assert result.exit_code == 0
-    assert "--release-version" in result.output
     assert "0.7.3" in result.output
 
 

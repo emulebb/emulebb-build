@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Core', 'Controller', 'Full')]
+    [ValidateSet('Core', 'Full')]
     [string]$Bundle = 'Full',
 
     [string[]]$Apps,
@@ -24,8 +24,6 @@ param(
 
     [string]$EmulebbPackageZip,
     [string]$EmulebbPackageManifest,
-    [string]$AmutorrentPackageZip,
-    [string]$AmutorrentPackageManifest,
     [string]$DependencyManifest,
     [string]$SuiteScriptsZip,
     [string]$SuiteScriptsManifest,
@@ -35,7 +33,6 @@ param(
     [string]$P2PBindInterface,
     [string]$ControlBindAddress,
     [string]$EmulebbBindAddress,
-    [string]$AmutorrentBindAddress,
     [string]$ProwlarrBindAddress,
     [string]$RadarrBindAddress,
     [string]$SonarrBindAddress,
@@ -44,8 +41,6 @@ param(
 
     [ValidateRange(0, 65535)]
     [int]$EmulebbPort = 0,
-    [ValidateRange(0, 65535)]
-    [int]$AmutorrentPort = 0,
     [ValidateRange(0, 65535)]
     [int]$ProwlarrPort = 0,
     [ValidateRange(0, 65535)]
@@ -97,7 +92,6 @@ if ($IncludePrerelease) {
 }
 
 $Repository = 'emulebb/emulebb'
-$AmutorrentRepository = 'emulebb/amutorrent'
 $ApiBase = 'https://api.github.com'
 $UserAgent = 'emulebb-suite-bootstrapper'
 
@@ -110,8 +104,7 @@ function Get-LocalPackageRecoveryMessage {
     return @(
         'If GitHub is blocked, offline, or rate limited, download the package assets in a browser from GitHub Releases.',
         'For eMuleBB, open https://github.com/emulebb/emulebb/releases and download the matching emulebb-<version>-<arch>.zip plus emulebb-<version>-<arch>.manifest.json.',
-        'Then rerun this bootstrapper with -EmulebbPackageZip C:\Path\emulebb-<version>-<arch>.zip -EmulebbPackageManifest C:\Path\emulebb-<version>-<arch>.manifest.json.',
-        'For a Full or Controller install, also open https://github.com/emulebb/amutorrent/releases and download emulebb-<version>-amutorrent-x64.zip plus its manifest, then pass -AmutorrentPackageZip and -AmutorrentPackageManifest.'
+        'Then rerun this bootstrapper with -EmulebbPackageZip C:\Path\emulebb-<version>-<arch>.zip -EmulebbPackageManifest C:\Path\emulebb-<version>-<arch>.manifest.json.'
     ) -join ' '
 }
 
@@ -241,10 +234,6 @@ function Test-NightlyReleaseTag {
     return $Tag -match '^emulebb-nightly-\d{8}-[0-9a-fA-F]+(-run\d+)?$'
 }
 
-function Test-SupportedAmutorrentReleaseTag {
-    param([string]$Tag)
-    return $Tag -match '^amutorrent-v.+' -or $Tag -match '^amutorrent-nightly-\d{8}-[0-9a-fA-F]+(-run\d+)?$'
-}
 
 function Get-Release {
     # Resolve everything from the /releases list (which already carries each release's
@@ -281,44 +270,6 @@ function Get-Release {
     throw 'No matching eMuleBB stable release or release candidate was found. Pass -IncludeNightly to install the latest nightly build.'
 }
 
-function Get-AmutorrentRelease {
-    param([string]$EmulebbVersion)
-    $releases = Invoke-GitHubApi -Uri "$ApiBase/repos/$AmutorrentRepository/releases" -Description 'aMuTorrent releases'
-    $releaseFallback = $null
-    $nightlyFallback = $null
-    $matchingReleasePattern = $null
-    if (-not [string]::IsNullOrWhiteSpace($EmulebbVersion)) {
-        $matchingReleasePattern = '^amutorrent-v.+-emulebb-v' + [regex]::Escape($EmulebbVersion) + '$'
-    }
-    foreach ($release in @($releases)) {
-        if ($release.draft) {
-            continue
-        }
-        $tag = [string]$release.tag_name
-        if (-not (Test-SupportedAmutorrentReleaseTag -Tag $tag)) {
-            continue
-        }
-        if ($null -ne $matchingReleasePattern -and $tag -match $matchingReleasePattern) {
-            return $release
-        }
-        if ($tag -match '^amutorrent-nightly-') {
-            if ($null -eq $nightlyFallback) {
-                $nightlyFallback = $release
-            }
-            continue
-        }
-        if ($null -eq $releaseFallback) {
-            $releaseFallback = $release
-        }
-    }
-    if ($null -ne $releaseFallback) {
-        return $releaseFallback
-    }
-    if ($IncludeNightly -and $null -ne $nightlyFallback) {
-        return $nightlyFallback
-    }
-    throw 'No matching aMuTorrent release was found.'
-}
 
 function Get-ReleaseVersion {
     param([object]$Release, [string]$AssetArch)
@@ -369,25 +320,7 @@ function Get-LocalEmulebbPackagePlatform {
     return Get-DefaultPlatform
 }
 
-function Get-AmutorrentReleaseVersion {
-    param([object]$Release)
-    foreach ($asset in @($Release.assets)) {
-        $name = [string]$asset.name
-        if ($name -match '^emulebb-(.+)-amutorrent-x64\.zip$') {
-            return $Matches[1]
-        }
-    }
-    throw "aMuTorrent release $($Release.tag_name) does not contain an x64 aMuTorrent ZIP asset."
-}
 
-function Get-LocalAmutorrentPackageVersion {
-    param([string]$ZipPath, [string]$DefaultVersion)
-    $name = [IO.Path]::GetFileName($ZipPath)
-    if ($name -match '^emulebb-(.+)-amutorrent-x64\.zip$') {
-        return $Matches[1]
-    }
-    return $DefaultVersion
-}
 
 function Get-ReleaseBaseUrl {
     param([object]$Release, [string]$ReleaseRepository = $Repository)
@@ -566,43 +499,9 @@ function Resolve-EffectiveBundle {
     if ($RequestedBundle -eq 'Core') {
         return 'Core'
     }
-    if ($ResolvedPlatform -ne 'x64') {
-        throw 'Controller and Full bundles are x64-only in v1 because aMuTorrent native node_modules are packaged for x64.'
-    }
     return $RequestedBundle
 }
 
-function Resolve-AmutorrentPackage {
-    param([string]$RequestedBundle, [string]$ResolvedEmulebbVersion)
-    $release = Get-AmutorrentRelease -EmulebbVersion $ResolvedEmulebbVersion
-    $version = Get-AmutorrentReleaseVersion -Release $release
-    $missing = @()
-    foreach ($assetName in @(
-        "emulebb-$version-amutorrent-x64.manifest.json",
-        "emulebb-$version-amutorrent-x64.zip"
-    )) {
-        if ([string]::IsNullOrWhiteSpace((Find-AssetUrl -Release $release -Name $assetName))) {
-            $missing += $assetName
-        }
-    }
-    if ($missing.Count -eq 0) {
-        return [ordered]@{
-            Release = $release
-            Version = $version
-            BaseUrl = (Get-ReleaseBaseUrl -Release $release -ReleaseRepository $AmutorrentRepository)
-        }
-    }
-    $message = "aMuTorrent release $($release.tag_name) does not contain required $RequestedBundle asset(s): $($missing -join ', ')."
-    if ($NonInteractive -or -not (Test-InteractiveConsole)) {
-        throw "$message Re-run with -Bundle Core or publish a complete aMuTorrent release."
-    }
-    Write-Warning "$message Core can still be installed."
-    $choice = Read-Host 'Install Core instead? [y/N]'
-    if ($choice -match '^[Yy]') {
-        return $null
-    }
-    throw 'Bootstrap cancelled because required suite assets are missing.'
-}
 
 function Format-DownloadSize {
     param([long]$Bytes)
@@ -856,27 +755,6 @@ if ($localEmulebbPackage) {
     }
 }
 
-$amutorrentPackage = $null
-if ($effectiveBundle -ne 'Core') {
-    if (-not [string]::IsNullOrWhiteSpace($AmutorrentPackageZip)) {
-        $amutorrentZipPath = [IO.Path]::GetFullPath($AmutorrentPackageZip)
-        Assert-LocalPackage -Name 'aMuTorrent' -ZipPath $amutorrentZipPath -ManifestPath $AmutorrentPackageManifest
-        $amutorrentPackage = [ordered]@{
-            Release = $null
-            Version = (Get-LocalAmutorrentPackageVersion -ZipPath $amutorrentZipPath -DefaultVersion $resolvedVersion)
-            BaseUrl = ''
-            ZipPath = $amutorrentZipPath
-        }
-        Write-Step "Resolved local aMuTorrent package $amutorrentZipPath for $effectiveBundle suite"
-    } else {
-        $amutorrentPackage = Resolve-AmutorrentPackage -RequestedBundle $effectiveBundle -ResolvedEmulebbVersion $resolvedVersion
-        if ($null -eq $amutorrentPackage) {
-            $effectiveBundle = 'Core'
-        } else {
-            Write-Step "Resolved aMuTorrent release $($amutorrentPackage.Release.tag_name) for Full suite"
-        }
-    }
-}
 $suiteScriptsBundle = $null
 $automationExamplesBundle = $null
 $explicitSuiteScriptsBundle = -not [string]::IsNullOrWhiteSpace($SuiteScriptsZip) -or -not [string]::IsNullOrWhiteSpace($SuiteScriptsManifest)
@@ -931,14 +809,6 @@ if ($localEmulebbPackage) {
     $installerParams['EmulebbPackageZip'] = $zipPath
     if (-not [string]::IsNullOrWhiteSpace($EmulebbPackageManifest)) { $installerParams['EmulebbPackageManifest'] = [IO.Path]::GetFullPath($EmulebbPackageManifest) }
 }
-if ($effectiveBundle -ne 'Core') {
-    $installerParams['AmutorrentVersion'] = $amutorrentPackage.Version
-    if (-not [string]::IsNullOrWhiteSpace($amutorrentPackage.BaseUrl)) { $installerParams['AmutorrentReleaseBaseUrl'] = $amutorrentPackage.BaseUrl }
-    if ($amutorrentPackage.Contains('ZipPath') -and -not [string]::IsNullOrWhiteSpace($amutorrentPackage.ZipPath)) {
-        $installerParams['AmutorrentPackageZip'] = $amutorrentPackage.ZipPath
-        if (-not [string]::IsNullOrWhiteSpace($AmutorrentPackageManifest)) { $installerParams['AmutorrentPackageManifest'] = [IO.Path]::GetFullPath($AmutorrentPackageManifest) }
-    }
-}
 if ($NonInteractive) { $installerParams['NonInteractive'] = $true }
 if ($NoStart) { $installerParams['NoStart'] = $true }
 if ($InstallMediaTools) { $installerParams['InstallMediaTools'] = $true }
@@ -961,14 +831,12 @@ if ($null -ne $automationExamplesBundle) {
 }
 if (-not [string]::IsNullOrWhiteSpace($ControlBindAddress)) { $installerParams['ControlBindAddress'] = $ControlBindAddress }
 if (-not [string]::IsNullOrWhiteSpace($EmulebbBindAddress)) { $installerParams['EmulebbBindAddress'] = $EmulebbBindAddress }
-if (-not [string]::IsNullOrWhiteSpace($AmutorrentBindAddress)) { $installerParams['AmutorrentBindAddress'] = $AmutorrentBindAddress }
 if (-not [string]::IsNullOrWhiteSpace($ProwlarrBindAddress)) { $installerParams['ProwlarrBindAddress'] = $ProwlarrBindAddress }
 if (-not [string]::IsNullOrWhiteSpace($RadarrBindAddress)) { $installerParams['RadarrBindAddress'] = $RadarrBindAddress }
 if (-not [string]::IsNullOrWhiteSpace($SonarrBindAddress)) { $installerParams['SonarrBindAddress'] = $SonarrBindAddress }
 if (-not [string]::IsNullOrWhiteSpace($LidarrBindAddress)) { $installerParams['LidarrBindAddress'] = $LidarrBindAddress }
 if (-not [string]::IsNullOrWhiteSpace($WhisparrBindAddress)) { $installerParams['WhisparrBindAddress'] = $WhisparrBindAddress }
 if ($PSBoundParameters.ContainsKey('EmulebbPort')) { $installerParams['EmulebbPort'] = $EmulebbPort }
-if ($PSBoundParameters.ContainsKey('AmutorrentPort')) { $installerParams['AmutorrentPort'] = $AmutorrentPort }
 if ($PSBoundParameters.ContainsKey('ProwlarrPort')) { $installerParams['ProwlarrPort'] = $ProwlarrPort }
 if ($PSBoundParameters.ContainsKey('RadarrPort')) { $installerParams['RadarrPort'] = $RadarrPort }
 if ($PSBoundParameters.ContainsKey('SonarrPort')) { $installerParams['SonarrPort'] = $SonarrPort }

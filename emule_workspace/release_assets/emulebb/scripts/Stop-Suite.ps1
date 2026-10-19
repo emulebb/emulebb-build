@@ -23,7 +23,6 @@ function Get-FirstSuiteExecutable {
     return Join-Path $appRoot $FileName
 }
 
-$amutorrentServer = Join-Path $Root 'apps\aMuTorrent\server\server.js'
 $serviceExecutables = @(
     (Join-Path (Join-Path $Root 'apps\eMuleBB') $emuleExeName),
     (Get-FirstSuiteExecutable -RelativeRoot 'apps\Prowlarr' -FileName 'Prowlarr.exe'),
@@ -37,9 +36,6 @@ function Test-SuiteProcess {
     param($Process)
     $executablePath = [string]$Process.ExecutablePath
     $commandLine = [string]$Process.CommandLine
-    if ($Process.Name -eq 'node.exe' -and $commandLine.IndexOf($amutorrentServer, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        return $true
-    }
     if ([string]::IsNullOrWhiteSpace($executablePath)) {
         return $false
     }

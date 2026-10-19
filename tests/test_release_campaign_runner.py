@@ -194,7 +194,7 @@ def campaign_payload() -> dict[str, object]:
                         "blocking": True,
                     },
                     {
-                        "id": "amutorrent",
+                        "id": "transfer",
                         "command": "python -m emule_workspace test live-e2e --profile controller-surface",
                         "blocking": True,
                     },
@@ -227,7 +227,7 @@ def test_campaign_execution_plan_dedupes_shared_commands_and_skips_nonblocking()
         "python -m emule_workspace test python --quiet",
         "python -m emule_workspace test live-e2e --profile controller-surface",
     ]
-    assert plan[2].scenario_ids == ("amutorrent", "rest")
+    assert plan[2].scenario_ids == ("rest", "transfer")
 
 
 def test_campaign_execution_plan_can_include_nonblocking_optional_commands() -> None:
@@ -392,7 +392,6 @@ def test_campaign_report_records_local_vm_swarm_scenario_context(tmp_path: Path)
             "localProfile": "multi-client-p2p",
             "vmProfile": "search-ui-local-swarm-vm",
             "controlBindScope": "lan",
-            "amutorrentBindScope": "lan",
             "p2pMode": "local-swarm",
             "p2pBindScope": "lan",
             "blocking": True,
@@ -418,7 +417,6 @@ def test_campaign_report_records_local_vm_swarm_scenario_context(tmp_path: Path)
     assert planned_context["localProfile"] == "multi-client-p2p"
     assert planned_context["vmProfile"] == "search-ui-local-swarm-vm"
     assert planned_context["controlBindScope"] == "lan"
-    assert planned_context["amutorrentBindScope"] == "lan"
     assert planned_context["p2pMode"] == "local-swarm"
     assert planned_context["p2pBindScope"] == "lan"
 
@@ -745,11 +743,6 @@ def test_campaign_execute_forwards_package_release_versions(tmp_path: Path, monk
             "command": "python -m emule_workspace package-release --platform x64 --release-version 0.7.3-rc.2 --clean",
             "blocking": True,
         },
-        {
-            "id": "package-amutorrent",
-            "command": "python -m emule_workspace package-amutorrent --platform x64 --release-version 0.7.3-rc.2 --clean",
-            "blocking": True,
-        },
     ]
     write_campaign(layout, campaign)
     calls: list[tuple[str, str, str, bool]] = []
@@ -766,14 +759,6 @@ def test_campaign_execute_forwards_package_release_versions(tmp_path: Path, monk
             ("package-release", workspace_options.platform, options.release_version, options.clean)
         ),
     )
-    monkeypatch.setattr(
-        release_campaign_runner,
-        "create_amutorrent_package",
-        lambda _layout, workspace_options, options: calls.append(
-            ("package-amutorrent", workspace_options.platform, options.release_version, options.clean)
-        ),
-    )
-
     release_campaign_runner.invoke_release_campaign(
         layout,
         WorkspaceOptions(workspace_root=tmp_path),
@@ -782,7 +767,6 @@ def test_campaign_execute_forwards_package_release_versions(tmp_path: Path, monk
 
     assert calls == [
         ("package-release", "x64", "0.7.3-rc.2", True),
-        ("package-amutorrent", "x64", "0.7.3-rc.2", True),
     ]
 
 
@@ -864,78 +848,6 @@ def test_campaign_execute_applies_campaign_runtime_inputs(tmp_path: Path, monkey
     assert live_calls == [("inputs.local.json", "R:/movies", "S:/series", 12.5, "hide.me", "vpn-guard-live.local.json", True, "all")]
     assert certification_calls == [
         ("inputs.local.json", "R:/movies", "S:/series", 12.5, "hide.me", "vpn-guard-live.local.json", True, "all")
-    ]
-
-
-def test_campaign_execute_dispatches_amutorrent_live_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    layout = make_layout(tmp_path)
-    campaign = campaign_payload()
-    campaign["phases"][1]["scenarios"] = [
-        {
-            "id": "clean",
-            "command": (
-                "python -m emule_workspace test amutorrent-clean-startup "
-                "--live-wire-inputs-file inputs.json --rest-webserver-scheme https --keep-artifacts"
-            ),
-            "blocking": True,
-        },
-        {
-            "id": "ui",
-            "command": (
-                "python -m emule_workspace test amutorrent-emulebb-ui "
-                "--live-wire-inputs-file inputs.json --rest-webserver-scheme https --keep-artifacts"
-            ),
-            "blocking": True,
-        },
-        {
-            "id": "resilience",
-            "command": (
-                "python -m emule_workspace test amutorrent-resilience "
-                "--live-wire-inputs-file inputs.json --rest-webserver-scheme https --keep-artifacts"
-            ),
-            "blocking": True,
-        },
-    ]
-    write_campaign(layout, campaign)
-    calls: list[tuple[str, str | None, str, bool, str]] = []
-
-    monkeypatch.setattr(
-        release_campaign_runner,
-        "run_pre_test_cleanup",
-        lambda _layout: release_campaign_runner.CleanupRunSummary("routine", True, "passed", 0, 0, 0, {}),
-    )
-    monkeypatch.setattr(
-        release_campaign_runner,
-        "invoke_amutorrent_clean_startup",
-        lambda _layout, _workspace_options, options: calls.append(
-            ("clean", options.live_wire_inputs_file, options.rest_webserver_scheme, options.keep_artifacts, options.test_network)
-        ),
-    )
-    monkeypatch.setattr(
-        release_campaign_runner,
-        "invoke_amutorrent_emulebb_ui",
-        lambda _layout, _workspace_options, options: calls.append(
-            ("ui", options.live_wire_inputs_file, options.rest_webserver_scheme, options.keep_artifacts, options.test_network)
-        ),
-    )
-    monkeypatch.setattr(
-        release_campaign_runner,
-        "invoke_amutorrent_resilience",
-        lambda _layout, _workspace_options, options: calls.append(
-            ("resilience", options.live_wire_inputs_file, options.rest_webserver_scheme, options.keep_artifacts, options.test_network)
-        ),
-    )
-
-    release_campaign_runner.invoke_release_campaign(
-        layout,
-        WorkspaceOptions(workspace_root=tmp_path),
-        ReleaseCampaignOptions(campaign="test-campaign", phase="controller-surface", execute=True),
-    )
-
-    assert calls == [
-        ("clean", "inputs.json", "https", True, "vpn"),
-        ("ui", "inputs.json", "https", True, "vpn"),
-        ("resilience", "inputs.json", "https", True, "vpn"),
     ]
 
 
@@ -1225,8 +1137,8 @@ def test_campaign_plan_can_force_shared_local_campaign_scenario_to_execute() -> 
 def test_campaign_plan_applies_local_vm_swarm_overrides_to_all_reusable_rows() -> None:
     scenario_ids = (
         "emulebb.flow.controller.installer-swarm.v1",
-        "emulebb.flow.amutorrent.clean-startup.swarm.v1",
-        "emulebb.flow.amutorrent.emulebb-ui.swarm.v1",
+        "emulebb.flow.rust.ed2k-transfer.swarm.v1",
+        "emulebb.flow.rust.shared-library.swarm.v1",
         "emulebb.flow.arr.prowlarr-handoff.swarm.v1",
         "emulebb.flow.ui.search.local-swarm.v1",
     )

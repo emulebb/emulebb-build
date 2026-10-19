@@ -18,10 +18,6 @@ from .artifact_names import release_campaign_result_file_name, utc_run_id
 from .certification import invoke_certification
 from .cleanup import CleanupFailedError, CleanupRunSummary, cleanup_summary_payload, run_pre_test_cleanup
 from .config import (
-    AmutorrentCleanStartupOptions,
-    AmutorrentEmulebbUiOptions,
-    AmutorrentPackageOptions,
-    AmutorrentResilienceOptions,
     ACTIVE_EMULEBB_RELEASE_VERSION,
     CampaignScenarioOptions,
     CertificationOptions,
@@ -38,11 +34,8 @@ from .layout import WorkspaceLayout
 from .materialize import sync_workspace
 from .process import get_python_invocation, run_native
 from .python_tests import invoke_python_tests
-from .release import create_amutorrent_package, create_release_package
+from .release import create_release_package
 from .test_runs import (
-    invoke_amutorrent_clean_startup,
-    invoke_amutorrent_emulebb_ui,
-    invoke_amutorrent_resilience,
     invoke_community_core_coverage,
     invoke_live_e2e_suite,
     invoke_protocol_parity,
@@ -85,16 +78,6 @@ _LIVE_E2E_FLAG_OPTIONS = {
     "--multi-client-require-optional-clients",
     "--skip-live-seed-refresh",
 }
-_AMUTORRENT_VALUE_OPTIONS = {
-    "--live-wire-inputs-file",
-    "--test-network",
-    "--rest-webserver-scheme",
-    "--ready-timeout-seconds",
-    "--network-ready-timeout-seconds",
-    "--search-observation-timeout-seconds",
-    "--p2p-bind-interface-name",
-}
-_AMUTORRENT_FLAG_OPTIONS = {"--keep-artifacts"}
 _WINDOWS_VM_VALUE_OPTIONS = {
     "--config-file",
     "--matrix",
@@ -186,7 +169,6 @@ class CampaignScenarioContext:
     local_profile: str
     vm_profile: str
     control_bind_scope: str
-    amutorrent_bind_scope: str
     p2p_mode: str
     p2p_bind_scope: str
     live_e2e_profile: str
@@ -366,7 +348,6 @@ def build_release_campaign_execution_plan(
                     local_profile=str(scenario.get("localProfile") or ""),
                     vm_profile=str(scenario.get("vmProfile") or ""),
                     control_bind_scope=str(scenario.get("controlBindScope") or ""),
-                    amutorrent_bind_scope=str(scenario.get("amutorrentBindScope") or ""),
                     p2p_mode=str(scenario.get("p2pMode") or ""),
                     p2p_bind_scope=str(scenario.get("p2pBindScope") or ""),
                     live_e2e_profile=str(scenario.get("liveE2eProfile") or ""),
@@ -623,42 +604,11 @@ def _dispatch_workspace_command(
             _campaign_scenario_options_from_tokens(tokens),
         )
         return
-    if tokens[:2] == ["test", "amutorrent-clean-startup"]:
-        invoke_amutorrent_clean_startup(
-            layout,
-            _workspace_options_from_tokens(workspace_options, tokens),
-            _amutorrent_clean_options_from_tokens(campaign_options, tokens),
-        )
-        return
-    if tokens[:2] == ["test", "amutorrent-emulebb-ui"]:
-        invoke_amutorrent_emulebb_ui(
-            layout,
-            _workspace_options_from_tokens(workspace_options, tokens),
-            _amutorrent_ui_options_from_tokens(campaign_options, tokens),
-        )
-        return
-    if tokens[:2] == ["test", "amutorrent-resilience"]:
-        invoke_amutorrent_resilience(
-            layout,
-            _workspace_options_from_tokens(workspace_options, tokens),
-            _amutorrent_resilience_options_from_tokens(campaign_options, tokens),
-        )
-        return
     if tokens and tokens[0] == "package-release":
         create_release_package(
             layout,
             _workspace_options_from_tokens(workspace_options, tokens),
             ReleasePackageOptions(
-                release_version=_option_value(tokens, "--release-version") or ACTIVE_EMULEBB_RELEASE_VERSION,
-                clean="--clean" in tokens,
-            ),
-        )
-        return
-    if tokens and tokens[0] == "package-amutorrent":
-        create_amutorrent_package(
-            layout,
-            _workspace_options_from_tokens(workspace_options, tokens),
-            AmutorrentPackageOptions(
                 release_version=_option_value(tokens, "--release-version") or ACTIVE_EMULEBB_RELEASE_VERSION,
                 clean="--clean" in tokens,
             ),
@@ -709,53 +659,10 @@ def _live_options_from_tokens(campaign_options: ReleaseCampaignOptions, tokens: 
     )
 
 
-def _amutorrent_clean_options_from_tokens(
-    campaign_options: ReleaseCampaignOptions,
-    tokens: list[str],
-) -> AmutorrentCleanStartupOptions:
-    return AmutorrentCleanStartupOptions(
-        live_wire_inputs_file=_option_value(tokens, "--live-wire-inputs-file") or campaign_options.live_wire_inputs_file,
-        test_network=_vpn_command_test_network(campaign_options, tokens),
-        rest_webserver_scheme=_option_value(tokens, "--rest-webserver-scheme") or "https",
-        keep_artifacts="--keep-artifacts" in tokens,
-        ready_timeout_seconds=_option_float(tokens, "--ready-timeout-seconds") or 60.0,
-        network_ready_timeout_seconds=_option_float(tokens, "--network-ready-timeout-seconds") or 180.0,
-        search_observation_timeout_seconds=_option_float(tokens, "--search-observation-timeout-seconds") or 120.0,
-        p2p_bind_interface_name=_option_value(tokens, "--p2p-bind-interface-name") or campaign_options.p2p_bind_interface_name,
-    )
 
 
-def _amutorrent_ui_options_from_tokens(
-    campaign_options: ReleaseCampaignOptions,
-    tokens: list[str],
-) -> AmutorrentEmulebbUiOptions:
-    return AmutorrentEmulebbUiOptions(
-        live_wire_inputs_file=_option_value(tokens, "--live-wire-inputs-file") or campaign_options.live_wire_inputs_file,
-        test_network=_vpn_command_test_network(campaign_options, tokens),
-        rest_webserver_scheme=_option_value(tokens, "--rest-webserver-scheme") or "https",
-        keep_artifacts="--keep-artifacts" in tokens,
-        ready_timeout_seconds=_option_float(tokens, "--ready-timeout-seconds") or 60.0,
-        network_ready_timeout_seconds=_option_float(tokens, "--network-ready-timeout-seconds") or 180.0,
-        search_observation_timeout_seconds=_option_float(tokens, "--search-observation-timeout-seconds") or 120.0,
-        p2p_bind_interface_name=_option_value(tokens, "--p2p-bind-interface-name") or campaign_options.p2p_bind_interface_name,
-    )
 
 
-def _amutorrent_resilience_options_from_tokens(
-    campaign_options: ReleaseCampaignOptions,
-    tokens: list[str],
-) -> AmutorrentResilienceOptions:
-    return AmutorrentResilienceOptions(
-        live_wire_inputs_file=_option_value(tokens, "--live-wire-inputs-file") or campaign_options.live_wire_inputs_file,
-        test_network=_vpn_command_test_network(campaign_options, tokens),
-        rest_webserver_scheme=_option_value(tokens, "--rest-webserver-scheme") or "https",
-        keep_artifacts="--keep-artifacts" in tokens,
-        ready_timeout_seconds=_option_float(tokens, "--ready-timeout-seconds") or 60.0,
-        network_ready_timeout_seconds=_option_float(tokens, "--network-ready-timeout-seconds") or 180.0,
-        search_observation_timeout_seconds=_option_float(tokens, "--search-observation-timeout-seconds") or 120.0,
-        reconnect_timeout_seconds=_option_float(tokens, "--reconnect-timeout-seconds") or 120.0,
-        p2p_bind_interface_name=_option_value(tokens, "--p2p-bind-interface-name") or campaign_options.p2p_bind_interface_name,
-    )
 
 
 def _vpn_command_test_network(campaign_options: ReleaseCampaignOptions, tokens: list[str]) -> str:
@@ -971,38 +878,7 @@ def _validate_workspace_command_tokens(tokens: list[str]) -> None:
         _workspace_options_from_tokens(workspace_options, tokens)
         _campaign_scenario_options_from_tokens(tokens)
         return
-    if tokens[:2] == ["test", "amutorrent-clean-startup"]:
-        _validate_options(
-            tokens[2:],
-            value_options=_WORKSPACE_VALUE_OPTIONS | _AMUTORRENT_VALUE_OPTIONS,
-            flag_options=_AMUTORRENT_FLAG_OPTIONS,
-        )
-        _workspace_options_from_tokens(workspace_options, tokens)
-        _amutorrent_clean_options_from_tokens(campaign_options, tokens)
-        return
-    if tokens[:2] == ["test", "amutorrent-emulebb-ui"]:
-        _validate_options(
-            tokens[2:],
-            value_options=_WORKSPACE_VALUE_OPTIONS | _AMUTORRENT_VALUE_OPTIONS,
-            flag_options=_AMUTORRENT_FLAG_OPTIONS,
-        )
-        _workspace_options_from_tokens(workspace_options, tokens)
-        _amutorrent_ui_options_from_tokens(campaign_options, tokens)
-        return
-    if tokens[:2] == ["test", "amutorrent-resilience"]:
-        _validate_options(
-            tokens[2:],
-            value_options=_WORKSPACE_VALUE_OPTIONS | _AMUTORRENT_VALUE_OPTIONS | {"--reconnect-timeout-seconds"},
-            flag_options=_AMUTORRENT_FLAG_OPTIONS,
-        )
-        _workspace_options_from_tokens(workspace_options, tokens)
-        _amutorrent_resilience_options_from_tokens(campaign_options, tokens)
-        return
     if tokens and tokens[0] == "package-release":
-        _validate_options(tokens[1:], value_options=_WORKSPACE_VALUE_OPTIONS | {"--release-version"}, flag_options={"--clean"})
-        _workspace_options_from_tokens(workspace_options, tokens)
-        return
-    if tokens and tokens[0] == "package-amutorrent":
         _validate_options(tokens[1:], value_options=_WORKSPACE_VALUE_OPTIONS | {"--release-version"}, flag_options={"--clean"})
         _workspace_options_from_tokens(workspace_options, tokens)
         return
@@ -1178,7 +1054,6 @@ def _scenario_context_payload(contexts: tuple[CampaignScenarioContext, ...]) -> 
             "localProfile": context.local_profile,
             "vmProfile": context.vm_profile,
             "controlBindScope": context.control_bind_scope,
-            "amutorrentBindScope": context.amutorrent_bind_scope,
             "p2pMode": context.p2p_mode,
             "p2pBindScope": context.p2p_bind_scope,
             "liveE2eProfile": context.live_e2e_profile,

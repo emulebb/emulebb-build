@@ -18,9 +18,6 @@ class LocalPackageArtifacts:
     emule_zip: Path
     emule_manifest: Path
     emule_sbom: Path
-    amutorrent_zip: Path
-    amutorrent_manifest: Path
-    amutorrent_sbom: Path
     package_exe: Path
     package_pdb: Path
 
@@ -133,7 +130,6 @@ def write_local_package_artifacts(
 
     flavor_asset_suffix = "" if package_flavor == "standard" else f"-{package_flavor}"
     emule_zip = release_root / f"emulebb-{version}{flavor_asset_suffix}-{arch}.zip"
-    amutorrent_zip = release_root / f"emulebb-{version}-amutorrent-{arch}.zip"
     write_zip(
         emule_zip,
         {
@@ -141,13 +137,9 @@ def write_local_package_artifacts(
             **runtime_script_entries(installer_payload=installer_payload),
         },
     )
-    write_zip(amutorrent_zip, {"aMuTorrent/server/server.js": b"server\n"})
-
     emule_manifest = release_root / f"emulebb-{version}{flavor_asset_suffix}-{arch}.manifest.json"
     emule_sbom = release_root / f"emulebb-{version}{flavor_asset_suffix}-{arch}.sbom.spdx.json"
-    amutorrent_manifest = release_root / f"emulebb-{version}-amutorrent-{arch}.manifest.json"
-    amutorrent_sbom = release_root / f"emulebb-{version}-amutorrent-{arch}.sbom.spdx.json"
-    for path in (emule_manifest, emule_sbom, amutorrent_manifest, amutorrent_sbom):
+    for path in (emule_manifest, emule_sbom):
         path.write_text("{}\n", encoding="utf-8")
 
     return LocalPackageArtifacts(
@@ -156,9 +148,6 @@ def write_local_package_artifacts(
         emule_zip=emule_zip,
         emule_manifest=emule_manifest,
         emule_sbom=emule_sbom,
-        amutorrent_zip=amutorrent_zip,
-        amutorrent_manifest=amutorrent_manifest,
-        amutorrent_sbom=amutorrent_sbom,
         package_exe=package_exe,
         package_pdb=package_pdb,
     )

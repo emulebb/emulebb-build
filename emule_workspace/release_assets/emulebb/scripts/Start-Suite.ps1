@@ -69,17 +69,3 @@ foreach ($arrName in @('prowlarr', 'radarr', 'sonarr', 'lidarr', 'whisparr')) {
         Start-ArrHost -Name ($arrName.Substring(0, 1).ToUpperInvariant() + $arrName.Substring(1))
     }
 }
-if (Test-SelectedApp -Config $config -Name 'amutorrent') {
-    $nodeMatch = Get-ChildItem -Path (Join-Path $Root 'runtime\node') -Filter node.exe -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
-    $node = if ($nodeMatch) { $nodeMatch.FullName } else { (Get-Command node.exe -ErrorAction SilentlyContinue).Source }
-    if ([string]::IsNullOrWhiteSpace($node) -or -not (Test-Path -LiteralPath $node)) {
-        throw 'Node is not available. Re-run scripts\Install-eMuleBBSuite.ps1 with -Force to install the pinned runtime.'
-    }
-    $amutorrentServer = Join-Path $Root 'apps\aMuTorrent\server\server.js'
-    $env:AMUTORRENT_DATA_DIR = Join-Path $Root 'data\amutorrent'
-    $amutorrentConfig = Join-Path $env:AMUTORRENT_DATA_DIR 'config.json'
-    if (-not (Test-Path -LiteralPath $amutorrentConfig)) {
-        throw "aMuTorrent config is missing: $amutorrentConfig. Run scripts\Initialize-Suite.ps1 once, or rerun scripts\Install-eMuleBBSuite.ps1 with -Force."
-    }
-    Start-ProcessIfMissing -Name 'aMuTorrent' -FilePath $node -ArgumentList @($amutorrentServer) -WorkingDirectory (Join-Path $Root 'apps\aMuTorrent') -CommandLineContains $amutorrentServer -Hidden
-}

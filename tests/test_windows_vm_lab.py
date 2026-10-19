@@ -171,7 +171,6 @@ WINDOWS_VM_PROFILE_SPECS = (
         execution_modes=("local", "vm"),
         uses_local_swarm=True,
         control_bind_scope="lan",
-        amutorrent_bind_scope="lan",
         p2p_mode="local-swarm",
         p2p_bind_scope="lan",
     ),
@@ -845,7 +844,6 @@ def test_windows_vm_reusable_campaign_summary_records_scenario_metadata(tmp_path
         "executionModes": ["local", "vm"],
         "usesLocalSwarm": True,
         "controlBindScope": "lan",
-        "amutorrentBindScope": "lan",
         "p2pMode": "local-swarm",
         "p2pBindScope": "lan",
     }
@@ -943,7 +941,6 @@ def test_windows_vm_profile_smoke_payload_stages_local_swarm_harness(tmp_path: P
         package_zip=tmp_path / "package.zip",
         local_swarm_release_asset_paths=release_asset_paths,
         local_swarm_dependency_asset_paths=[],
-        local_swarm_node_archive_path=windows_vm_lab._local_swarm_node_archive_path(layout, "x64"),
         release_version="0.7.3-rc.2",
         platform="x64",
         run_id="run",
@@ -965,8 +962,6 @@ def test_windows_vm_profile_smoke_payload_stages_local_swarm_harness(tmp_path: P
     assert "localSwarmReleaseAssetPaths" in captured[0]
     assert "localSwarmDependencyAssetPaths" in captured[0]
     assert "localSwarmDependencyManifestEntries" in captured[0]
-    assert "localSwarmNodeArchivePath" in captured[0]
-    assert "localSwarmNodeSha256" in captured[0]
     assert "releaseVersion" in captured[0]
     assert "localSwarmRestOpenApiPath" in captured[0]
     assert "localSwarmAppSourcePaths" in captured[0]
@@ -984,7 +979,7 @@ def test_windows_vm_profile_smoke_payload_stages_local_swarm_harness(tmp_path: P
     assert "emule.exe" in captured[0]
     assert "amuled.exe" in captured[0]
     assert "amulecmd.exe" in captured[0]
-    assert "emulebb-0.7.3-rc.2-amutorrent-x64.zip" in captured[0]
+    assert "emulebb-0.7.3-rc.2-amutorrent-x64.zip" not in captured[0]
     assert "repos\\\\amutorrent" not in captured[0]
     assert "REST-API-OPENAPI.yaml" in captured[0]
     assert "WebServerJsonSeams.h" in captured[0]
@@ -1020,7 +1015,6 @@ def test_windows_vm_profile_smoke_payload_stages_harness_for_plain_profiles(tmp_
         package_zip=tmp_path / "package.zip",
         local_swarm_release_asset_paths=[],
         local_swarm_dependency_asset_paths=[],
-        local_swarm_node_archive_path=None,
         release_version="0.7.3-rc.2",
         platform="x64",
         run_id="run",

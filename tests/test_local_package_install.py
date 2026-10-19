@@ -16,8 +16,6 @@ def _write_live_wire(path: Path, target: Path, **local_overrides: object) -> Non
     local_config = {
         "target_path": str(target),
         "emulebb_port": 14711,
-        "amutorrent_port": 14000,
-        "amutorrent_lan_bind_address": "127.0.0.1",
         "p2p_bind_interface": "hide.me",
     }
     local_config.update(local_overrides)
@@ -86,8 +84,6 @@ def _write_suite_profile(target: Path, *, exe_payload: bytes = b"exe", executabl
     symbols_dir = target / "symbols" / "emulebb-v0.7.3-rc.2" / "x64"
     symbols_dir.mkdir(parents=True, exist_ok=True)
     (symbols_dir / Path(executable_name).with_suffix(".pdb").name).write_bytes(b"pdb")
-    (target / "apps" / "aMuTorrent" / "server").mkdir(parents=True, exist_ok=True)
-    (target / "apps" / "aMuTorrent" / "server" / "server.js").write_text("server\n", encoding="utf-8")
     (profile_config / "preferences.ini").write_text(
         "\n".join(
             [
@@ -112,7 +108,6 @@ def _write_suite_profile(target: Path, *, exe_payload: bytes = b"exe", executabl
                 "bundle": "Full",
                 "services": {
                     "emulebb": {"bindAddress": "127.0.0.1", "port": 14711, "apiKey": "suite-secret-key"},
-                    "amutorrent": {"bindAddress": "127.0.0.1", "port": 14000},
                 },
             }
         )
@@ -243,7 +238,6 @@ def test_local_package_install_deploys_artifacts_from_suite_profile(
     assert installer_calls[0].emulebb_pdb_path.name == "emulebb.pdb"
     assert installer_calls[0].bundle == "Full"
     assert (target / "apps" / "eMuleBB" / "emulebb.exe").read_bytes() == b"exe"
-    assert (target / "apps" / "aMuTorrent" / "server" / "server.js").is_file()
     assert (target / "symbols" / "emulebb-v0.7.3-rc.2" / "x64" / "emulebb.pdb").read_bytes() == b"pdb"
     assert (target / "apps" / "eMuleBB" / "emulebb.pdb").read_bytes() == b"pdb"
     assert not (target / "scripts" / "Update-LocalPackage.ps1").exists()
@@ -423,11 +417,8 @@ def test_suite_installer_command_uses_full_bundle_and_existing_suite_config(tmp_
     artifacts = local_package_install.InstallArtifacts(
         release_root=release_root,
         emule_zip=release_root / "emule.zip",
-        amutorrent_zip=release_root / "amutorrent.zip",
         emule_manifest=release_root / "emule.manifest.json",
         emule_sbom=release_root / "emule.sbom.json",
-        amutorrent_manifest=release_root / "amutorrent.manifest.json",
-        amutorrent_sbom=release_root / "amutorrent.sbom.json",
         package_exe=release_root / "emulebb.exe",
         package_pdb=release_root / "emulebb.pdb",
         arch="x64",
@@ -455,50 +446,6 @@ def test_suite_installer_command_uses_full_bundle_and_existing_suite_config(tmp_
     assert command[command.index("-SonarrPort") + 1] == "8989"
     assert command[command.index("-LidarrPort") + 1] == "8686"
     assert command[command.index("-WhisparrPort") + 1] == "6969"
-
-
-def test_suite_installer_command_lets_amutorrent_inherit_control_bind_when_unset(tmp_path: Path) -> None:
-    target = tmp_path / "install"
-    live_wire_path = tmp_path / "live-wire-inputs.local.json"
-    _write_live_wire(
-        live_wire_path,
-        target,
-        lan_bind_address="192.0.2.11",
-        emulebb_lan_bind_address=None,
-    )
-    payload = json.loads(live_wire_path.read_text(encoding="utf-8"))
-    del payload["local_package_install"]["amutorrent_lan_bind_address"]
-    live_wire_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-    layout = _layout(tmp_path)
-    layout.tests_repo_root.mkdir(parents=True)
-    config = local_package_install.load_local_install_config(layout, str(live_wire_path))
-    release_root = tmp_path / "release"
-    release_root.mkdir()
-    artifacts = local_package_install.InstallArtifacts(
-        release_root=release_root,
-        emule_zip=release_root / "emule.zip",
-        amutorrent_zip=release_root / "amutorrent.zip",
-        emule_manifest=release_root / "emule.manifest.json",
-        emule_sbom=release_root / "emule.sbom.json",
-        amutorrent_manifest=release_root / "amutorrent.manifest.json",
-        amutorrent_sbom=release_root / "amutorrent.sbom.json",
-        package_exe=release_root / "emulebb.exe",
-        package_pdb=release_root / "emulebb.pdb",
-        arch="x64",
-        installer_script=target / ".staging" / "Install-eMuleBBSuite.ps1",
-    )
-
-    options = local_package_install.build_suite_installer_options(config, artifacts, "0.7.3-rc.2")
-    command = [str(part) for part in suite_installer.build_suite_installer_invocation(
-        powershell=Path("powershell.exe"),
-        options=options,
-    ).command]
-
-    assert config.amutorrent_lan_bind_address == ""
-    assert options.lan_bind_address == "192.0.2.11"
-    assert options.amutorrent_lan_bind_address == ""
-    assert command[command.index("-ControlBindAddress") + 1] == "192.0.2.11"
-    assert "-AmutorrentBindAddress" not in command
 
 
 def test_update_ini_values_appends_keys_to_existing_sections() -> None:
@@ -570,7 +517,7 @@ def test_materialize_test_local_install_uses_isolated_test_root(
     monkeypatch.setattr(
         local_package_install,
         "choose_free_tcp_ports",
-        lambda count, host="127.0.0.1": (15111, 15112, 15113, 15114, 15115, 15116, 15117),
+        lambda count, host="127.0.0.1": (15111, 15112, 15113, 15114, 15115, 15116),
     )
 
     result = local_package_install.materialize_test_local_install(
@@ -596,14 +543,12 @@ def test_materialize_test_local_install_uses_isolated_test_root(
     assert installer_calls[0].install_root == expected_target
     assert installer_calls[0].lan_bind_address == "127.0.0.1"
     assert installer_calls[0].emulebb_lan_bind_address == "127.0.0.1"
-    assert installer_calls[0].amutorrent_lan_bind_address == "127.0.0.1"
     assert installer_calls[0].emulebb_port == 15111
-    assert installer_calls[0].amutorrent_port == 15112
-    assert installer_calls[0].prowlarr_port == 15113
-    assert installer_calls[0].radarr_port == 15114
-    assert installer_calls[0].sonarr_port == 15115
-    assert installer_calls[0].lidarr_port == 15116
-    assert installer_calls[0].whisparr_port == 15117
+    assert installer_calls[0].prowlarr_port == 15112
+    assert installer_calls[0].radarr_port == 15113
+    assert installer_calls[0].sonarr_port == 15114
+    assert installer_calls[0].lidarr_port == 15115
+    assert installer_calls[0].whisparr_port == 15116
     assert installer_calls[0].import_profile_dir == import_profile.resolve()
     assert not operator_target.exists()
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
@@ -648,8 +593,8 @@ def test_materialize_test_local_install_accepts_lan_bind_address(
 
     def fake_choose_free_tcp_ports(count: int, *, host: str = "127.0.0.1") -> tuple[int, ...]:
         port_probe_hosts.append(host)
-        assert count == 7
-        return (15111, 15112, 15113, 15114, 15115, 15116, 15117)
+        assert count == 6
+        return (15111, 15112, 15113, 15114, 15115, 15116)
 
     monkeypatch.setattr(local_package_install.suite_installer, "invoke_suite_installer", fake_invoke_suite_installer)
     monkeypatch.setattr(local_package_install, "choose_free_tcp_ports", fake_choose_free_tcp_ports)
@@ -667,4 +612,3 @@ def test_materialize_test_local_install_accepts_lan_bind_address(
     assert port_probe_hosts == ["192.0.2.11"]
     assert installer_calls[0].lan_bind_address == "192.0.2.11"
     assert installer_calls[0].emulebb_lan_bind_address == "192.0.2.11"
-    assert installer_calls[0].amutorrent_lan_bind_address == "192.0.2.11"
