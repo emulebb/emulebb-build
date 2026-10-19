@@ -49,8 +49,9 @@ def test_workspace_manifest_uses_json_contract_shape() -> None:
     assert manifest["schema_version"] == WORKSPACE_MANIFEST_SCHEMA_VERSION
     assert manifest["workspace"]["profiles"] == ["core"]
     assert manifest["workspace"]["repos"]["build"] == "..\\..\\repos\\emulebb-build"
-    assert manifest["workspace"]["repos"]["ed2k_server"] == "..\\..\\repos\\goed2k-server"
-    assert manifest["workspace"]["repos"]["ed2k_index_server"] == "..\\..\\repos\\ed2k-server"
+    assert manifest["workspace"]["repos"]["ed2k_server"] == "..\\..\\repos\\ed2k-server"
+    assert "ed2k_index_server" not in manifest["workspace"]["repos"]
+    assert "goed2k_server" not in manifest["workspace"]["repos"]
     assert manifest["workspace"]["repos"]["amule"] == "..\\..\\repos\\amule"
     assert manifest["workspace"]["repos"]["emule_stock"] == "..\\..\\repos\\emule-stock"
     assert "amutorrent" not in manifest["workspace"]["repos"]
@@ -91,8 +92,8 @@ def test_repo_role_manifest_describes_workspace_repositories() -> None:
     assert repos["emulebb-rust"]["role"] == "headless-rust-client"
     assert repos["emulebb-rust"]["group"] == "product-family"
     assert "qbittorrentbb" not in repos
-    assert repos["goed2k-server"]["role"] == "local-ed2k-test-server"
-    assert repos["ed2k-server"]["role"] == "ed2k-upstream-reference"
+    assert "goed2k-server" not in repos
+    assert repos["ed2k-server"]["role"] == "local-ed2k-test-server"
     assert repos["ed2k-server"]["group"] == "product-family"
     assert repos["amule"]["role"] == "upstream-parity-reference"
     assert repos["amule"]["group"] == "product-family"
@@ -132,21 +133,38 @@ def test_canonical_topology_materializes_public_presence_only_when_selected() ->
 def test_canonical_topology_materializes_ed2k_server_fork_under_repos() -> None:
     repos = {repo.name: repo for repo in canonical_topology().repos}
 
-    ed2k_server = repos["goed2k-server"]
-    assert ed2k_server.url == "https://github.com/emulebb/goed2k-server.git"
-    assert ed2k_server.relative_path == "repos\\goed2k-server"
+    assert "goed2k-server" not in repos
+    ed2k_server = repos["ed2k-server"]
+    assert ed2k_server.url == "https://github.com/emulebb/ed2k-server.git"
+    assert ed2k_server.relative_path == "repos\\ed2k-server"
     assert ed2k_server.branch == "master"
     assert tuple((remote.name, remote.url) for remote in ed2k_server.additional_remotes) == (
-        ("upstream", "https://github.com/chenjia404/goed2k-server.git"),
-    )
-
-    ed2k_index_server = repos["ed2k-server"]
-    assert ed2k_index_server.url == "https://github.com/emulebb/ed2k-server.git"
-    assert ed2k_index_server.relative_path == "repos\\ed2k-server"
-    assert ed2k_index_server.branch == "master"
-    assert tuple((remote.name, remote.url) for remote in ed2k_index_server.additional_remotes) == (
         ("upstream", "https://github.com/andrey23127/ed2k-server.git"),
     )
+
+
+@pytest.mark.parametrize(
+    "profiles",
+    (
+        (PUBLIC_PRESENCE_PROFILE,),
+        (HISTORICAL_ANALYSIS_PROFILE,),
+        (PUBLIC_PRESENCE_PROFILE, HISTORICAL_ANALYSIS_PROFILE),
+    ),
+)
+def test_optional_profiles_never_restore_the_retired_go_server(profiles: tuple[str, ...]) -> None:
+    topology = canonical_topology(profiles=profiles)
+    repos = {repo.name for repo in topology.repos}
+    workspace_repos = build_workspace_manifest(topology, "workspace")["workspace"]["repos"]
+    role_repos = {repo["name"] for repo in build_repo_role_manifest(topology, "workspace")["repos"]}
+
+    assert "goed2k-server" not in repos
+    assert "goed2k_server" not in workspace_repos
+    assert "goed2k-server" not in role_repos
+
+
+def test_canonical_topology_rejects_retired_go_server_profile() -> None:
+    with pytest.raises(ValueError, match="Unknown workspace profiles: legacy-go-server"):
+        canonical_topology(profiles=("legacy-go-server",))
 
 
 def test_canonical_topology_manages_current_compatibility_references_and_keeps_history_optional() -> None:
@@ -228,7 +246,7 @@ def test_get_app_variant_error_lists_keys_paths_and_branches(tmp_path: Path) -> 
         build_repo_root=tmp_path / "repos" / "emulebb-build",
         tests_repo_root=tmp_path / "repos" / "emulebb-build-tests",
         tooling_repo_root=tmp_path / "repos" / "emulebb-tooling",
-        ed2k_server_repo_root=tmp_path / "repos" / "goed2k-server",
+        ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
         amule_repo_root=tmp_path / "repos" / "amule",
         emulebb_rust_repo_root=tmp_path / "repos" / "emulebb-rust",
         seed_repo_path=tmp_path / "repos" / "emulebb",
@@ -265,7 +283,7 @@ def test_build_log_directory_uses_output_root_when_configured(tmp_path: Path) ->
         build_repo_root=tmp_path / "repos" / "emulebb-build",
         tests_repo_root=tmp_path / "repos" / "emulebb-build-tests",
         tooling_repo_root=tmp_path / "repos" / "emulebb-tooling",
-        ed2k_server_repo_root=tmp_path / "repos" / "goed2k-server",
+        ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
         amule_repo_root=tmp_path / "repos" / "amule",
         emulebb_rust_repo_root=tmp_path / "repos" / "emulebb-rust",
         seed_repo_path=tmp_path / "repos" / "emulebb",
@@ -291,7 +309,7 @@ def test_generated_output_roots_require_output_root(tmp_path: Path) -> None:
         build_repo_root=tmp_path / "repos" / "emulebb-build",
         tests_repo_root=tmp_path / "repos" / "emulebb-build-tests",
         tooling_repo_root=tmp_path / "repos" / "emulebb-tooling",
-        ed2k_server_repo_root=tmp_path / "repos" / "goed2k-server",
+        ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
         amule_repo_root=tmp_path / "repos" / "amule",
         emulebb_rust_repo_root=tmp_path / "repos" / "emulebb-rust",
         seed_repo_path=tmp_path / "repos" / "emulebb",
@@ -319,7 +337,7 @@ def test_layout_exposes_generated_output_subroots_and_child_environment(
         build_repo_root=tmp_path / "repos" / "emulebb-build",
         tests_repo_root=tmp_path / "repos" / "emulebb-build-tests",
         tooling_repo_root=tmp_path / "repos" / "emulebb-tooling",
-        ed2k_server_repo_root=tmp_path / "repos" / "goed2k-server",
+        ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
         amule_repo_root=tmp_path / "repos" / "amule",
         emulebb_rust_repo_root=tmp_path / "repos" / "emulebb-rust",
         seed_repo_path=tmp_path / "repos" / "emulebb",

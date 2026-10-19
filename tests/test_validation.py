@@ -181,8 +181,7 @@ def test_product_family_validation_runs_repo_native_checks(
     rust_root = tmp_path / "repos" / "emulebb-rust"
     agents_root = tmp_path / "repos" / "p2p-overlord-agents"
     coordinator_root = tmp_path / "repos" / "p2p-overlord-be" / "overlord-be-coordinator"
-    goed2k_root = tmp_path / "repos" / "goed2k-server"
-    for path in (rust_root, agents_root, coordinator_root, goed2k_root):
+    for path in (rust_root, agents_root, coordinator_root):
         path.mkdir(parents=True)
     calls: list[tuple[tuple[str, ...], Path]] = []
 
@@ -196,7 +195,7 @@ def test_product_family_validation_runs_repo_native_checks(
         emulebb_rust_repo_root=rust_root,
         p2p_overlord_agents_repo_root=agents_root,
         p2p_overlord_be_repo_root=tmp_path / "repos" / "p2p-overlord-be",
-        ed2k_server_repo_root=goed2k_root,
+        ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
     )
 
     product_family.validate_product_family_repos(layout)
@@ -204,7 +203,6 @@ def test_product_family_validation_runs_repo_native_checks(
     assert (("cargo.exe", "fmt", "--all", "--check"), rust_root) in calls
     assert (("cargo.exe", "fmt", "--all", "--check"), agents_root) in calls
     assert (("npm.cmd", "run", "quality"), coordinator_root) in calls
-    assert (("go.exe", "test", "./..."), goed2k_root) in calls
 
 
 def test_product_family_quick_validation_uses_lightweight_coordinator_check(
@@ -224,7 +222,7 @@ def test_product_family_quick_validation_uses_lightweight_coordinator_check(
     layout = SimpleNamespace(
         p2p_overlord_agents_repo_root=None,
         p2p_overlord_be_repo_root=tmp_path / "repos" / "p2p-overlord-be",
-        ed2k_server_repo_root=tmp_path / "repos" / "goed2k-server",
+        ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
     )
 
     product_family.validate_product_family_repos(layout, tier="quick")
@@ -239,13 +237,11 @@ def test_product_family_prepare_fetches_native_dependencies(
     rust_root = tmp_path / "repos" / "emulebb-rust"
     agents_root = tmp_path / "repos" / "p2p-overlord-agents"
     coordinator_root = tmp_path / "repos" / "p2p-overlord-be" / "overlord-be-coordinator"
-    goed2k_root = tmp_path / "repos" / "goed2k-server"
-    for path in (rust_root, agents_root, coordinator_root, goed2k_root):
+    for path in (rust_root, agents_root, coordinator_root):
         path.mkdir(parents=True)
     (rust_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     (agents_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     (coordinator_root / "package-lock.json").write_text("{}\n", encoding="utf-8")
-    (goed2k_root / "go.mod").write_text("module example.invalid/demo\n", encoding="utf-8")
     calls: list[tuple[tuple[str, ...], Path]] = []
 
     def fake_run_native(command, **kwargs):
@@ -258,7 +254,7 @@ def test_product_family_prepare_fetches_native_dependencies(
         emulebb_rust_repo_root=rust_root,
         p2p_overlord_agents_repo_root=agents_root,
         p2p_overlord_be_repo_root=tmp_path / "repos" / "p2p-overlord-be",
-        ed2k_server_repo_root=goed2k_root,
+        ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
     )
 
     product_family.prepare_product_family_repos(layout)
@@ -267,7 +263,6 @@ def test_product_family_prepare_fetches_native_dependencies(
     assert (("cargo.exe", "fetch"), agents_root) in calls
     assert (("npm.cmd", "ci"), coordinator_root) in calls
     assert (("npm.cmd", "run", "prisma:generate"), coordinator_root) in calls
-    assert (("go.exe", "mod", "download"), goed2k_root) in calls
 
 
 def test_ed2k_server_product_family_tiers_are_linux_first(
@@ -284,11 +279,10 @@ def test_ed2k_server_product_family_tiers_are_linux_first(
         lambda _layout, arguments, *, label: calls.append(arguments),
     )
     layout = SimpleNamespace(
-        ed2k_index_server_repo_root=server_root,
+        ed2k_server_repo_root=server_root,
         emulebb_rust_repo_root=None,
         p2p_overlord_agents_repo_root=None,
         p2p_overlord_be_repo_root=None,
-        ed2k_server_repo_root=tmp_path / "repos" / "goed2k-server",
     )
 
     product_family.prepare_product_family_repos(layout)

@@ -35,7 +35,7 @@ def make_layout(tmp_path: Path) -> WorkspaceLayout:
         build_repo_root=emule_workspace_root / "repos" / "emulebb-build",
         tests_repo_root=tests_repo_root,
         tooling_repo_root=emule_workspace_root / "repos" / "emulebb-tooling",
-        ed2k_server_repo_root=emule_workspace_root / "repos" / "goed2k-server",
+        ed2k_server_repo_root=emule_workspace_root / "repos" / "ed2k-server",
         amule_repo_root=emule_workspace_root / "repos" / "amule",
         emulebb_rust_repo_root=rust_repo_root,
         seed_repo_path=emule_workspace_root / "repos" / "emulebb",

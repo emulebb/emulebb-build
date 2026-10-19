@@ -403,8 +403,7 @@ def test_build_ed2k_server_uses_wsl_and_stages_only_output_root_binary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     layout = make_layout(tmp_path, monkeypatch)
-    repo_root = layout.ed2k_index_server_repo_root
-    assert repo_root is not None
+    repo_root = layout.ed2k_server_repo_root
     repo_root.mkdir(parents=True)
     (repo_root / "Cargo.toml").write_text("[package]\nname = 'ed2k-server'\n", encoding="utf-8")
     commands: list[list[str]] = []
@@ -457,8 +456,7 @@ def test_build_ed2k_server_uses_native_cargo_on_linux(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     layout = make_layout(tmp_path, monkeypatch)
-    repo_root = layout.ed2k_index_server_repo_root
-    assert repo_root is not None
+    repo_root = layout.ed2k_server_repo_root
     repo_root.mkdir(parents=True)
     (repo_root / "Cargo.toml").write_text("[package]\nname = 'ed2k-server'\n", encoding="utf-8")
     cargo = tmp_path / "cargo"
@@ -646,7 +644,7 @@ def make_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch | None = None) -
         build_repo_root=emule_workspace_root / "repos" / "emulebb-build",
         tests_repo_root=emule_workspace_root / "repos" / "emulebb-build-tests",
         tooling_repo_root=emule_workspace_root / "repos" / "emulebb-tooling",
-        ed2k_server_repo_root=emule_workspace_root / "repos" / "goed2k-server",
+        ed2k_server_repo_root=emule_workspace_root / "repos" / "ed2k-server",
         amule_repo_root=emule_workspace_root / "repos" / "amule",
         seed_repo_path=emule_workspace_root / "repos" / "emulebb",
         seed_repo_branch="main",
@@ -654,7 +652,6 @@ def make_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch | None = None) -
         app_variants=(),
         test_targets=LayoutTestTargets(test_build_variant="main", test_run_variant="main", baseline_variant="community"),
         toolset_override_variable="EMULEBB_VS_PLATFORM_TOOLSET",
-        ed2k_index_server_repo_root=emule_workspace_root / "repos" / "ed2k-server",
         emulebb_rust_repo_root=emule_workspace_root / "repos" / "emulebb-rust",
         output_root=output_root,
     )

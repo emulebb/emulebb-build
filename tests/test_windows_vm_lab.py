@@ -908,9 +908,6 @@ def test_windows_vm_profile_smoke_payload_stages_local_swarm_harness(tmp_path: P
     _write_config(config_path)
     config = windows_vm_lab.load_vm_lab_config(layout, config_file=str(config_path))
     captured: list[str] = []
-    goed2k_server_exe = tmp_path / "tools" / "goed2k-server.exe"
-    goed2k_server_exe.parent.mkdir()
-    goed2k_server_exe.write_text("", encoding="utf-8")
     tracing_harness_exe = (
         layout.workspace_root
         / "app"
@@ -938,33 +935,25 @@ def test_windows_vm_profile_smoke_payload_stages_local_swarm_harness(tmp_path: P
             captured.append(script)
             return json.dumps({"status": "passed", "guest": {}, "checks": [], "errors": []})
 
-    def fake_build_goed2k_server_exe(_layout: WorkspaceLayout) -> Path:
-        return goed2k_server_exe
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(windows_vm_lab, "build_goed2k_server_exe", fake_build_goed2k_server_exe)
-    try:
-        result = windows_vm_lab.run_windows_vm_profile_smoke(
-            layout,
-            config,
-            config.targets["win10"],
-            profile="search-ui-local-swarm-vm",
-            package_zip=tmp_path / "package.zip",
-            local_swarm_release_asset_paths=release_asset_paths,
-            local_swarm_dependency_asset_paths=[],
-            local_swarm_node_archive_path=windows_vm_lab._local_swarm_node_archive_path(layout, "x64"),
-            release_version="0.7.3-rc.2",
-            platform="x64",
-            run_id="run",
-            run_report_dir=tmp_path / "report",
-            keep_running=False,
-            fixture_size_bytes=4096,
-            swarm_tier=3,
-            local_swarm_mode="execute",
-            runner=CaptureRunner(),
-        )
-    finally:
-        monkeypatch.undo()
+    result = windows_vm_lab.run_windows_vm_profile_smoke(
+        layout,
+        config,
+        config.targets["win10"],
+        profile="search-ui-local-swarm-vm",
+        package_zip=tmp_path / "package.zip",
+        local_swarm_release_asset_paths=release_asset_paths,
+        local_swarm_dependency_asset_paths=[],
+        local_swarm_node_archive_path=windows_vm_lab._local_swarm_node_archive_path(layout, "x64"),
+        release_version="0.7.3-rc.2",
+        platform="x64",
+        run_id="run",
+        run_report_dir=tmp_path / "report",
+        keep_running=False,
+        fixture_size_bytes=4096,
+        swarm_tier=3,
+        local_swarm_mode="execute",
+        runner=CaptureRunner(),
+    )
 
     assert result["status"] == "passed"
     assert result["swarmTier"] == 3
@@ -981,7 +970,6 @@ def test_windows_vm_profile_smoke_payload_stages_local_swarm_harness(tmp_path: P
     assert "releaseVersion" in captured[0]
     assert "localSwarmRestOpenApiPath" in captured[0]
     assert "localSwarmAppSourcePaths" in captured[0]
-    assert "localSwarmGoed2kServerExe" in captured[0]
     assert "localSwarmClient2AppExe" in captured[0]
     assert "localSwarmAmuleDaemonExe" in captured[0]
     assert "localSwarmAmuleControlExe" in captured[0]
@@ -993,7 +981,6 @@ def test_windows_vm_profile_smoke_payload_stages_local_swarm_harness(tmp_path: P
     assert "192.168.251.10" in captured[0]
     assert "192.168.251.1" in captured[0]
     assert "1.1.1.1" in captured[0]
-    assert "goed2k-server.exe" in captured[0]
     assert "emule.exe" in captured[0]
     assert "amuled.exe" in captured[0]
     assert "amulecmd.exe" in captured[0]

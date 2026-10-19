@@ -178,7 +178,7 @@ def _make_rust_package_layout(tmp_path: Path) -> WorkspaceLayout:
         build_repo_root=workspace_root / "repos" / "emulebb-build",
         tests_repo_root=workspace_root / "repos" / "emulebb-build-tests",
         tooling_repo_root=workspace_root / "repos" / "emulebb-tooling",
-        ed2k_server_repo_root=workspace_root / "repos" / "goed2k-server",
+        ed2k_server_repo_root=workspace_root / "repos" / "ed2k-server",
         amule_repo_root=workspace_root / "repos" / "amule",
         seed_repo_path=workspace_root / "repos" / "emulebb",
         seed_repo_branch="main",

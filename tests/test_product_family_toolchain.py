@@ -11,7 +11,6 @@ def test_product_family_toolchain_reports_supported_versions(monkeypatch: pytest
         "npm.cmd": "11.1.0\n",
         "rustc.exe": "rustc 1.86.0 (abc 2025-01-01)\n",
         "cargo.exe": "cargo 1.86.0 (abc 2025-01-01)\n",
-        "go.exe": "go version go1.25.7 windows/amd64\n",
     }
 
     monkeypatch.setattr(product_family.platform, "python_version", lambda: "3.11.8")
@@ -24,14 +23,13 @@ def test_product_family_toolchain_reports_supported_versions(monkeypatch: pytest
 
     payload = product_family.audit_product_family_toolchain()
 
-    assert payload["totals"] == {"ok": 6, "warning": 0, "missing": 0}
+    assert payload["totals"] == {"ok": 5, "warning": 0, "missing": 0}
     assert {check["name"] for check in payload["checks"]} == {
         "python",
         "node",
         "npm",
         "rustc",
         "cargo",
-        "go",
     }
 
 
@@ -41,7 +39,6 @@ def test_product_family_toolchain_warns_on_unapproved_node_major(monkeypatch: py
         "npm.cmd": "11.11.0\n",
         "rustc.exe": "rustc 1.86.0 (abc 2025-01-01)\n",
         "cargo.exe": "cargo 1.86.0 (abc 2025-01-01)\n",
-        "go.exe": "go version go1.25.7 windows/amd64\n",
     }
 
     monkeypatch.setattr(product_family.platform, "python_version", lambda: "3.11.8")
@@ -66,7 +63,6 @@ def test_product_family_toolchain_strict_fails_on_warning(monkeypatch: pytest.Mo
         "npm.cmd": "11.11.0\n",
         "rustc.exe": "rustc 1.86.0 (abc 2025-01-01)\n",
         "cargo.exe": "cargo 1.86.0 (abc 2025-01-01)\n",
-        "go.exe": "go version go1.25.7 windows/amd64\n",
     }
 
     monkeypatch.setattr(product_family.platform, "python_version", lambda: "3.11.8")
