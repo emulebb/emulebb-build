@@ -102,7 +102,10 @@ def run_compare(*, preset_key: str | None = None, workspace_root: str | None = N
 def compare_presets(root: Path, topology: WorkspaceTopology) -> tuple[ComparePreset, ...]:
     """Returns all configured comparison presets."""
 
-    analysis_specs = {"emule-stock": ("Stock eMule 0.72", "Stock eMule 0.72 vs local")}
+    analysis_specs = {
+        "amule": ("aMule upstream", "aMule upstream vs local"),
+        "emule-stock": ("Stock eMule 0.72", "Stock eMule 0.72 vs local"),
+    }
     presets: list[ComparePreset] = []
     for right in (target.name for target in local_variant_compare_targets(root, topology)):
         for repo in (*topology.repos, *topology.analysis_repos):

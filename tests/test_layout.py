@@ -215,7 +215,9 @@ def test_canonical_topology_does_not_materialize_retired_product_family_repos() 
 def test_compare_root_accepts_repo_targets_with_and_without_compare_subdirs(tmp_path: Path) -> None:
     topology = canonical_topology()
 
+    assert compare_root(tmp_path, topology, "amule") == tmp_path / "repos" / "amule" / "src"
     assert compare_root(tmp_path, topology, "emule-stock") == tmp_path / "repos" / "emule-stock" / "srchybrid"
+    assert compare_root(tmp_path, topology, "ed2k-server") == tmp_path / "repos" / "ed2k-server"
     with pytest.raises(RuntimeError, match="Unknown compare target: mods-archive"):
         compare_root(tmp_path, topology, "mods-archive")
 

@@ -5,7 +5,22 @@ from pathlib import Path
 import pytest
 
 from emule_workspace import setup_commands
-from emule_workspace.topology import AppRepo, ManagedRepo, WorkspaceTopology
+from emule_workspace.topology import AppRepo, ManagedRepo, WorkspaceTopology, canonical_topology
+
+
+def test_compare_presets_include_current_amule_and_stock_references(tmp_path: Path) -> None:
+    preset_keys = {
+        preset.key for preset in setup_commands.compare_presets(tmp_path, canonical_topology())
+    }
+
+    assert preset_keys == {
+        "amule-vs-local-072-community",
+        "amule-vs-local-072-main",
+        "amule-vs-local-072-tracing-harness",
+        "emule-stock-vs-local-072-community",
+        "emule-stock-vs-local-072-main",
+        "emule-stock-vs-local-072-tracing-harness",
+    }
 
 
 def test_dependency_update_report_writes_under_output_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

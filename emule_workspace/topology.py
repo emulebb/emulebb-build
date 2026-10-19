@@ -397,6 +397,7 @@ def canonical_topology(*, profiles: Iterable[str] = ()) -> WorkspaceTopology:
                 url="https://github.com/amule-org/amule.git",
                 relative_path="repos\\amule",
                 branch="master",
+                compare_subdir="src",
                 additional_remotes=(
                     AdditionalRemote(name="emulebb", url="https://github.com/emulebb/amule.git"),
                 ),
