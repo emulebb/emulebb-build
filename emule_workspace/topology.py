@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 BUILD_MANIFEST_NAME = "deps.json"
 WORKSPACE_MANIFEST_NAME = "deps.json"
-WORKSPACE_MANIFEST_SCHEMA_VERSION = 8
+WORKSPACE_MANIFEST_SCHEMA_VERSION = 9
 REPO_ROLE_MANIFEST_NAME = "repo-roles.json"
 REPO_ROLE_MANIFEST_SCHEMA_VERSION = 1
 DEFAULT_WORKSPACE_NAME = "workspace"
@@ -153,6 +153,7 @@ class WorkspaceManifestRepos(BaseModel):
     build: str
     tests: str
     tooling: str
+    amule: str
     ed2k_server: str
     ed2k_index_server: str
     pages: str
@@ -238,6 +239,7 @@ def build_workspace_manifest(topology: WorkspaceTopology, workspace_name: str | 
                 "build": _workspace_relative_repo_path(repo_by_name["emulebb-build"]),
                 "tests": _workspace_relative_repo_path(repo_by_name["emulebb-build-tests"]),
                 "tooling": _workspace_relative_repo_path(repo_by_name["emulebb-tooling"]),
+                "amule": _workspace_relative_repo_path(repo_by_name["amule"]),
                 "ed2k_server": _workspace_relative_repo_path(repo_by_name["goed2k-server"]),
                 "ed2k_index_server": _workspace_relative_repo_path(repo_by_name["ed2k-server"]),
                 "pages": _workspace_relative_repo_path(repo_by_name["emulebb-pages"]),
@@ -326,7 +328,7 @@ def _repo_role(repo: ManagedRepo) -> str:
         "amutorrent": "optional-controller",
         "ed2k-server": "ed2k-upstream-reference",
         "goed2k-server": "local-ed2k-test-server",
-        "amule": "optional-client-build",
+        "amule": "upstream-parity-reference",
         "emulebb-pages": "public-docs-site",
         "emulebb-org-profile": "public-org-profile",
         "emulebb-rust": "headless-rust-client",
@@ -363,12 +365,6 @@ def canonical_topology(*, include_analysis: bool = False) -> WorkspaceTopology:
                 relative_path="analysis\\community-0.72",
                 branch="v0.72a",
                 compare_subdir="srchybrid",
-            ),
-            ManagedRepo(
-                name="amule",
-                url="https://github.com/amule-org/amule.git",
-                relative_path="analysis\\amule",
-                branch="master",
             ),
             ManagedRepo(
                 name="mods-archive",
@@ -441,6 +437,15 @@ def canonical_topology(*, include_analysis: bool = False) -> WorkspaceTopology:
                 url="https://github.com/emulebb/emulebb-tooling.git",
                 relative_path="repos\\emulebb-tooling",
                 branch="main",
+            ),
+            ManagedRepo(
+                name="amule",
+                url="https://github.com/amule-org/amule.git",
+                relative_path="repos\\amule",
+                branch="master",
+                additional_remotes=(
+                    AdditionalRemote(name="emulebb", url="https://github.com/emulebb/amule.git"),
+                ),
             ),
             ManagedRepo(
                 name="ed2k-server",

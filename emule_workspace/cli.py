@@ -467,7 +467,7 @@ def prepare_product_family(*, workspace_options: WorkspaceOptions, layout) -> No
 @main.command("refresh-product-family-rebases")
 @_common_options
 def refresh_product_family_rebase_clones(*, workspace_options: WorkspaceOptions, layout) -> None:
-    """Refresh manual aMule and aMuTorrent checkouts after automated upstream rebases."""
+    """Refresh the manual aMuTorrent checkout after automated upstream rebases."""
 
     _locked("refresh-product-family-rebases", lambda **kwargs: refresh_product_family_rebases(kwargs["layout"]))(
         workspace_options=workspace_options,
@@ -782,7 +782,7 @@ def build_tests(
     type=click.Choice(["amule", "emulebb-rust", "qbittorrentbb"]),
     help=(
         "Optional P2P client to build. Defaults to emulebb-rust. "
-        "aMule requires a manual repos/amule checkout; qbittorrentbb honors EMULEBB_QBT_STATIC for a static single-exe build."
+        "aMule uses the managed official upstream checkout; qbittorrentbb honors EMULEBB_QBT_STATIC for a static single-exe build."
     ),
 )
 def build_clients(

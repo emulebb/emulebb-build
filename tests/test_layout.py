@@ -47,7 +47,7 @@ def test_workspace_manifest_uses_json_contract_shape() -> None:
     assert manifest["workspace"]["repos"]["build"] == "..\\..\\repos\\emulebb-build"
     assert manifest["workspace"]["repos"]["ed2k_server"] == "..\\..\\repos\\goed2k-server"
     assert manifest["workspace"]["repos"]["ed2k_index_server"] == "..\\..\\repos\\ed2k-server"
-    assert "amule" not in manifest["workspace"]["repos"]
+    assert manifest["workspace"]["repos"]["amule"] == "..\\..\\repos\\amule"
     assert "amutorrent" not in manifest["workspace"]["repos"]
     assert "emuleai" not in manifest["workspace"]["repos"]
     assert manifest["workspace"]["repos"]["pages"] == "..\\..\\repos\\emulebb-pages"
@@ -89,7 +89,8 @@ def test_repo_role_manifest_describes_workspace_repositories() -> None:
     assert repos["goed2k-server"]["role"] == "local-ed2k-test-server"
     assert repos["ed2k-server"]["role"] == "ed2k-upstream-reference"
     assert repos["ed2k-server"]["group"] == "product-family"
-    assert "amule" not in repos
+    assert repos["amule"]["role"] == "upstream-parity-reference"
+    assert repos["amule"]["group"] == "product-family"
     assert "amutorrent" not in repos
     assert "p2p-overlord-be" not in repos
 
@@ -131,21 +132,24 @@ def test_canonical_topology_materializes_ed2k_server_fork_under_repos() -> None:
     )
 
 
-def test_canonical_topology_keeps_analysis_references_optional() -> None:
+def test_canonical_topology_manages_amule_and_keeps_other_analysis_references_optional() -> None:
     repos = {repo.name: repo for repo in canonical_topology().repos}
     analysis_topology = canonical_topology(include_analysis=True)
     analysis_repos = {repo.name: repo for repo in analysis_topology.analysis_repos}
 
     assert "emuleai" not in repos
-    assert "amule" not in repos
-    amule = analysis_repos["amule"]
+    assert "amule" not in analysis_repos
+    amule = repos["amule"]
     assert amule.url == "https://github.com/amule-org/amule.git"
-    assert amule.relative_path == "analysis\\amule"
+    assert amule.relative_path == "repos\\amule"
     assert amule.branch == "master"
+    assert tuple((remote.name, remote.url) for remote in amule.additional_remotes) == (
+        ("emulebb", "https://github.com/emulebb/amule.git"),
+    )
     role_manifest = build_repo_role_manifest(analysis_topology, "workspace")
-    amule_role = next(repo for repo in role_manifest["analysis_repos"] if repo["name"] == "amule")
-    assert amule_role["role"] == "analysis-reference"
-    assert amule_role["group"] == "analysis"
+    amule_role = next(repo for repo in role_manifest["repos"] if repo["name"] == "amule")
+    assert amule_role["role"] == "upstream-parity-reference"
+    assert amule_role["group"] == "product-family"
     emuleai = analysis_repos["emuleai"]
     assert emuleai.url == "https://github.com/emulebb/emulebb-ai.git"
     assert emuleai.relative_path == "analysis\\emuleai"
@@ -168,7 +172,7 @@ def test_canonical_topology_materializes_emulebb_rust_under_repos() -> None:
 def test_canonical_topology_does_not_materialize_retired_product_family_repos() -> None:
     repos = {repo.name: repo for repo in canonical_topology().repos}
 
-    assert "amule" not in repos
+    assert "amule" in repos
     assert "amutorrent" not in repos
     assert "p2p-overlord-agents" not in repos
     assert "p2p-overlord-be" not in repos

@@ -130,20 +130,14 @@ TOOLCHAIN_POLICIES: tuple[ToolchainPolicy, ...] = (
 
 
 def refresh_product_family_rebases(layout: WorkspaceLayout) -> list[ProductFamilyRebaseRefresh]:
-    """Refreshes local product-family fork clones after GitHub upstream rebases.
+    """Refreshes local rebased product-family fork clones.
 
     The refresh is intentionally narrower than a general `git pull`: the local
     branch must be clean and exactly at the pre-fetch remote-tracking ref before
     the command will reset it to the freshly fetched remote branch.
     """
 
-    if layout.amule_repo_root is None:
-        raise RuntimeError(
-            "refresh-product-family-rebases requires manual repos/amule and repos/amutorrent checkouts; "
-            "they are no longer materialized by workspace setup."
-        )
     repos = (
-        ProductFamilyRebaseRepo("amule", layout.amule_repo_root, "master"),
         ProductFamilyRebaseRepo("amutorrent", layout.resolve_workspace_path("repos/amutorrent"), "main"),
     )
     results: list[ProductFamilyRebaseRefresh] = []

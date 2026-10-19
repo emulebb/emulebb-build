@@ -1014,11 +1014,6 @@ def build_amule_client(session: BuildSession, *, clean: bool) -> None:
 
     if session.options.platform != "x64":
         raise RuntimeError("build clients --client amule currently supports only --platform x64 via MSYS2 MINGW64.")
-    if session.layout.amule_repo_root is None:
-        raise RuntimeError(
-            "build clients --client amule requires a manual repos/amule checkout; "
-            "it is no longer materialized by workspace setup."
-        )
     msys2_root = resolve_msys2_root()
     bash = msys2_root / "usr" / "bin" / "bash.exe"
     script_path = session.layout.amule_repo_root / "packaging" / "windows" / "build.sh"

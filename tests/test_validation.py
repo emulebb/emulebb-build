@@ -307,7 +307,7 @@ def test_product_family_rebase_refresh_resets_clean_clone_after_remote_rewrite(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo_root = tmp_path / "repos" / "amule"
+    repo_root = tmp_path / "repos" / "amutorrent"
     repo_root.mkdir(parents=True)
     fetched = False
     commands: list[tuple[str, ...]] = []
@@ -336,7 +336,7 @@ def test_product_family_rebase_refresh_resets_clean_clone_after_remote_rewrite(
     monkeypatch.setattr(product_family, "run_native", fake_run_native)
 
     result = product_family._refresh_rebased_repo(
-        product_family.ProductFamilyRebaseRepo("amule", repo_root, "master")
+        product_family.ProductFamilyRebaseRepo("amutorrent", repo_root, "master")
     )
 
     assert result.status == "refreshed"
@@ -383,7 +383,7 @@ def test_product_family_rebase_refresh_refuses_local_divergence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo_root = tmp_path / "repos" / "amule"
+    repo_root = tmp_path / "repos" / "amutorrent"
     repo_root.mkdir(parents=True)
     fetched = False
 
@@ -412,4 +412,4 @@ def test_product_family_rebase_refresh_refuses_local_divergence(
     monkeypatch.setattr(product_family, "run_native", fake_run_native)
 
     with pytest.raises(RuntimeError, match="refusing to reset local work"):
-        product_family._refresh_rebased_repo(product_family.ProductFamilyRebaseRepo("amule", repo_root, "master"))
+        product_family._refresh_rebased_repo(product_family.ProductFamilyRebaseRepo("amutorrent", repo_root, "master"))
