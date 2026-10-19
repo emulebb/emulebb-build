@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from emule_workspace import materialize
+from emule_workspace.setup_commands import ComparePreset
 from emule_workspace.topology import AppRepo, ManagedRepo, WorkspaceTopology
 
 
@@ -74,6 +75,49 @@ def test_print_repo_provenance_reports_head_and_branch(tmp_path: Path, monkeypat
         ("git", "-C", str(repo), "branch", "--show-current"),
     ]
     assert "Managed repository 'emulebb-build-tests' at abc123 (main)." in capsys.readouterr().out
+
+
+def test_compare_launcher_sync_removes_stale_generated_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    compare_root = tmp_path / "analysis" / "compare"
+    stale_directory = compare_root / "retired-source"
+    stale_directory.mkdir(parents=True)
+    (compare_root / "retired-source-vs-main.cmd").write_text("stale\n", encoding="utf-8")
+    (stale_directory / "retired-source-vs-main.cmd").write_text("stale\n", encoding="utf-8")
+    preserved_file = compare_root / "README.txt"
+    preserved_file.write_text("operator notes\n", encoding="utf-8")
+    topology = WorkspaceTopology(
+        profiles=("core",),
+        root_directories=(),
+        app_repo=AppRepo(
+            name="emulebb",
+            url="https://example.invalid/emulebb.git",
+            relative_path="repos\\emulebb",
+            branch="main",
+        ),
+        repos=(),
+        analysis_repos=(),
+        third_party_repos=(),
+    )
+    presets = (
+        ComparePreset(
+            key="emule-stock-vs-local-072-main",
+            label="Stock eMule 0.72 vs local-072-main",
+            category="Stock eMule 0.72 vs local",
+            left_name="emule-stock",
+            right_name="local-072-main",
+        ),
+    )
+    monkeypatch.setattr("emule_workspace.setup_commands.compare_presets", lambda _root, _topology: presets)
+
+    materialize.write_compare_launchers(tmp_path, topology)
+
+    assert not (compare_root / "retired-source-vs-main.cmd").exists()
+    assert not stale_directory.exists()
+    assert preserved_file.read_text(encoding="utf-8") == "operator notes\n"
+    assert (compare_root / "open-compare-menu.cmd").is_file()
+    assert (compare_root / "emule-stock-vs-local-072-main.cmd").is_file()
 
 
 def test_seed_overlay_tracks_and_removes_stale_seed_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

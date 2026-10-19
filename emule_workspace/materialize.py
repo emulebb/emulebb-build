@@ -533,8 +533,25 @@ def write_compare_launchers(root: Path, topology: WorkspaceTopology) -> None:
 
     compare_root = root / "analysis" / "compare"
     compare_root.mkdir(parents=True, exist_ok=True)
+    presets = compare_presets(root, topology)
+    expected_launchers = {
+        compare_root / "open-compare-menu.cmd",
+        *(compare_root / f"{preset.key}.cmd" for preset in presets),
+    }
+    for launcher in compare_root.rglob("*.cmd"):
+        if launcher not in expected_launchers:
+            launcher.unlink()
+    for directory in sorted(
+        (path for path in compare_root.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
     _write_cmd(compare_root / "open-compare-menu.cmd", "python -m emule_workspace compare\n")
-    for preset in compare_presets(root, topology):
+    for preset in presets:
         _write_cmd(
             compare_root / f"{preset.key}.cmd",
             f'python -m emule_workspace compare "{preset.key}"\n',
