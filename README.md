@@ -37,7 +37,6 @@ In practice this repo needs:
 - `repos\amule`
 - `repos\emule-stock`
 - `repos\ed2k-server`
-- `repos\goed2k-server`
 - `repos\emulebb-rust`
 - `repos\third_party\...`
 - `workspaces\workspace\app\emulebb-main`
@@ -46,11 +45,12 @@ In practice this repo needs:
 
 The default `core` profile includes the MFC diagnostic/release worktrees, their
 third-party dependencies, the current stock 0.72 reference, aMule, the Rust
-client, and both servers during the Go-to-Rust server transition. Archived
+client, and the upstream-following Rust ED2K server. Archived
 analysis repositories are excluded. Add them only with
 `python -m emule_workspace sync --profile historical-analysis`. Public web and
 organization-profile repositories are similarly opt-in through
-`--profile public-presence`. Repeat `--profile` to select both optional sets.
+`--profile public-presence`. Repeat `--profile` to combine optional sets. The
+retired Go server is not managed or materialized by this workspace.
 
 `repos\emulebb` is not a normal development checkout. Python materialization owns
 it as the canonical app anchor, and it is expected to stay detached at
@@ -76,10 +76,9 @@ The active app layout and workspace repo paths are topology-driven from
 configured variant names rather than duplicating hardcoded worktree paths.
 The generated manifest records the selected repository profiles, exposes stock
 eMule through `workspace.repos.emule_stock`, and places selected public repos in
-`workspace.optional_repos`. During the server transition,
-`workspace.repos.ed2k_server` remains the deterministic Go test fixture while
-`workspace.repos.ed2k_index_server` identifies the managed Rust Service/Lab
-fork without selecting it for any test lane.
+`workspace.optional_repos`. `workspace.repos.ed2k_server` identifies the managed
+Rust Service/Lab fork used by local deterministic test lanes. There is no
+legacy Go-server topology or compatibility profile.
 
 ## Supported Commands
 

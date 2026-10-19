@@ -287,9 +287,7 @@ def build_ed2k_server_service(
 ) -> None:
     """Build the Linux Rust index server and stage its sole runnable binary."""
 
-    repo_root = session.layout.ed2k_index_server_repo_root
-    if repo_root is None:
-        raise RuntimeError("build ed2k-server requires repos/ed2k-server in the workspace manifest.")
+    repo_root = session.layout.ed2k_server_repo_root
     if not (repo_root / "Cargo.toml").is_file():
         raise RuntimeError(f"ed2k-server repository was not found: {repo_root}")
 

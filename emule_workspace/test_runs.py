@@ -941,13 +941,6 @@ def invoke_rust_network_proof(
     script = layout.tests_repo_root / "scripts" / scripts[lane]
     if not script.is_file():
         raise RuntimeError(f"Rust network proof runner is missing: {script}")
-    if lane == "local-protocol":
-        server_repo = layout.emule_workspace_root / "repos" / "goed2k-server"
-        if not (server_repo / "go.mod").is_file():
-            raise RuntimeError(f"Local ED2K support server is missing: {server_repo}")
-        run_native(["go", "test", "./ed2ksrv", "-run", "TestOfferFilesRegistersDynamicSharedEntries", "-count=1"],
-                   label="local ED2K support server offer tests",
-                   cwd=server_repo, env=_workspace_env(layout))
     args: list[str | Path | float | int] = [script]
     if lane == "prepare-corpus":
         if not inputs or not source_root:

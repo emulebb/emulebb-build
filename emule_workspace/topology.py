@@ -11,14 +11,17 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 BUILD_MANIFEST_NAME = "deps.json"
 WORKSPACE_MANIFEST_NAME = "deps.json"
-WORKSPACE_MANIFEST_SCHEMA_VERSION = 10
+WORKSPACE_MANIFEST_SCHEMA_VERSION = 11
 REPO_ROLE_MANIFEST_NAME = "repo-roles.json"
 REPO_ROLE_MANIFEST_SCHEMA_VERSION = 2
 DEFAULT_WORKSPACE_NAME = "workspace"
 CORE_WORKSPACE_PROFILE = "core"
 HISTORICAL_ANALYSIS_PROFILE = "historical-analysis"
 PUBLIC_PRESENCE_PROFILE = "public-presence"
-OPTIONAL_WORKSPACE_PROFILES = (HISTORICAL_ANALYSIS_PROFILE, PUBLIC_PRESENCE_PROFILE)
+OPTIONAL_WORKSPACE_PROFILES = (
+    HISTORICAL_ANALYSIS_PROFILE,
+    PUBLIC_PRESENCE_PROFILE,
+)
 WORKSPACE_PROFILES = (CORE_WORKSPACE_PROFILE, *OPTIONAL_WORKSPACE_PROFILES)
 WORKSPACE_PROPS_FILE_NAME = "workspace.props"
 SETUP_LOG_FILE_NAME = "emulebb-workspace.log"
@@ -28,7 +31,6 @@ SHARED_HOOK_REPO_NAMES = frozenset(
         "emulebb-build-tests",
         "emulebb-tooling",
         "ed2k-server",
-        "goed2k-server",
         "emulebb-pages",
         "emulebb-org-profile",
     }
@@ -163,7 +165,6 @@ class WorkspaceManifestRepos(BaseModel):
     amule: str
     emule_stock: str
     ed2k_server: str
-    ed2k_index_server: str
     emulebb_rust: str
     third_party: str
 
@@ -250,8 +251,7 @@ def build_workspace_manifest(topology: WorkspaceTopology, workspace_name: str | 
                 "tooling": _workspace_relative_repo_path(repo_by_name["emulebb-tooling"]),
                 "amule": _workspace_relative_repo_path(repo_by_name["amule"]),
                 "emule_stock": _workspace_relative_repo_path(repo_by_name["emule-stock"]),
-                "ed2k_server": _workspace_relative_repo_path(repo_by_name["goed2k-server"]),
-                "ed2k_index_server": _workspace_relative_repo_path(repo_by_name["ed2k-server"]),
+                "ed2k_server": _workspace_relative_repo_path(repo_by_name["ed2k-server"]),
                 "emulebb_rust": _workspace_relative_repo_path(repo_by_name["emulebb-rust"]),
                 "third_party": str(workspace_prefix / "repos" / "third_party"),
             },
@@ -339,8 +339,7 @@ def _repo_role(repo: ManagedRepo) -> str:
         "emulebb-build-tests": "test-harness",
         "emulebb-tooling": "workspace-policy-and-docs",
         "amutorrent": "optional-controller",
-        "ed2k-server": "ed2k-upstream-reference",
-        "goed2k-server": "local-ed2k-test-server",
+        "ed2k-server": "local-ed2k-test-server",
         "amule": "upstream-parity-reference",
         "emule-stock": "upstream-stock-compatibility-reference",
         "emulebb-pages": "public-docs-site",
@@ -469,15 +468,6 @@ def canonical_topology(*, profiles: Iterable[str] = ()) -> WorkspaceTopology:
                 branch="master",
                 additional_remotes=(
                     AdditionalRemote(name="upstream", url="https://github.com/andrey23127/ed2k-server.git"),
-                ),
-            ),
-            ManagedRepo(
-                name="goed2k-server",
-                url="https://github.com/emulebb/goed2k-server.git",
-                relative_path="repos\\goed2k-server",
-                branch="master",
-                additional_remotes=(
-                    AdditionalRemote(name="upstream", url="https://github.com/chenjia404/goed2k-server.git"),
                 ),
             ),
             *(

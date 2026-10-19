@@ -652,18 +652,7 @@ def invoke_windows_vm_tests(
     report_root = _windows_vm_report_root(layout)
     run_report_dir = report_root / run_id
     run_report_dir.mkdir(parents=True, exist_ok=True)
-    if options.profile == "local-ed2k-transfer":
-        rows = run_windows_vm_local_ed2k_transfer(
-            layout,
-            config,
-            package_zip=package_zip,
-            run_id=run_id,
-            run_report_dir=run_report_dir,
-            keep_running=options.keep_running,
-            fixture_size_bytes=options.fixture_size_bytes,
-            runner=runner,
-        )
-    elif options.profile == "hideme-live-wire":
+    if options.profile == "hideme-live-wire":
         rows = run_windows_vm_hideme_live_wire(
             layout,
             config,
@@ -1084,11 +1073,6 @@ def run_windows_vm_profile_smoke(
         run_report_dir,
         host_contracts,
     )
-    local_swarm_goed2k_server_exe = (
-        build_goed2k_server_exe(layout)
-        if is_local_swarm_profile
-        else None
-    )
     local_swarm_client2_app_exe = local_swarm_tracing_harness_app_exe(layout) if is_local_swarm_profile else None
     local_swarm_amule_daemon_exe, local_swarm_amule_control_exe = (
         local_swarm_amule_exes(layout)
@@ -1147,11 +1131,6 @@ def run_windows_vm_profile_smoke(
                 else ""
             ),
             "localSwarmAppSourcePaths": [str(path) for path in local_swarm_app_source_paths],
-            "localSwarmGoed2kServerExe": (
-                str(local_swarm_goed2k_server_exe)
-                if local_swarm_goed2k_server_exe is not None
-                else ""
-            ),
             "localSwarmClient2AppExe": (
                 str(local_swarm_client2_app_exe)
                 if local_swarm_client2_app_exe is not None
@@ -1194,88 +1173,6 @@ def run_windows_vm_profile_smoke(
         "checks": payload.get("checks", []),
         "errors": payload.get("errors", []),
     }
-
-
-def run_windows_vm_local_ed2k_transfer(
-    layout: WorkspaceLayout,
-    config: VmLabConfig,
-    *,
-    package_zip: Path,
-    run_id: str,
-    run_report_dir: Path,
-    keep_running: bool,
-    fixture_size_bytes: int,
-    runner: PowerShellRunner,
-) -> list[dict[str, object]]:
-    """Runs one local ED2K transfer scenario across win10 and win11."""
-
-    required_targets = tuple(load_windows_vm_profile_catalog(layout).LOCAL_ED2K_REQUIRED_TARGETS)
-    target_report_dirs = {
-        key: run_report_dir / key
-        for key in required_targets
-    }
-    for directory in target_report_dirs.values():
-        directory.mkdir(parents=True, exist_ok=True)
-    if runner.dry_run:
-        return [
-            {
-                "target": key,
-                "vmName": config.targets[key].vm_name,
-                "status": "planned",
-                "checkpointName": config.hyperv.checkpoint_name,
-                "reportDir": str(target_report_dirs[key]),
-            }
-            for key in required_targets
-        ]
-    host_contracts = load_windows_vm_host_contracts(layout)
-    target_payloads = host_contracts.build_local_ed2k_target_payloads(
-        {key: config.targets[key].vm_name for key in required_targets}
-    )
-    target_payloads = _with_target_provisioning_payloads(config, target_payloads)
-    server_exe = build_goed2k_server_exe(layout)
-    script = _ps_with_payload(
-        {
-            **target_payloads,
-            "switchName": config.hyperv.provisioning_switch_name,
-            "checkpointName": config.hyperv.checkpoint_name,
-            "username": config.guest.username,
-            "password": resolve_guest_password(config),
-            "packageZip": str(package_zip),
-            "serverExe": str(server_exe),
-            "runnerPath": str(host_contracts.guest_runner_path(layout.tests_repo_root, "local-ed2k-transfer")),
-            "profileHelperPath": str(host_contracts.profile_helper_path(layout.tests_repo_root)),
-            "runId": run_id,
-            "hostReportDir": str(run_report_dir),
-            "keepRunning": keep_running,
-            "fixtureSizeBytes": fixture_size_bytes,
-            "apiKey": "vm-local-ed2k-api-key",
-            "adminToken": "vm-local-ed2k-admin-token",
-        },
-        host_contracts.load_guest_script(layout.tests_repo_root, "local-ed2k-transfer"),
-    )
-    stdout = runner.run(script, label="Windows VM local ED2K transfer", capture_json=True)
-    payload = _parse_json_output(stdout, "Windows VM local ED2K transfer")
-    _write_json(run_report_dir / "local-ed2k-transfer-result.json", payload)
-    rows: list[dict[str, object]] = []
-    target_results = payload.get("targets", {})
-    for key in required_targets:
-        target_payload = target_results.get(key, {}) if isinstance(target_results, dict) else {}
-        _write_json(target_report_dirs[key] / f"{key}-result.json", target_payload)
-        rows.append(
-            {
-                "target": key,
-                "vmName": config.targets[key].vm_name,
-                "status": target_payload.get("status", payload.get("status", "failed"))
-                if isinstance(target_payload, dict)
-                else payload.get("status", "failed"),
-                "checkpointName": config.hyperv.checkpoint_name,
-                "reportDir": str(target_report_dirs[key]),
-                "guest": target_payload.get("guest", {}) if isinstance(target_payload, dict) else {},
-                "checks": target_payload.get("checks", []) if isinstance(target_payload, dict) else [],
-                "errors": target_payload.get("errors", []) if isinstance(target_payload, dict) else [],
-            }
-        )
-    return rows
 
 
 def local_swarm_tracing_harness_app_exe(layout: WorkspaceLayout) -> Path | None:
@@ -1477,30 +1374,6 @@ def run_windows_vm_hideme_live_wire(
             }
         )
     return rows
-
-
-def build_goed2k_server_exe(layout: WorkspaceLayout) -> Path:
-    """Builds the local ED2K server as a Windows executable for guest transfer tests."""
-
-    output_dir = layout.output_tools_root / "goed2k-server"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "goed2k-server.exe"
-    go_exe = shutil.which("go")
-    if not go_exe:
-        raise RuntimeError("Go is required to build goed2k-server.exe for local-ed2k-transfer.")
-    completed = subprocess.run(
-        [go_exe, "build", "-o", str(output_path), "./cmd/goed2k-server"],
-        cwd=str(layout.ed2k_server_repo_root),
-        env={**os.environ, "GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "0"},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        tail = completed.stderr.strip() or completed.stdout.strip()
-        raise RuntimeError(f"Building goed2k-server.exe failed with exit code {completed.returncode}.\n{tail}")
-    return output_path
 
 
 def ensure_python_installer(layout: WorkspaceLayout) -> Path:

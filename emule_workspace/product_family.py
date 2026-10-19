@@ -119,13 +119,6 @@ TOOLCHAIN_POLICIES: tuple[ToolchainPolicy, ...] = (
         minimum_version=(1, 85),
         note="Rust workspace build, test, and dependency fetch tool.",
     ),
-    ToolchainPolicy(
-        name="go",
-        command_names=("go.exe", "go"),
-        version_args=("version",),
-        minimum_version=(1, 25),
-        note="goed2k-server module declares Go 1.25.x.",
-    ),
 )
 
 
@@ -171,8 +164,7 @@ def prepare_product_family_repos(layout: WorkspaceLayout) -> None:
             cwd=root,
         )
 
-    ed2k_index_root = getattr(layout, "ed2k_index_server_repo_root", None)
-    if ed2k_index_root is not None and (ed2k_index_root / "Cargo.toml").is_file():
+    if (layout.ed2k_server_repo_root / "Cargo.toml").is_file():
         _run_ed2k_server_cargo(layout, ("fetch", "--locked"), label="ed2k-server cargo fetch")
 
     coordinator_root = _coordinator_root(layout)
@@ -184,15 +176,6 @@ def prepare_product_family_repos(layout: WorkspaceLayout) -> None:
             label="p2p-overlord-be coordinator prisma generate",
             cwd=coordinator_root,
         )
-
-    goed2k_root = layout.ed2k_server_repo_root
-    if goed2k_root.is_dir() and (goed2k_root / "go.mod").is_file():
-        run_native(
-            [_required_product_family_command(("go.exe", "go"), "Go toolchain"), "mod", "download"],
-            label="goed2k-server go mod download",
-            cwd=goed2k_root,
-        )
-
 
 def validate_product_family_repos(layout: WorkspaceLayout, *, tier: ProductFamilyValidationTier = "quality") -> None:
     """Runs repo-native checks for non-app product-family repositories."""
@@ -240,8 +223,7 @@ def validate_product_family_repos(layout: WorkspaceLayout, *, tier: ProductFamil
                 cwd=root,
             )
 
-    ed2k_index_root = getattr(layout, "ed2k_index_server_repo_root", None)
-    if ed2k_index_root is not None and ed2k_index_root.is_dir():
+    if layout.ed2k_server_repo_root.is_dir():
         _run_ed2k_server_cargo(
             layout,
             ("fmt", "--all", "--check"),
@@ -274,15 +256,6 @@ def validate_product_family_repos(layout: WorkspaceLayout, *, tier: ProductFamil
             label=f"p2p-overlord-be coordinator {script}",
             cwd=coordinator_root,
         )
-
-    goed2k_root = layout.ed2k_server_repo_root
-    if goed2k_root.is_dir():
-        run_native(
-            [_required_product_family_command(("go.exe", "go"), "Go toolchain"), "test", "./..."],
-            label="goed2k-server go test",
-            cwd=goed2k_root,
-        )
-
 
 def audit_product_family_toolchain(*, strict: bool = False) -> dict[str, Any]:
     """Returns the product-family runtime/tool version policy and current status."""
@@ -340,9 +313,7 @@ def _run_ed2k_server_cargo(
 ) -> None:
     """Run one Linux-first ed2k-server Cargo command through the owned boundary."""
 
-    repo_root = getattr(layout, "ed2k_index_server_repo_root", None)
-    if repo_root is None:
-        raise RuntimeError(f"{label} requires repos/ed2k-server in the workspace manifest.")
+    repo_root = layout.ed2k_server_repo_root
     env = {name: str(value) for name, value in layout.subprocess_environment().items()}
     if os.name != "nt":
         cargo = _required_product_family_command(("cargo",), "Rust cargo")
