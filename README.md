@@ -35,20 +35,22 @@ In practice this repo needs:
 - `repos\emulebb-build-tests`
 - `repos\emulebb-tooling`
 - `repos\amule`
+- `analysis\community-0.72`
 - `repos\ed2k-server`
 - `repos\goed2k-server`
 - `repos\emulebb-rust`
-- `repos\emulebb-pages`
-- `repos\emulebb-org-profile`
 - `repos\third_party\...`
 - `workspaces\workspace\app\emulebb-main`
 - `workspaces\workspace\app\emulebb-community-baseline`
 - `workspaces\workspace\app\emulebb-community-tracing-harness`
 
-Analysis reference clones under `analysis\...` are optional. Use
-`python -m emule_workspace materialize --include-analysis` or
-`python -m emule_workspace sync --include-analysis` when comparison work needs
-those checkouts.
+The default `core` profile includes the MFC diagnostic/release worktrees, their
+third-party dependencies, the current stock 0.72 reference, aMule, the Rust
+client, and both servers during the Go-to-Rust server transition. Archived
+analysis repositories are excluded. Add them only with
+`python -m emule_workspace sync --profile historical-analysis`. Public web and
+organization-profile repositories are similarly opt-in through
+`--profile public-presence`. Repeat `--profile` to select both optional sets.
 
 `repos\emulebb` is not a normal development checkout. Python materialization owns
 it as the canonical app anchor, and it is expected to stay detached at
@@ -72,11 +74,12 @@ The active app layout and workspace repo paths are topology-driven from
 `workspaces\workspace\deps.json`, with build-specific settings kept in this repo's
 `deps.json`. Test, coverage, and live-diff flows resolve their app roots from
 configured variant names rather than duplicating hardcoded worktree paths.
-The generated manifest also tracks the public pages repo and organization
-profile repo so web/documentation repos are materialized with the rest of the
-workspace. `workspace.repos.ed2k_server` remains the deterministic Go test
-fixture, while `workspace.repos.ed2k_index_server` identifies the managed Rust
-Service/Lab fork without selecting it for any test lane.
+The generated manifest records the selected repository profiles, exposes stock
+eMule through `workspace.repos.emule_stock`, and places selected public repos in
+`workspace.optional_repos`. During the server transition,
+`workspace.repos.ed2k_server` remains the deterministic Go test fixture while
+`workspace.repos.ed2k_index_server` identifies the managed Rust Service/Lab
+fork without selecting it for any test lane.
 
 ## Supported Commands
 

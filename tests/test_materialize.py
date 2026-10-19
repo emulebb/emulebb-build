@@ -78,6 +78,7 @@ def test_print_repo_provenance_reports_head_and_branch(tmp_path: Path, monkeypat
 
 def test_seed_overlay_tracks_and_removes_stale_seed_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     topology = WorkspaceTopology(
+        profiles=("core",),
         root_directories=(),
         app_repo=AppRepo(name="emulebb", url="https://example.invalid/emulebb.git", relative_path="repos\\emulebb", branch="main"),
         repos=(),

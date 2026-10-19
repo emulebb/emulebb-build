@@ -13,7 +13,7 @@ from .config import resolve_required_workspace_roots
 from .git import repo_branch, repo_head
 from .materialize import resolve_setup_workspace_root
 from .process import find_tool, run_captured
-from .topology import ManagedRepo, UpdatePolicy, WorkspaceTopology, canonical_topology
+from .topology import HISTORICAL_ANALYSIS_PROFILE, ManagedRepo, UpdatePolicy, WorkspaceTopology, canonical_topology
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ def run_compare(*, preset_key: str | None = None, workspace_root: str | None = N
     """Shows compare presets or launches WinMerge for a selected preset."""
 
     root = resolve_setup_workspace_root(workspace_root)
-    topology = canonical_topology(include_analysis=True)
+    topology = canonical_topology(profiles=(HISTORICAL_ANALYSIS_PROFILE,))
     presets = compare_presets(root, topology)
     if not preset_key:
         print("WinMerge compare presets")

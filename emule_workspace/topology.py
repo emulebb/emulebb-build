@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +11,15 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 BUILD_MANIFEST_NAME = "deps.json"
 WORKSPACE_MANIFEST_NAME = "deps.json"
-WORKSPACE_MANIFEST_SCHEMA_VERSION = 9
+WORKSPACE_MANIFEST_SCHEMA_VERSION = 10
 REPO_ROLE_MANIFEST_NAME = "repo-roles.json"
-REPO_ROLE_MANIFEST_SCHEMA_VERSION = 1
+REPO_ROLE_MANIFEST_SCHEMA_VERSION = 2
 DEFAULT_WORKSPACE_NAME = "workspace"
+CORE_WORKSPACE_PROFILE = "core"
+HISTORICAL_ANALYSIS_PROFILE = "historical-analysis"
+PUBLIC_PRESENCE_PROFILE = "public-presence"
+OPTIONAL_WORKSPACE_PROFILES = (HISTORICAL_ANALYSIS_PROFILE, PUBLIC_PRESENCE_PROFILE)
+WORKSPACE_PROFILES = (CORE_WORKSPACE_PROFILE, *OPTIONAL_WORKSPACE_PROFILES)
 WORKSPACE_PROPS_FILE_NAME = "workspace.props"
 SETUP_LOG_FILE_NAME = "emulebb-workspace.log"
 SHARED_HOOK_REPO_NAMES = frozenset(
@@ -104,6 +110,7 @@ class WorkspaceTopology(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     default_workspace_name: str = DEFAULT_WORKSPACE_NAME
+    profiles: tuple[str, ...]
     root_directories: tuple[str, ...]
     app_repo: AppRepo
     repos: tuple[ManagedRepo, ...]
@@ -154,10 +161,9 @@ class WorkspaceManifestRepos(BaseModel):
     tests: str
     tooling: str
     amule: str
+    emule_stock: str
     ed2k_server: str
     ed2k_index_server: str
-    pages: str
-    org_profile: str
     emulebb_rust: str
     third_party: str
 
@@ -168,8 +174,10 @@ class WorkspaceManifestWorkspace(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str
+    profiles: tuple[str, ...]
     app_repo: WorkspaceManifestAppRepo
     repos: WorkspaceManifestRepos
+    optional_repos: dict[str, str]
 
 
 class WorkspaceManifestContract(BaseModel):
@@ -212,7 +220,7 @@ def build_workspace_manifest(topology: WorkspaceTopology, workspace_name: str | 
 
     resolved_workspace_name = workspace_name or topology.default_workspace_name
     active_worktrees = tuple(worktree for worktree in topology.app_repo.worktrees if worktree.active)
-    repo_by_name = {repo.name: repo for repo in topology.repos}
+    repo_by_name = {repo.name: repo for repo in (*topology.repos, *topology.analysis_repos)}
     workspace_prefix = Path("..") / ".."
     app_prefix = Path("workspaces") / resolved_workspace_name
     return {
@@ -220,6 +228,7 @@ def build_workspace_manifest(topology: WorkspaceTopology, workspace_name: str | 
         "emule_workspace_root": str(workspace_prefix),
         "workspace": {
             "name": resolved_workspace_name,
+            "profiles": list(topology.profiles),
             "app_repo": {
                 "seed_repo": {
                     "name": topology.app_repo.name,
@@ -240,12 +249,16 @@ def build_workspace_manifest(topology: WorkspaceTopology, workspace_name: str | 
                 "tests": _workspace_relative_repo_path(repo_by_name["emulebb-build-tests"]),
                 "tooling": _workspace_relative_repo_path(repo_by_name["emulebb-tooling"]),
                 "amule": _workspace_relative_repo_path(repo_by_name["amule"]),
+                "emule_stock": _workspace_relative_repo_path(repo_by_name["community-0.72"]),
                 "ed2k_server": _workspace_relative_repo_path(repo_by_name["goed2k-server"]),
                 "ed2k_index_server": _workspace_relative_repo_path(repo_by_name["ed2k-server"]),
-                "pages": _workspace_relative_repo_path(repo_by_name["emulebb-pages"]),
-                "org_profile": _workspace_relative_repo_path(repo_by_name["emulebb-org-profile"]),
                 "emulebb_rust": _workspace_relative_repo_path(repo_by_name["emulebb-rust"]),
                 "third_party": str(workspace_prefix / "repos" / "third_party"),
+            },
+            "optional_repos": {
+                key: _workspace_relative_repo_path(repo_by_name[repo_name])
+                for key, repo_name in (("pages", "emulebb-pages"), ("org_profile", "emulebb-org-profile"))
+                if repo_name in repo_by_name
             },
         },
     }
@@ -257,7 +270,7 @@ def build_repo_role_manifest(topology: WorkspaceTopology, workspace_name: str | 
     resolved_workspace_name = workspace_name or topology.default_workspace_name
     return {
         "schema_version": REPO_ROLE_MANIFEST_SCHEMA_VERSION,
-        "workspace": {"name": resolved_workspace_name},
+        "workspace": {"name": resolved_workspace_name, "profiles": list(topology.profiles)},
         "app_repo": {
             **_repo_role_payload(topology.app_repo, role="app-seed", group="app"),
             "worktrees": [
@@ -347,53 +360,57 @@ def _repo_group(repo: ManagedRepo) -> str:
     return "product-family"
 
 
-def canonical_topology(*, include_analysis: bool = False) -> WorkspaceTopology:
+def canonical_topology(*, profiles: Iterable[str] = ()) -> WorkspaceTopology:
     """Returns the canonical eMuleBB workspace topology."""
 
+    selected_profiles = _resolve_workspace_profiles(profiles)
     analysis_repos = (
-        (
-            ManagedRepo(
-                name="community-0.60",
-                url="https://github.com/irwir/eMule.git",
-                relative_path="analysis\\community-0.60",
-                branch="v0.60d",
-                compare_subdir="srchybrid",
-            ),
-            ManagedRepo(
-                name="community-0.72",
-                url="https://github.com/irwir/eMule.git",
-                relative_path="analysis\\community-0.72",
-                branch="v0.72a",
-                compare_subdir="srchybrid",
-            ),
-            ManagedRepo(
-                name="mods-archive",
-                url="https://github.com/emulebb/emulebb-mods-archive.git",
-                relative_path="analysis\\mods-archive",
-                branch="main",
-                branch_optional=True,
-            ),
-            ManagedRepo(
-                name="stale-v0.72a-experimental-clean",
-                url="https://github.com/emulebb/emulebb.git",
-                relative_path="analysis\\stale-v0.72a-experimental-clean",
-                branch="stale/v0.72a-experimental-clean",
-                compare_subdir="srchybrid",
-            ),
-            ManagedRepo(
-                name="emuleai",
-                url="https://github.com/eMuleAI/eMuleAI.git",
-                relative_path="analysis\\emuleai",
-                branch="master",
-                compare_subdir="srchybrid",
-            ),
-        )
-        if include_analysis
-        else ()
+        ManagedRepo(
+            name="community-0.72",
+            url="https://github.com/irwir/eMule.git",
+            relative_path="analysis\\community-0.72",
+            branch="v0.72a",
+            compare_subdir="srchybrid",
+        ),
+        *(
+            (
+                ManagedRepo(
+                    name="community-0.60",
+                    url="https://github.com/irwir/eMule.git",
+                    relative_path="analysis\\community-0.60",
+                    branch="v0.60d",
+                    compare_subdir="srchybrid",
+                ),
+                ManagedRepo(
+                    name="mods-archive",
+                    url="https://github.com/emulebb/emulebb-mods-archive.git",
+                    relative_path="analysis\\mods-archive",
+                    branch="main",
+                    branch_optional=True,
+                ),
+                ManagedRepo(
+                    name="stale-v0.72a-experimental-clean",
+                    url="https://github.com/emulebb/emulebb.git",
+                    relative_path="analysis\\stale-v0.72a-experimental-clean",
+                    branch="stale/v0.72a-experimental-clean",
+                    compare_subdir="srchybrid",
+                ),
+                ManagedRepo(
+                    name="emuleai",
+                    url="https://github.com/eMuleAI/eMuleAI.git",
+                    relative_path="analysis\\emuleai",
+                    branch="master",
+                    compare_subdir="srchybrid",
+                ),
+            )
+            if HISTORICAL_ANALYSIS_PROFILE in selected_profiles
+            else ()
+        ),
     )
     return WorkspaceTopology(
+        profiles=selected_profiles,
         root_directories=(
-            *((("analysis",) if include_analysis else ())),
+            "analysis",
             "archives",
             "repos",
             "repos\\third_party",
@@ -464,17 +481,23 @@ def canonical_topology(*, include_analysis: bool = False) -> WorkspaceTopology:
                     AdditionalRemote(name="upstream", url="https://github.com/chenjia404/goed2k-server.git"),
                 ),
             ),
-            ManagedRepo(
-                name="emulebb-pages",
-                url="https://github.com/emulebb/emulebb.github.io.git",
-                relative_path="repos\\emulebb-pages",
-                branch="main",
-            ),
-            ManagedRepo(
-                name="emulebb-org-profile",
-                url="https://github.com/emulebb/.github.git",
-                relative_path="repos\\emulebb-org-profile",
-                branch="main",
+            *(
+                (
+                    ManagedRepo(
+                        name="emulebb-pages",
+                        url="https://github.com/emulebb/emulebb.github.io.git",
+                        relative_path="repos\\emulebb-pages",
+                        branch="main",
+                    ),
+                    ManagedRepo(
+                        name="emulebb-org-profile",
+                        url="https://github.com/emulebb/.github.git",
+                        relative_path="repos\\emulebb-org-profile",
+                        branch="main",
+                    ),
+                )
+                if PUBLIC_PRESENCE_PROFILE in selected_profiles
+                else ()
             ),
             ManagedRepo(
                 name="emulebb-rust",
@@ -593,6 +616,14 @@ def canonical_topology(*, include_analysis: bool = False) -> WorkspaceTopology:
             ),
         ),
     )
+
+
+def _resolve_workspace_profiles(profiles: Iterable[str]) -> tuple[str, ...]:
+    requested = set(profiles)
+    unknown = requested.difference(WORKSPACE_PROFILES)
+    if unknown:
+        raise ValueError(f"Unknown workspace profiles: {', '.join(sorted(unknown))}")
+    return tuple(profile for profile in WORKSPACE_PROFILES if profile == CORE_WORKSPACE_PROFILE or profile in requested)
 
 
 def _workspace_relative_repo_path(repo: ManagedRepo) -> str:

@@ -597,7 +597,8 @@ def test_materialize_help_exposes_bootstrap_options() -> None:
 
     assert result.exit_code == 0
     assert "--artifacts-seed-root" in result.output
-    assert "--include-analysis" in result.output
+    assert "--profile [historical-analysis|public-presence]" in result.output
+    assert "--include-analysis" not in result.output
 
 
 def test_sync_help_exposes_bootstrap_options() -> None:
@@ -607,7 +608,8 @@ def test_sync_help_exposes_bootstrap_options() -> None:
 
     assert result.exit_code == 0
     assert "--artifacts-seed-root" in result.output
-    assert "--include-analysis" in result.output
+    assert "--profile [historical-analysis|public-presence]" in result.output
+    assert "--include-analysis" not in result.output
     assert "--workspace-root" not in result.output
 
 

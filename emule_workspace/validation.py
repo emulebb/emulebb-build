@@ -65,10 +65,10 @@ def assert_required_workspace_paths(layout: WorkspaceLayout) -> None:
 def assert_generated_workspace_manifest(layout: WorkspaceLayout) -> None:
     """Checks that the generated workspace manifest matches Python topology."""
 
-    topology = canonical_topology()
     manifest_path = layout.workspace_root / WORKSPACE_MANIFEST_NAME
     actual = load_json(manifest_path)
-    validate_workspace_manifest_contract(actual)
+    contract = validate_workspace_manifest_contract(actual)
+    topology = canonical_topology(profiles=contract.workspace.profiles)
     expected = build_workspace_manifest(topology, layout.workspace_name)
     if actual != expected:
         raise RuntimeError(f"Workspace manifest drifted from Python topology: {manifest_path}. Run sync to regenerate it.")
@@ -79,7 +79,11 @@ def assert_generated_repo_role_manifest(layout: WorkspaceLayout) -> None:
 
     manifest_path = layout.workspace_root / REPO_ROLE_MANIFEST_NAME
     actual = load_json(manifest_path)
-    topology = canonical_topology(include_analysis=bool(actual.get("analysis_repos")))
+    workspace = actual.get("workspace")
+    profiles = workspace.get("profiles") if isinstance(workspace, dict) else None
+    if not isinstance(profiles, list) or not all(isinstance(profile, str) for profile in profiles):
+        raise RuntimeError(f"Repository role manifest is missing workspace profiles: {manifest_path}")
+    topology = canonical_topology(profiles=profiles)
     expected = build_repo_role_manifest(topology, layout.workspace_name)
     if actual != expected:
         raise RuntimeError(f"Repository role manifest drifted from Python topology: {manifest_path}. Run sync to regenerate it.")

@@ -92,12 +92,12 @@ def materialize_workspace(
     workspace_root: str | None = None,
     workspace_name: str | None = None,
     artifacts_seed_root: str | None = None,
-    include_analysis: bool = False,
+    profiles: tuple[str, ...] = (),
 ) -> None:
     """Materializes a new workspace around the required repos/emulebb-build clone."""
 
     root = resolve_setup_workspace_root(workspace_root)
-    topology = canonical_topology(include_analysis=include_analysis)
+    topology = canonical_topology(profiles=profiles)
     resolved_workspace_name = workspace_name or topology.default_workspace_name
     assert_materialize_bootstrap_root(root)
     sync_workspace(
@@ -106,7 +106,7 @@ def materialize_workspace(
         artifacts_seed_root=artifacts_seed_root,
         include_worktrees=True,
         persist_environment=True,
-        include_analysis=include_analysis,
+        profiles=profiles,
     )
     legacy_status_path = root / "workspaces" / resolved_workspace_name / "state" / "EMULE-STATUS.md"
     legacy_status_path.unlink(missing_ok=True)
@@ -120,12 +120,12 @@ def sync_workspace(
     artifacts_seed_root: str | None = None,
     include_worktrees: bool = True,
     persist_environment: bool = False,
-    include_analysis: bool = False,
+    profiles: tuple[str, ...] = (),
 ) -> None:
     """Synchronizes setup-owned workspace state."""
 
     root = resolve_setup_workspace_root(workspace_root)
-    topology = canonical_topology(include_analysis=include_analysis)
+    topology = canonical_topology(profiles=profiles)
     resolved_workspace_name = workspace_name or topology.default_workspace_name
     ensure_required_tools()
     ensure_root_layout(root, topology, resolved_workspace_name)
@@ -139,8 +139,7 @@ def sync_workspace(
     if include_worktrees:
         ensure_app_worktrees(root, topology)
         remove_legacy_app_dependency_links(root, topology)
-    if include_analysis:
-        write_compare_launchers(root)
+    write_compare_launchers(root, topology)
     install_workspace_hooks(root, topology)
     if persist_environment:
         set_workspace_root_environment(root)
@@ -527,23 +526,23 @@ def write_repo_role_manifest(root: Path, topology: WorkspaceTopology, workspace_
     write_json(path, build_repo_role_manifest(topology, workspace_name))
 
 
-def write_compare_launchers(root: Path) -> None:
+def write_compare_launchers(root: Path, topology: WorkspaceTopology) -> None:
     """Writes simple compare launchers that route back through the Python CLI."""
 
     from .setup_commands import compare_presets
 
-    topology = canonical_topology(include_analysis=True)
     compare_root = root / "analysis" / "compare"
     mods_root = compare_root / "mods-archive"
     compare_root.mkdir(parents=True, exist_ok=True)
-    mods_root.mkdir(parents=True, exist_ok=True)
     _write_cmd(compare_root / "open-compare-menu.cmd", "python -m emule_workspace compare\n")
-    _write_cmd(
-        mods_root / "open-mods-archive-menu.cmd",
-        "python -m emule_workspace compare mods-archive\n",
-    )
     for preset in compare_presets(root, topology):
         destination_root = mods_root if preset.category == "Mods Archive" else compare_root
+        destination_root.mkdir(parents=True, exist_ok=True)
+        if preset.category == "Mods Archive":
+            _write_cmd(
+                mods_root / "open-mods-archive-menu.cmd",
+                "python -m emule_workspace compare mods-archive\n",
+            )
         _write_cmd(
             destination_root / f"{preset.key}.cmd",
             f'python -m emule_workspace compare "{preset.key}"\n',

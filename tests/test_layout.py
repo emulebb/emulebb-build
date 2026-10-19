@@ -15,6 +15,9 @@ from emule_workspace.layout import (
 )
 from emule_workspace.setup_commands import compare_root
 from emule_workspace.topology import (
+    HISTORICAL_ANALYSIS_PROFILE,
+    PUBLIC_PRESENCE_PROFILE,
+    REPO_ROLE_MANIFEST_SCHEMA_VERSION,
     WORKSPACE_MANIFEST_SCHEMA_VERSION,
     build_repo_role_manifest,
     build_workspace_manifest,
@@ -44,14 +47,15 @@ def test_workspace_manifest_uses_json_contract_shape() -> None:
     manifest = build_workspace_manifest(canonical_topology(), "workspace")
 
     assert manifest["schema_version"] == WORKSPACE_MANIFEST_SCHEMA_VERSION
+    assert manifest["workspace"]["profiles"] == ["core"]
     assert manifest["workspace"]["repos"]["build"] == "..\\..\\repos\\emulebb-build"
     assert manifest["workspace"]["repos"]["ed2k_server"] == "..\\..\\repos\\goed2k-server"
     assert manifest["workspace"]["repos"]["ed2k_index_server"] == "..\\..\\repos\\ed2k-server"
     assert manifest["workspace"]["repos"]["amule"] == "..\\..\\repos\\amule"
+    assert manifest["workspace"]["repos"]["emule_stock"] == "..\\..\\analysis\\community-0.72"
     assert "amutorrent" not in manifest["workspace"]["repos"]
     assert "emuleai" not in manifest["workspace"]["repos"]
-    assert manifest["workspace"]["repos"]["pages"] == "..\\..\\repos\\emulebb-pages"
-    assert manifest["workspace"]["repos"]["org_profile"] == "..\\..\\repos\\emulebb-org-profile"
+    assert manifest["workspace"]["optional_repos"] == {}
     assert manifest["workspace"]["repos"]["emulebb_rust"] == "..\\..\\repos\\emulebb-rust"
     assert "p2p_overlord_agents" not in manifest["workspace"]["repos"]
     assert "p2p_overlord_be" not in manifest["workspace"]["repos"]
@@ -66,8 +70,9 @@ def test_workspace_manifest_uses_json_contract_shape() -> None:
 def test_repo_role_manifest_describes_workspace_repositories() -> None:
     manifest = build_repo_role_manifest(canonical_topology(), "workspace")
 
-    assert manifest["schema_version"] == 1
+    assert manifest["schema_version"] == REPO_ROLE_MANIFEST_SCHEMA_VERSION
     assert manifest["workspace"]["name"] == "workspace"
+    assert manifest["workspace"]["profiles"] == ["core"]
     assert manifest["app_repo"]["name"] == "emulebb"
     assert manifest["app_repo"]["role"] == "app-seed"
     assert manifest["app_repo"]["worktrees"][0] == {
@@ -95,7 +100,8 @@ def test_repo_role_manifest_describes_workspace_repositories() -> None:
     assert "p2p-overlord-be" not in repos
 
     analysis_repos = {repo["name"]: repo for repo in manifest["analysis_repos"]}
-    assert analysis_repos == {}
+    assert analysis_repos["community-0.72"]["role"] == "analysis-reference"
+    assert "community-0.60" not in analysis_repos
 
     third_party_repos = {repo["name"]: repo for repo in manifest["third_party_repos"]}
     assert "emulebb-libtorrent" not in third_party_repos
@@ -103,13 +109,23 @@ def test_repo_role_manifest_describes_workspace_repositories() -> None:
     assert "update_policy" in third_party_repos["emulebb-zlib"]
 
 
-def test_canonical_topology_materializes_web_repositories_under_repos() -> None:
-    repos = {repo.name: repo for repo in canonical_topology().repos}
+def test_canonical_topology_materializes_public_presence_only_when_selected() -> None:
+    core_repos = {repo.name: repo for repo in canonical_topology().repos}
+    public_topology = canonical_topology(profiles=(PUBLIC_PRESENCE_PROFILE,))
+    repos = {repo.name: repo for repo in public_topology.repos}
 
+    assert "emulebb-pages" not in core_repos
+    assert "emulebb-org-profile" not in core_repos
     assert repos["emulebb-pages"].url == "https://github.com/emulebb/emulebb.github.io.git"
     assert repos["emulebb-pages"].relative_path == "repos\\emulebb-pages"
     assert repos["emulebb-org-profile"].url == "https://github.com/emulebb/.github.git"
     assert repos["emulebb-org-profile"].relative_path == "repos\\emulebb-org-profile"
+    manifest = build_workspace_manifest(public_topology, "workspace")
+    assert manifest["workspace"]["profiles"] == ["core", "public-presence"]
+    assert manifest["workspace"]["optional_repos"] == {
+        "pages": "..\\..\\repos\\emulebb-pages",
+        "org_profile": "..\\..\\repos\\emulebb-org-profile",
+    }
 
 
 def test_canonical_topology_materializes_ed2k_server_fork_under_repos() -> None:
@@ -134,10 +150,12 @@ def test_canonical_topology_materializes_ed2k_server_fork_under_repos() -> None:
 
 def test_canonical_topology_manages_amule_and_keeps_other_analysis_references_optional() -> None:
     repos = {repo.name: repo for repo in canonical_topology().repos}
-    analysis_topology = canonical_topology(include_analysis=True)
+    core_analysis_repos = {repo.name: repo for repo in canonical_topology().analysis_repos}
+    analysis_topology = canonical_topology(profiles=(HISTORICAL_ANALYSIS_PROFILE,))
     analysis_repos = {repo.name: repo for repo in analysis_topology.analysis_repos}
 
     assert "emuleai" not in repos
+    assert set(core_analysis_repos) == {"community-0.72"}
     assert "amule" not in analysis_repos
     amule = repos["amule"]
     assert amule.url == "https://github.com/amule-org/amule.git"
@@ -179,7 +197,7 @@ def test_canonical_topology_does_not_materialize_retired_product_family_repos() 
 
 
 def test_compare_root_accepts_repo_targets_with_and_without_compare_subdirs(tmp_path: Path) -> None:
-    topology = canonical_topology(include_analysis=True)
+    topology = canonical_topology(profiles=(HISTORICAL_ANALYSIS_PROFILE,))
 
     assert compare_root(tmp_path, topology, "emuleai") == tmp_path / "analysis" / "emuleai" / "srchybrid"
     assert compare_root(tmp_path, topology, "mods-archive") == tmp_path / "analysis" / "mods-archive"

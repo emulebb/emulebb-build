@@ -16,6 +16,7 @@ def test_dependency_update_report_writes_under_output_root(tmp_path: Path, monke
     monkeypatch.setenv("EMULEBB_WORKSPACE_ROOT", str(workspace_root))
     monkeypatch.setenv("EMULEBB_WORKSPACE_OUTPUT_ROOT", str(output_root))
     topology = WorkspaceTopology(
+        profiles=("core",),
         root_directories=(),
         app_repo=AppRepo(name="emulebb", url="https://example.invalid/emulebb.git", relative_path="repos\\emulebb", branch="main"),
         repos=(),
