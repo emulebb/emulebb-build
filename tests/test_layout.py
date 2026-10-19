@@ -15,14 +15,40 @@ from emule_workspace.layout import (
 )
 from emule_workspace.setup_commands import compare_root
 from emule_workspace.topology import (
-    HISTORICAL_ANALYSIS_PROFILE,
-    PUBLIC_PRESENCE_PROFILE,
     REPO_ROLE_MANIFEST_SCHEMA_VERSION,
     WORKSPACE_MANIFEST_SCHEMA_VERSION,
     build_repo_role_manifest,
     build_workspace_manifest,
     canonical_topology,
     validate_workspace_manifest_contract,
+)
+
+
+RETIRED_REPO_NAMES = frozenset(
+    {
+        "community-0.60",
+        "mods-archive",
+        "emuleai",
+        "broadband-0.60",
+        "amutorrent",
+        "qbittorrentbb",
+        "trackmulebb",
+        "emulebb-pages",
+        "emulebb-org-profile",
+    }
+)
+RETIRED_REPO_PATHS = frozenset(
+    {
+        "analysis\\community-0.60",
+        "analysis\\mods-archive",
+        "analysis\\emuleai",
+        "analysis\\broadband-0.60",
+        "repos\\amutorrent",
+        "repos\\qbittorrentbb",
+        "repos\\trackmulebb",
+        "repos\\emulebb-pages",
+        "repos\\emulebb-org-profile",
+    }
 )
 
 
@@ -111,23 +137,15 @@ def test_repo_role_manifest_describes_workspace_repositories() -> None:
     assert "update_policy" in third_party_repos["emulebb-zlib"]
 
 
-def test_canonical_topology_materializes_public_presence_only_when_selected() -> None:
-    core_repos = {repo.name: repo for repo in canonical_topology().repos}
-    public_topology = canonical_topology(profiles=(PUBLIC_PRESENCE_PROFILE,))
-    repos = {repo.name: repo for repo in public_topology.repos}
+def test_canonical_topology_excludes_retired_repository_names_and_paths() -> None:
+    topology = canonical_topology()
+    repos = topology.all_repos()
 
-    assert "emulebb-pages" not in core_repos
-    assert "emulebb-org-profile" not in core_repos
-    assert repos["emulebb-pages"].url == "https://github.com/emulebb/emulebb.github.io.git"
-    assert repos["emulebb-pages"].relative_path == "repos\\emulebb-pages"
-    assert repos["emulebb-org-profile"].url == "https://github.com/emulebb/.github.git"
-    assert repos["emulebb-org-profile"].relative_path == "repos\\emulebb-org-profile"
-    manifest = build_workspace_manifest(public_topology, "workspace")
-    assert manifest["workspace"]["profiles"] == ["core", "public-presence"]
-    assert manifest["workspace"]["optional_repos"] == {
-        "pages": "..\\..\\repos\\emulebb-pages",
-        "org_profile": "..\\..\\repos\\emulebb-org-profile",
-    }
+    assert RETIRED_REPO_NAMES.isdisjoint(repo.name.casefold() for repo in repos)
+    assert RETIRED_REPO_PATHS.isdisjoint(repo.relative_path.casefold() for repo in repos)
+    assert topology.analysis_repos == ()
+    assert "analysis" not in topology.root_directories
+    assert build_workspace_manifest(topology, "workspace")["workspace"]["optional_repos"] == {}
 
 
 def test_canonical_topology_materializes_ed2k_server_fork_under_repos() -> None:
@@ -143,39 +161,18 @@ def test_canonical_topology_materializes_ed2k_server_fork_under_repos() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "profiles",
-    (
-        (PUBLIC_PRESENCE_PROFILE,),
-        (HISTORICAL_ANALYSIS_PROFILE,),
-        (PUBLIC_PRESENCE_PROFILE, HISTORICAL_ANALYSIS_PROFILE),
-    ),
-)
-def test_optional_profiles_never_restore_the_retired_go_server(profiles: tuple[str, ...]) -> None:
-    topology = canonical_topology(profiles=profiles)
-    repos = {repo.name for repo in topology.repos}
-    workspace_repos = build_workspace_manifest(topology, "workspace")["workspace"]["repos"]
-    role_repos = {repo["name"] for repo in build_repo_role_manifest(topology, "workspace")["repos"]}
-
-    assert "goed2k-server" not in repos
-    assert "goed2k_server" not in workspace_repos
-    assert "goed2k-server" not in role_repos
+@pytest.mark.parametrize("profile", ("historical-analysis", "public-presence", "legacy-go-server"))
+def test_canonical_topology_rejects_retired_profiles(profile: str) -> None:
+    with pytest.raises(ValueError, match=f"Unknown workspace profiles: {profile}"):
+        canonical_topology(profiles=(profile,))
 
 
-def test_canonical_topology_rejects_retired_go_server_profile() -> None:
-    with pytest.raises(ValueError, match="Unknown workspace profiles: legacy-go-server"):
-        canonical_topology(profiles=("legacy-go-server",))
-
-
-def test_canonical_topology_manages_current_compatibility_references_and_keeps_history_optional() -> None:
-    repos = {repo.name: repo for repo in canonical_topology().repos}
-    core_analysis_repos = {repo.name: repo for repo in canonical_topology().analysis_repos}
-    analysis_topology = canonical_topology(profiles=(HISTORICAL_ANALYSIS_PROFILE,))
-    analysis_repos = {repo.name: repo for repo in analysis_topology.analysis_repos}
+def test_canonical_topology_manages_current_compatibility_references() -> None:
+    topology = canonical_topology()
+    repos = {repo.name: repo for repo in topology.repos}
 
     assert "emuleai" not in repos
-    assert core_analysis_repos == {}
-    assert "amule" not in analysis_repos
+    assert topology.analysis_repos == ()
     amule = repos["amule"]
     assert amule.url == "https://github.com/amule-org/amule.git"
     assert amule.relative_path == "repos\\amule"
@@ -188,16 +185,10 @@ def test_canonical_topology_manages_current_compatibility_references_and_keeps_h
     assert stock.relative_path == "repos\\emule-stock"
     assert stock.branch == "v0.72a"
     assert stock.compare_subdir == "srchybrid"
-    role_manifest = build_repo_role_manifest(analysis_topology, "workspace")
+    role_manifest = build_repo_role_manifest(topology, "workspace")
     amule_role = next(repo for repo in role_manifest["repos"] if repo["name"] == "amule")
     assert amule_role["role"] == "upstream-parity-reference"
     assert amule_role["group"] == "product-family"
-    emuleai = analysis_repos["emuleai"]
-    assert emuleai.url == "https://github.com/eMuleAI/eMuleAI.git"
-    assert emuleai.relative_path == "analysis\\emuleai"
-    assert emuleai.branch == "master"
-    assert emuleai.compare_subdir == "srchybrid"
-    assert emuleai.additional_remotes == ()
 
 
 def test_canonical_topology_materializes_emulebb_rust_under_repos() -> None:
@@ -222,11 +213,11 @@ def test_canonical_topology_does_not_materialize_retired_product_family_repos() 
 
 
 def test_compare_root_accepts_repo_targets_with_and_without_compare_subdirs(tmp_path: Path) -> None:
-    topology = canonical_topology(profiles=(HISTORICAL_ANALYSIS_PROFILE,))
+    topology = canonical_topology()
 
     assert compare_root(tmp_path, topology, "emule-stock") == tmp_path / "repos" / "emule-stock" / "srchybrid"
-    assert compare_root(tmp_path, topology, "emuleai") == tmp_path / "analysis" / "emuleai" / "srchybrid"
-    assert compare_root(tmp_path, topology, "mods-archive") == tmp_path / "analysis" / "mods-archive"
+    with pytest.raises(RuntimeError, match="Unknown compare target: mods-archive"):
+        compare_root(tmp_path, topology, "mods-archive")
 
 
 def test_workspace_manifest_schema_rejects_unsupported_versions() -> None:

@@ -13,7 +13,7 @@ from .config import resolve_required_workspace_roots
 from .git import repo_branch, repo_head
 from .materialize import resolve_setup_workspace_root
 from .process import find_tool, run_captured
-from .topology import HISTORICAL_ANALYSIS_PROFILE, ManagedRepo, UpdatePolicy, WorkspaceTopology, canonical_topology
+from .topology import ManagedRepo, UpdatePolicy, WorkspaceTopology, canonical_topology
 
 
 @dataclass(frozen=True)
@@ -86,17 +86,12 @@ def run_compare(*, preset_key: str | None = None, workspace_root: str | None = N
     """Shows compare presets or launches WinMerge for a selected preset."""
 
     root = resolve_setup_workspace_root(workspace_root)
-    topology = canonical_topology(profiles=(HISTORICAL_ANALYSIS_PROFILE,))
+    topology = canonical_topology()
     presets = compare_presets(root, topology)
     if not preset_key:
         print("WinMerge compare presets")
         for preset in presets:
             print(f"{preset.key}: [{preset.category}] {preset.label}")
-        return
-    if preset_key == "mods-archive":
-        for preset in presets:
-            if preset.category == "Mods Archive":
-                print(f"{preset.key}: {preset.label}")
         return
     selected = next((preset for preset in presets if preset.key == preset_key), None)
     if selected is None:
@@ -107,23 +102,14 @@ def run_compare(*, preset_key: str | None = None, workspace_root: str | None = N
 def compare_presets(root: Path, topology: WorkspaceTopology) -> tuple[ComparePreset, ...]:
     """Returns all configured comparison presets."""
 
-    analysis_specs = {
-        "community-0.60": ("Community 0.60", "Community 0.60 vs local"),
-        "emule-stock": ("Stock eMule 0.72", "Stock eMule 0.72 vs local"),
-        "mods-archive": ("Mods archive", "Mods Archive"),
-        "stale-v0.72a-experimental-clean": ("Stale experimental clean", "Stale experimental reference"),
-        "emuleai": ("eMuleAI", "eMuleAI vs local"),
-    }
+    analysis_specs = {"emule-stock": ("Stock eMule 0.72", "Stock eMule 0.72 vs local")}
     presets: list[ComparePreset] = []
     for right in (target.name for target in local_variant_compare_targets(root, topology)):
         for repo in (*topology.repos, *topology.analysis_repos):
             if repo.name not in analysis_specs:
                 continue
             label, category = analysis_specs[repo.name]
-            key_name = repo.name.replace("community-0.60", "community-060").replace(
-                "stale-v0.72a-experimental-clean", "stale-experimental-clean"
-            )
-            presets.append(ComparePreset(f"{key_name}-vs-{right}", f"{label} vs {right}", category, repo.name, right))
+            presets.append(ComparePreset(f"{repo.name}-vs-{right}", f"{label} vs {right}", category, repo.name, right))
     return tuple(presets)
 
 

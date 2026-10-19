@@ -78,7 +78,6 @@ from .release import (
 from .release_campaign_runner import invoke_release_campaign
 from .setup_commands import run_compare, write_dependency_update_report, write_materialization_status
 from .status import write_dependency_status, write_workspace_repo_status, write_workspace_summary
-from .topology import OPTIONAL_WORKSPACE_PROFILES
 from .test_runs import (
     invoke_amutorrent_clean_startup,
     invoke_amutorrent_emulebb_ui,
@@ -380,14 +379,7 @@ def main() -> None:
 @main.command()
 @click.option("--workspace-name", default=None, help="Workspace name. Defaults to canonical topology.")
 @click.option("--artifacts-seed-root", default=None, help="Optional third-party artifact seed root.")
-@click.option(
-    "--profile",
-    "profiles",
-    multiple=True,
-    type=click.Choice(OPTIONAL_WORKSPACE_PROFILES),
-    help="Add an optional repository profile. The core profile is always materialized.",
-)
-def materialize(*, workspace_name: str | None, artifacts_seed_root: str | None, profiles: tuple[str, ...]) -> None:
+def materialize(*, workspace_name: str | None, artifacts_seed_root: str | None) -> None:
     """Materialize a new canonical workspace around this emulebb-build clone."""
 
     try:
@@ -396,7 +388,6 @@ def materialize(*, workspace_name: str | None, artifacts_seed_root: str | None, 
             workspace_root=str(workspace_root),
             workspace_name=workspace_name,
             artifacts_seed_root=artifacts_seed_root,
-            profiles=profiles,
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
@@ -405,14 +396,7 @@ def materialize(*, workspace_name: str | None, artifacts_seed_root: str | None, 
 @main.command()
 @click.option("--workspace-name", default=None, help="Workspace name. Defaults to canonical topology.")
 @click.option("--artifacts-seed-root", default=None, help="Optional third-party artifact seed root.")
-@click.option(
-    "--profile",
-    "profiles",
-    multiple=True,
-    type=click.Choice(OPTIONAL_WORKSPACE_PROFILES),
-    help="Add an optional repository profile. The core profile is always synchronized.",
-)
-def sync(*, workspace_name: str | None, artifacts_seed_root: str | None, profiles: tuple[str, ...]) -> None:
+def sync(*, workspace_name: str | None, artifacts_seed_root: str | None) -> None:
     """Synchronize setup-owned workspace state."""
 
     try:
@@ -421,7 +405,6 @@ def sync(*, workspace_name: str | None, artifacts_seed_root: str | None, profile
             workspace_root=str(workspace_root),
             workspace_name=workspace_name,
             artifacts_seed_root=artifacts_seed_root,
-            profiles=profiles,
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc

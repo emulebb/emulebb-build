@@ -43,16 +43,16 @@ def test_assert_clean_repo_rejects_local_changes(tmp_path: Path, monkeypatch: py
 def test_optional_missing_branch_leaves_checkout_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[object, ...]] = []
     repo = ManagedRepo(
-        name="mods-archive",
-        url="https://example.invalid/mods.git",
-        relative_path="analysis\\mods-archive",
+        name="optional-reference",
+        url="https://example.invalid/optional-reference.git",
+        relative_path="repos\\optional-reference",
         branch="main",
         branch_optional=True,
     )
     monkeypatch.setattr(materialize, "branch_ref_exists", lambda *args, **kwargs: False)
     monkeypatch.setattr(materialize, "assert_clean_repo", lambda *args, **kwargs: calls.append(args))
 
-    materialize.ensure_managed_repo_branch(tmp_path, tmp_path / "mods-archive", repo)
+    materialize.ensure_managed_repo_branch(tmp_path, tmp_path / "optional-reference", repo)
 
     assert calls == []
 
