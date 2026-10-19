@@ -109,20 +109,20 @@ def compare_presets(root: Path, topology: WorkspaceTopology) -> tuple[ComparePre
 
     analysis_specs = {
         "community-0.60": ("Community 0.60", "Community 0.60 vs local"),
-        "community-0.72": ("Community 0.72", "Community 0.72 vs local"),
+        "emule-stock": ("Stock eMule 0.72", "Stock eMule 0.72 vs local"),
         "mods-archive": ("Mods archive", "Mods Archive"),
         "stale-v0.72a-experimental-clean": ("Stale experimental clean", "Stale experimental reference"),
         "emuleai": ("eMuleAI", "eMuleAI vs local"),
     }
     presets: list[ComparePreset] = []
     for right in (target.name for target in local_variant_compare_targets(root, topology)):
-        for repo in topology.analysis_repos:
+        for repo in (*topology.repos, *topology.analysis_repos):
             if repo.name not in analysis_specs:
                 continue
             label, category = analysis_specs[repo.name]
             key_name = repo.name.replace("community-0.60", "community-060").replace(
-                "community-0.72", "community-072"
-            ).replace("stale-v0.72a-experimental-clean", "stale-experimental-clean")
+                "stale-v0.72a-experimental-clean", "stale-experimental-clean"
+            )
             presets.append(ComparePreset(f"{key_name}-vs-{right}", f"{label} vs {right}", category, repo.name, right))
     return tuple(presets)
 

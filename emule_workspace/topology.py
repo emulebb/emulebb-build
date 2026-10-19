@@ -249,7 +249,7 @@ def build_workspace_manifest(topology: WorkspaceTopology, workspace_name: str | 
                 "tests": _workspace_relative_repo_path(repo_by_name["emulebb-build-tests"]),
                 "tooling": _workspace_relative_repo_path(repo_by_name["emulebb-tooling"]),
                 "amule": _workspace_relative_repo_path(repo_by_name["amule"]),
-                "emule_stock": _workspace_relative_repo_path(repo_by_name["community-0.72"]),
+                "emule_stock": _workspace_relative_repo_path(repo_by_name["emule-stock"]),
                 "ed2k_server": _workspace_relative_repo_path(repo_by_name["goed2k-server"]),
                 "ed2k_index_server": _workspace_relative_repo_path(repo_by_name["ed2k-server"]),
                 "emulebb_rust": _workspace_relative_repo_path(repo_by_name["emulebb-rust"]),
@@ -342,6 +342,7 @@ def _repo_role(repo: ManagedRepo) -> str:
         "ed2k-server": "ed2k-upstream-reference",
         "goed2k-server": "local-ed2k-test-server",
         "amule": "upstream-parity-reference",
+        "emule-stock": "upstream-stock-compatibility-reference",
         "emulebb-pages": "public-docs-site",
         "emulebb-org-profile": "public-org-profile",
         "emulebb-rust": "headless-rust-client",
@@ -365,52 +366,43 @@ def canonical_topology(*, profiles: Iterable[str] = ()) -> WorkspaceTopology:
 
     selected_profiles = _resolve_workspace_profiles(profiles)
     analysis_repos = (
-        ManagedRepo(
-            name="community-0.72",
-            url="https://github.com/irwir/eMule.git",
-            relative_path="analysis\\community-0.72",
-            branch="v0.72a",
-            compare_subdir="srchybrid",
-        ),
-        *(
-            (
-                ManagedRepo(
-                    name="community-0.60",
-                    url="https://github.com/irwir/eMule.git",
-                    relative_path="analysis\\community-0.60",
-                    branch="v0.60d",
-                    compare_subdir="srchybrid",
-                ),
-                ManagedRepo(
-                    name="mods-archive",
-                    url="https://github.com/emulebb/emulebb-mods-archive.git",
-                    relative_path="analysis\\mods-archive",
-                    branch="main",
-                    branch_optional=True,
-                ),
-                ManagedRepo(
-                    name="stale-v0.72a-experimental-clean",
-                    url="https://github.com/emulebb/emulebb.git",
-                    relative_path="analysis\\stale-v0.72a-experimental-clean",
-                    branch="stale/v0.72a-experimental-clean",
-                    compare_subdir="srchybrid",
-                ),
-                ManagedRepo(
-                    name="emuleai",
-                    url="https://github.com/eMuleAI/eMuleAI.git",
-                    relative_path="analysis\\emuleai",
-                    branch="master",
-                    compare_subdir="srchybrid",
-                ),
-            )
-            if HISTORICAL_ANALYSIS_PROFILE in selected_profiles
-            else ()
-        ),
+        (
+            ManagedRepo(
+                name="community-0.60",
+                url="https://github.com/irwir/eMule.git",
+                relative_path="analysis\\community-0.60",
+                branch="v0.60d",
+                compare_subdir="srchybrid",
+            ),
+            ManagedRepo(
+                name="mods-archive",
+                url="https://github.com/emulebb/emulebb-mods-archive.git",
+                relative_path="analysis\\mods-archive",
+                branch="main",
+                branch_optional=True,
+            ),
+            ManagedRepo(
+                name="stale-v0.72a-experimental-clean",
+                url="https://github.com/emulebb/emulebb.git",
+                relative_path="analysis\\stale-v0.72a-experimental-clean",
+                branch="stale/v0.72a-experimental-clean",
+                compare_subdir="srchybrid",
+            ),
+            ManagedRepo(
+                name="emuleai",
+                url="https://github.com/eMuleAI/eMuleAI.git",
+                relative_path="analysis\\emuleai",
+                branch="master",
+                compare_subdir="srchybrid",
+            ),
+        )
+        if HISTORICAL_ANALYSIS_PROFILE in selected_profiles
+        else ()
     )
     return WorkspaceTopology(
         profiles=selected_profiles,
         root_directories=(
-            "analysis",
+            *((("analysis",) if HISTORICAL_ANALYSIS_PROFILE in selected_profiles else ())),
             "archives",
             "repos",
             "repos\\third_party",
@@ -462,6 +454,13 @@ def canonical_topology(*, profiles: Iterable[str] = ()) -> WorkspaceTopology:
                 additional_remotes=(
                     AdditionalRemote(name="emulebb", url="https://github.com/emulebb/amule.git"),
                 ),
+            ),
+            ManagedRepo(
+                name="emule-stock",
+                url="https://github.com/irwir/eMule.git",
+                relative_path="repos\\emule-stock",
+                branch="v0.72a",
+                compare_subdir="srchybrid",
             ),
             ManagedRepo(
                 name="ed2k-server",

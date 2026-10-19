@@ -35,7 +35,7 @@ In practice this repo needs:
 - `repos\emulebb-build-tests`
 - `repos\emulebb-tooling`
 - `repos\amule`
-- `analysis\community-0.72`
+- `repos\emule-stock`
 - `repos\ed2k-server`
 - `repos\goed2k-server`
 - `repos\emulebb-rust`
