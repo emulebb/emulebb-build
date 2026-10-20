@@ -470,9 +470,11 @@ def test_build_ed2k_server_uses_wsl_and_stages_only_output_root_binary(
         )
         built.mkdir(parents=True)
         (built / "ed2k-server").write_bytes(b"linux-server")
+        staged = build.staged_ed2k_server_root(layout) / "bin" / "ed2k-server"
+        (built / "ed2k-server").replace(staged)
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr(build, "wsl_path", lambda path: f"/mnt/c/{Path(path).name}")
+    monkeypatch.setattr(build, "wsl_path", lambda path: f"/mnt/c/{Path(path).parent.name}/{Path(path).name}")
     monkeypatch.setattr(build.subprocess, "run", fake_run)
     session = build.BuildSession(
         layout=layout,
@@ -489,9 +491,12 @@ def test_build_ed2k_server_uses_wsl_and_stages_only_output_root_binary(
 
     command = commands[0]
     assert command[0:4] == ["wsl.exe", "--", "bash", "-lc"]
-    assert "export CARGO_TARGET_DIR=/mnt/c/target-wsl" in command[-1]
+    assert "export CARGO_TARGET_DIR=/mnt/c/rust/target-wsl" in command[-1]
+    assert "cargo build --locked --release --target x86_64-unknown-linux-gnu" in command[-1]
     assert command[-1].endswith(
-        "exec cargo build --locked --release --target x86_64-unknown-linux-gnu"
+        "if [ /mnt/c/release/ed2k-server -ef /mnt/c/bin/ed2k-server ]; "
+        "then rm -f -- /mnt/c/release/ed2k-server; "
+        "else mv -f -- /mnt/c/release/ed2k-server /mnt/c/bin/ed2k-server; fi"
     )
     staged = build.staged_ed2k_server_root(layout) / "bin" / "ed2k-server"
     assert staged.read_bytes() == b"linux-server"
