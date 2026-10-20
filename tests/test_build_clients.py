@@ -66,6 +66,58 @@ def test_stage_amule_runtime_uses_output_root_portable_tree(tmp_path: Path) -> N
     assert (layout.output_tools_root / "amule" / "bin" / "amulecmd.exe").is_file()
 
 
+def test_stage_amule_runtime_uses_temporary_worktree_portable_tree(tmp_path: Path) -> None:
+    layout = make_layout(tmp_path)
+    source_root = build.amule_build_source_root(layout)
+    daemon = source_root / "amule-portable-x64" / "bin" / "amuled.exe"
+    control = daemon.parent / "amulecmd.exe"
+    for executable in (daemon, control):
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.write_bytes(b"")
+
+    build.stage_amule_runtime(layout, source_root=source_root)
+
+    assert (layout.output_tools_root / "amule" / "bin" / "amuled.exe").is_file()
+    assert (layout.output_tools_root / "amule" / "bin" / "amulecmd.exe").is_file()
+
+
+def test_amule_build_source_root_is_output_owned(tmp_path: Path) -> None:
+    layout = make_layout(tmp_path)
+
+    source_root = build.amule_build_source_root(layout)
+
+    assert source_root.is_relative_to(layout.output_root)
+    assert not source_root.is_relative_to(layout.amule_repo_root)
+
+
+def test_amule_build_worktree_is_removed_after_use(tmp_path: Path) -> None:
+    layout = make_layout(tmp_path)
+    repo = layout.amule_repo_root
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "--initial-branch=master", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+    (repo / "README.md").write_text("aMule test source\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "initial"], check=True, capture_output=True)
+
+    source_root = build.prepare_amule_build_worktree(layout)
+
+    assert source_root.is_dir()
+    assert (source_root / "README.md").is_file()
+
+    build.remove_amule_build_worktree(layout)
+
+    assert not source_root.exists()
+    worktrees = subprocess.run(
+        ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert str(source_root) not in worktrees
+
+
 def test_build_clients_defaults_to_emulebb_rust(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[bool, bool]] = []
     layout = make_layout(tmp_path, monkeypatch)
