@@ -296,6 +296,7 @@ def build_ed2k_server_service(
     if clean:
         remove_tree_if_present(staged_root)
         source_binary.unlink(missing_ok=True)
+    staged_binary.parent.mkdir(parents=True, exist_ok=True)
 
     cargo_arguments = [
         "build",
@@ -314,6 +315,8 @@ def build_ed2k_server_service(
         wsl_output = wsl_path(session.layout.output_root)
         wsl_target = wsl_path(target_root)
         wsl_repo = wsl_path(repo_root)
+        wsl_source_binary = wsl_path(source_binary)
+        wsl_staged_binary = wsl_path(staged_binary)
         translated_paths = (
             (str(session.layout.emule_workspace_root), wsl_workspace),
             (str(session.layout.output_root), wsl_output),
@@ -334,7 +337,12 @@ def build_ed2k_server_service(
                     "exec 1>&2",
                     "cargo --version",
                     "rustc --version",
-                    f"exec cargo {shlex.join(cargo_arguments)}",
+                    f"cargo {shlex.join(cargo_arguments)}",
+                    (
+                        f"if [ {shlex.quote(wsl_source_binary)} -ef {shlex.quote(wsl_staged_binary)} ]; "
+                        f"then rm -f -- {shlex.quote(wsl_source_binary)}; "
+                        f"else mv -f -- {shlex.quote(wsl_source_binary)} {shlex.quote(wsl_staged_binary)}; fi"
+                    ),
                 )
             ),
         ]
@@ -378,11 +386,10 @@ def build_ed2k_server_service(
             )
         if completed.returncode != 0:
             raise RuntimeError(f"ed2k-server build failed with exit code {completed.returncode}. See {log_path}")
-        if not source_binary.is_file():
-            raise RuntimeError(f"ed2k-server build did not produce the expected binary: {source_binary}")
-        staged_binary.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_binary, staged_binary)
-        source_binary.unlink()
+        if not use_wsl:
+            if not source_binary.is_file():
+                raise RuntimeError(f"ed2k-server build did not produce the expected binary: {source_binary}")
+            source_binary.replace(staged_binary)
         if not staged_binary.is_file():
             raise RuntimeError(f"Staged ed2k-server binary is missing: {staged_binary}")
         session.add_step(
