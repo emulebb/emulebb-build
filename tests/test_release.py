@@ -1235,6 +1235,31 @@ def test_emulebb_rust_linux_deb_only_does_not_require_appimagetool(
     assert not appimage.exists()
 
 
+def test_emulebb_rust_deb_normalizes_modes_in_wsl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(release.os, "name", "nt")
+    monkeypatch.setattr(
+        release,
+        "wsl_path",
+        lambda path: f"/mnt/c/{path.name}",
+    )
+    monkeypatch.setattr(
+        release,
+        "_run_packaging_tool",
+        lambda command, _label: commands.append(command),
+    )
+
+    release._build_emulebb_rust_deb(tmp_path / "source", tmp_path / "output.deb")
+
+    assert commands[0][:4] == ("wsl.exe", "--", "bash", "-lc")
+    assert "mktemp -d" in commands[0][4]
+    assert "chmod 0755" in commands[0][4]
+    assert "dpkg-deb --build --root-owner-group" in commands[0][4]
+
+
 @pytest.mark.parametrize("platform", ("x64", "ARM64"))
 def test_emulebb_rust_macos_package_emits_app_dmg_and_metadata(
     tmp_path: Path,
