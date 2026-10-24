@@ -3,6 +3,7 @@ from __future__ import annotations
 import configparser
 import hashlib
 import json
+import subprocess
 import struct
 import zipfile
 from pathlib import Path
@@ -1335,6 +1336,63 @@ def test_emulebb_rust_image_rejects_invalid_channel_tag(tmp_path: Path, monkeypa
             push=True,
             channel_tag="nightly/latest",
         )
+
+
+def test_emulebb_rust_local_image_loads_verified_amd64_asset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rust_root = tmp_path / "workspace" / "repos" / "emulebb-rust"
+    docker_root = rust_root / "packaging" / "docker"
+    docker_root.mkdir(parents=True)
+    (docker_root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (rust_root / "Cargo.toml").write_text(
+        '[workspace.package]\nversion = "0.1.0-beta.2"\n', encoding="utf-8"
+    )
+    version = "0.1.0-beta.2.nightly.20261024.g83df81e2"
+    assets = tmp_path / "output" / "release" / f"rust-v{version}"
+    assets.mkdir(parents=True)
+    asset = assets / f"emulebb-rust-v{version}-linux-amd64.deb"
+    asset.write_bytes(b"amd64")
+    (assets / f"{asset.name}.manifest.json").write_text(
+        json.dumps(
+            {
+                "asset": asset.name,
+                "sha256": release._sha256(asset),
+            }
+        ),
+        encoding="utf-8",
+    )
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "/mnt/c/output/packages/build/emulebb-rust-image-local\n"
+            if "wslpath" in command
+            else "",
+            "",
+        )
+
+    monkeypatch.setattr(release.subprocess, "run", run)
+
+    image = release.build_emulebb_rust_image_local(
+        rust_root=rust_root,
+        output_root=tmp_path / "output",
+        assets_dir=assets,
+        version=version,
+        image=f"local/emulebb-rust:{version}",
+        wsl_distro="Ubuntu",
+    )
+
+    assert image == f"local/emulebb-rust:{version}"
+    assert commands[1][4:6] == ["docker", "build"]
+    assert "TARGETARCH=amd64" in commands[1]
+    assert "--tag" in commands[1]
+    context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image-local"
+    assert (context / "dist" / asset.name).read_bytes() == b"amd64"
 
 
 def test_emulebb_rust_package_contents_reject_dead_ui_and_diagnostics(tmp_path: Path) -> None:
