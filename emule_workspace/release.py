@@ -26,6 +26,7 @@ from .build import (
     ensure_app_dependency_artifacts,
     staged_emulebb_rust_root,
     verify_app_control_flow_guard,
+    wsl_path,
     with_trailing_separator,
 )
 from .artifact_names import utc_run_id
@@ -445,10 +446,7 @@ def _create_emulebb_rust_linux_packages(
         if want_deb:
             shutil.copytree(deb_root, native_deb_root)
             _normalize_emulebb_rust_linux_modes(native_deb_root, is_appdir=False)
-            _run_packaging_tool(
-                ("dpkg-deb", "--build", "--root-owner-group", str(native_deb_root), str(deb_path)),
-                "dpkg-deb",
-            )
+            _build_emulebb_rust_deb(native_deb_root, deb_path)
         if want_appimage:
             native_appdir = native_root / "AppDir"
             shutil.copytree(appdir, native_appdir)
@@ -720,6 +718,28 @@ def _run_packaging_tool(command: tuple[str, ...], label: str) -> None:
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise RuntimeError(f"{label} failed with exit code {completed.returncode}: {detail}")
+
+
+def _build_emulebb_rust_deb(source: Path, destination: Path) -> None:
+    if os.name == "nt":
+        command = (
+            "wsl.exe",
+            "--",
+            "dpkg-deb",
+            "--build",
+            "--root-owner-group",
+            wsl_path(source),
+            wsl_path(destination),
+        )
+    else:
+        command = (
+            "dpkg-deb",
+            "--build",
+            "--root-owner-group",
+            str(source),
+            str(destination),
+        )
+    _run_packaging_tool(command, "dpkg-deb")
 
 
 

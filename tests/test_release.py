@@ -1148,6 +1148,11 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
         Path(command[-1]).write_bytes(b"package")
 
     monkeypatch.setattr(release, "_run_packaging_tool", fake_packaging_tool)
+    monkeypatch.setattr(
+        release,
+        "_build_emulebb_rust_deb",
+        lambda _source, destination: destination.write_bytes(b"package"),
+    )
     options = WorkspaceOptions(
         workspace_root=layout.emule_workspace_root,
         output_root=layout.output_root,
@@ -1199,6 +1204,11 @@ def test_emulebb_rust_linux_deb_only_does_not_require_appimagetool(
         Path(command[-1]).write_bytes(b"package")
 
     monkeypatch.setattr(release, "_run_packaging_tool", fake_packaging_tool)
+    monkeypatch.setattr(
+        release,
+        "_build_emulebb_rust_deb",
+        lambda _source, destination: destination.write_bytes(b"package"),
+    )
     options = WorkspaceOptions(
         workspace_root=layout.emule_workspace_root,
         output_root=layout.output_root,
