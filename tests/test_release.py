@@ -1179,6 +1179,52 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     assert appimage.name in sums
 
 
+def test_emulebb_rust_linux_deb_only_does_not_require_appimagetool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _make_rust_package_layout(tmp_path)
+    _stage_rust_package_inputs(layout)
+    staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
+    (staged_bin / "emulebb-rust").write_bytes(b"\x7fELF-linux")
+    monkeypatch.setattr(release, "repo_status_lines", lambda _repo: ["## main...origin/main"])
+    monkeypatch.setattr(
+        release,
+        "_package_repo_provenance",
+        lambda repo: {"commit": f"{repo.name}-commit", "branch": "main", "remote": ""},
+    )
+    monkeypatch.setattr(release.shutil, "which", lambda _name: None)
+
+    def fake_packaging_tool(command: tuple[str, ...], _label: str) -> None:
+        Path(command[-1]).write_bytes(b"package")
+
+    monkeypatch.setattr(release, "_run_packaging_tool", fake_packaging_tool)
+    options = WorkspaceOptions(
+        workspace_root=layout.emule_workspace_root,
+        output_root=layout.output_root,
+        configuration="Release",
+        platform="x64",
+    )
+
+    release.create_emulebb_rust_package(
+        layout,
+        options,
+        EmulebbRustPackageOptions(
+            release_version="0.1.0-beta.1",
+            skip_build=True,
+            target_os="linux",
+            linux_formats=("deb",),
+        ),
+    )
+
+    release_root = layout.output_release_root / "rust-v0.1.0-beta.1"
+    deb = release_root / "emulebb-rust-v0.1.0-beta.1-linux-amd64.deb"
+    appimage = release_root / "emulebb-rust-v0.1.0-beta.1-linux-x86_64.AppImage"
+    assert deb.is_file()
+    assert deb.with_name(f"{deb.name}.manifest.json").is_file()
+    assert not appimage.exists()
+
+
 @pytest.mark.parametrize("platform", ("x64", "ARM64"))
 def test_emulebb_rust_macos_package_emits_app_dmg_and_metadata(
     tmp_path: Path,

@@ -16,6 +16,7 @@ BuildOutputMode = Literal["Full", "Warnings", "ErrorsOnly"]
 PackageFlavor = Literal["standard", "diagnostics"]
 ClientBuildTarget = Literal["amule", "emulebb-rust"]
 RustTargetOs = Literal["windows", "linux", "macos"]
+RustLinuxPackageFormat = Literal["deb", "appimage"]
 ACTIVE_EMULEBB_RELEASE_VERSION = "0.7.3-rc.2"
 WORKSPACE_ROOT_ENV = "EMULEBB_WORKSPACE_ROOT"
 WORKSPACE_OUTPUT_ROOT_ENV = "EMULEBB_WORKSPACE_OUTPUT_ROOT"
@@ -351,6 +352,7 @@ class EmulebbRustPackageOptions(BaseModel):
     clean: bool = False
     skip_build: bool = False
     target_os: RustTargetOs = "windows"
+    linux_formats: tuple[RustLinuxPackageFormat, ...] = ("deb", "appimage")
 
 
 class MiniupnpcPackageOptions(BaseModel):

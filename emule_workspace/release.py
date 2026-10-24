@@ -325,7 +325,13 @@ def _create_emulebb_rust_linux_packages(
     package_options: EmulebbRustPackageOptions,
     rust_root: Path,
 ) -> None:
-    """Creates unsigned native-architecture DEB and AppImage beta assets."""
+    """Creates selected unsigned native-architecture Linux beta assets."""
+
+    requested_formats = set(package_options.linux_formats)
+    if not requested_formats:
+        raise RuntimeError("Linux packaging requires at least one package format.")
+    want_deb = "deb" in requested_formats
+    want_appimage = "appimage" in requested_formats
 
     release_root = _emulebb_rust_release_root(layout, package_options.release_version)
     deb_arch, image_arch = ("amd64", "x86_64") if workspace_options.platform == "x64" else ("arm64", "aarch64")
@@ -423,8 +429,12 @@ def _create_emulebb_rust_linux_packages(
     shutil.copy2(appdir / "SBOM.spdx.json", sbom_path)
     shutil.copy2(appdir / "SBOM.spdx.json", deb_root / "usr" / "share" / "doc" / "emulebb-rust" / "SBOM.spdx.json")
 
-    appimagetool = shutil.which("appimagetool") or os.environ.get("APPIMAGETOOL", "").strip()
-    if not appimagetool:
+    appimagetool = (
+        shutil.which("appimagetool") or os.environ.get("APPIMAGETOOL", "").strip()
+        if want_appimage
+        else ""
+    )
+    if want_appimage and not appimagetool:
         raise RuntimeError("Linux AppImage packaging requires appimagetool on PATH or APPIMAGETOOL.")
     # Package from the host's native temporary filesystem. WSL DrvFS mounts can
     # report every path as 0777 and ignore chmod, which would otherwise leak
@@ -432,21 +442,27 @@ def _create_emulebb_rust_linux_packages(
     with tempfile.TemporaryDirectory(prefix="emulebb-rust-linux-package-") as native_temp:
         native_root = Path(native_temp)
         native_deb_root = native_root / "deb"
-        native_appdir = native_root / "AppDir"
-        shutil.copytree(deb_root, native_deb_root)
-        shutil.copytree(appdir, native_appdir)
-        _normalize_emulebb_rust_linux_modes(native_deb_root, is_appdir=False)
-        _normalize_emulebb_rust_linux_modes(native_appdir, is_appdir=True)
-        _run_packaging_tool(
-            ("dpkg-deb", "--build", "--root-owner-group", str(native_deb_root), str(deb_path)),
-            "dpkg-deb",
-        )
-        _run_packaging_tool(
-            (appimagetool, "--no-appstream", str(native_appdir), str(appimage_path)),
-            "appimagetool",
-        )
+        if want_deb:
+            shutil.copytree(deb_root, native_deb_root)
+            _normalize_emulebb_rust_linux_modes(native_deb_root, is_appdir=False)
+            _run_packaging_tool(
+                ("dpkg-deb", "--build", "--root-owner-group", str(native_deb_root), str(deb_path)),
+                "dpkg-deb",
+            )
+        if want_appimage:
+            native_appdir = native_root / "AppDir"
+            shutil.copytree(appdir, native_appdir)
+            _normalize_emulebb_rust_linux_modes(native_appdir, is_appdir=True)
+            _run_packaging_tool(
+                (appimagetool, "--no-appstream", str(native_appdir), str(appimage_path)),
+                "appimagetool",
+            )
 
-    assets = (deb_path, appimage_path)
+    assets = tuple(
+        path
+        for selected, path in ((want_deb, deb_path), (want_appimage, appimage_path))
+        if selected
+    )
     manifests: list[Path] = []
     for asset in assets:
         manifest_path = asset.with_name(f"{asset.name}.manifest.json")
@@ -471,8 +487,10 @@ def _create_emulebb_rust_linux_packages(
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
         manifests.append(manifest_path)
     _write_sha256sums(sums_path, (*assets, *manifests, sbom_path))
-    print(f"eMuleBB Rust DEB: {deb_path}")
-    print(f"eMuleBB Rust AppImage: {appimage_path}")
+    if want_deb:
+        print(f"eMuleBB Rust DEB: {deb_path}")
+    if want_appimage:
+        print(f"eMuleBB Rust AppImage: {appimage_path}")
     print(f"eMuleBB Rust SBOM: {sbom_path}")
 
 

@@ -1490,12 +1490,22 @@ def package_release(
     show_default=True,
     help="Package Windows ZIP, Linux DEB/AppImage, or macOS DMG assets.",
 )
+@click.option(
+    "--linux-format",
+    "linux_formats",
+    type=click.Choice(["deb", "appimage"]),
+    multiple=True,
+    default=("deb", "appimage"),
+    show_default=True,
+    help="Linux package formats to create when --target-os linux.",
+)
 def package_emulebb_rust(
     *,
     clean: bool,
     release_version: str,
     skip_build: bool,
     target_os: str,
+    linux_formats: tuple[str, ...],
     workspace_options: WorkspaceOptions,
     layout,
 ) -> None:
@@ -1506,6 +1516,7 @@ def package_emulebb_rust(
         clean=clean,
         skip_build=skip_build,
         target_os=target_os,
+        linux_formats=linux_formats,
     )
     _locked(
         "package emulebb-rust",
