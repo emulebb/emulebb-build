@@ -292,6 +292,7 @@ Live E2E examples:
 Headless Rust client build example:
 
 - `python -m emule_workspace build clients --client emulebb-rust --config Release --platform x64` builds `repos\emulebb-rust` through Cargo and stages `emulebb-rust.exe` under `EMULEBB_WORKSPACE_OUTPUT_ROOT\tools\emulebb-rust\bin`.
+- `python -m emule_workspace package-emulebb-rust-image-local --release-version <version>` verifies the matching packaged Linux amd64 DEB, builds the repository Docker context outside the checkout, and loads `local/emulebb-rust:<version>` into the inherited WSL Docker daemon.
 
 Rust eD2K index-server build example:
 

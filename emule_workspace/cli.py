@@ -57,6 +57,7 @@ from .python_tests import invoke_python_tests
 from .release import (
     assemble_emulebb_rust_release_assets,
     build_emulebb_rust_image_ci,
+    build_emulebb_rust_image_local,
     create_emulebb_rust_package,
     create_release_package,
 )
@@ -1510,6 +1511,45 @@ def package_emulebb_rust(
         "package emulebb-rust",
         lambda **kwargs: create_emulebb_rust_package(kwargs["layout"], kwargs["workspace_options"], package_options),
     )(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("package-emulebb-rust-image-local")
+@_common_options
+@click.option("--release-version", required=True)
+@click.option("--assets-dir", type=click.Path(path_type=Path))
+@click.option("--image")
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def package_emulebb_rust_image_local(
+    *,
+    release_version: str,
+    assets_dir: Path | None,
+    image: str | None,
+    wsl_distro: str,
+    workspace_options: WorkspaceOptions,
+    layout,
+) -> None:
+    """Build and load a verified linux/amd64 Rust image into WSL Docker."""
+
+    selected_assets = assets_dir or (
+        layout.output_release_root / f"rust-v{release_version}"
+    )
+    selected_image = image or f"local/emulebb-rust:{release_version}"
+
+    def build_local_image(**kwargs: Any) -> None:
+        built = build_emulebb_rust_image_local(
+            rust_root=kwargs["layout"].emulebb_rust_repo_root,
+            output_root=kwargs["layout"].output_root,
+            assets_dir=selected_assets,
+            version=release_version,
+            image=selected_image,
+            wsl_distro=wsl_distro,
+        )
+        print(f"Rust image loaded: {built}")
+
+    _locked("package emulebb-rust image local", build_local_image)(
+        workspace_options=workspace_options,
+        layout=layout,
+    )
 
 
 @main.command("package-emulebb-rust-ci")

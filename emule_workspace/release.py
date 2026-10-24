@@ -815,6 +815,88 @@ def build_emulebb_rust_image_ci(
     return archive
 
 
+def build_emulebb_rust_image_local(
+    *,
+    rust_root: Path,
+    output_root: Path,
+    assets_dir: Path,
+    version: str,
+    image: str,
+    wsl_distro: str,
+) -> str:
+    """Builds and loads one verified linux/amd64 image into a WSL Docker daemon."""
+
+    _assert_emulebb_rust_version_matches(rust_root, version)
+    if not re.fullmatch(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?", image):
+        raise RuntimeError(f"Invalid local Rust image tag: {image}")
+    if not wsl_distro.strip():
+        raise RuntimeError("WSL distribution must be non-empty")
+    assets_dir = assets_dir.resolve()
+    asset_name = f"emulebb-rust-v{version}-linux-amd64.deb"
+    asset = assets_dir / asset_name
+    manifest = next(
+        (
+            candidate
+            for candidate in (
+                assets_dir / f"{asset_name}.manifest.json",
+                assets_dir / f"{Path(asset_name).stem}.manifest.json",
+            )
+            if candidate.is_file()
+        ),
+        None,
+    )
+    if not asset.is_file() or manifest is None:
+        raise RuntimeError(f"Rust linux/amd64 asset or manifest is missing: {asset_name}")
+    manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+    if manifest_data.get("asset") != asset_name or manifest_data.get("sha256") != _sha256(asset):
+        raise RuntimeError(f"Rust linux/amd64 asset provenance mismatch: {asset_name}")
+
+    output_root = output_root.resolve()
+    context = output_root / "packages" / "build" / "emulebb-rust-image-local"
+    if not context.is_relative_to(output_root) or output_root.is_relative_to(rust_root.resolve()):
+        raise RuntimeError("Rust image context must be outside the source checkout.")
+    source = rust_root.resolve() / "packaging" / "docker"
+    if not (source / "Dockerfile").is_file():
+        raise RuntimeError(f"Rust image Dockerfile is missing: {source}")
+    if context.exists():
+        shutil.rmtree(context)
+    shutil.copytree(source, context)
+    dist = context / "dist"
+    dist.mkdir()
+    shutil.copy2(asset, dist / asset_name)
+    converted = subprocess.run(
+        ["wsl.exe", "-d", wsl_distro, "--", "wslpath", "-a", str(context)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    wsl_context = converted.stdout.strip()
+    if not wsl_context.startswith("/"):
+        raise RuntimeError("WSL did not return an absolute image context path")
+    dockerfile = f"{wsl_context}/Dockerfile"
+    subprocess.run(
+        [
+            "wsl.exe",
+            "-d",
+            wsl_distro,
+            "--",
+            "docker",
+            "build",
+            "--build-arg",
+            f"VERSION={version}",
+            "--build-arg",
+            "TARGETARCH=amd64",
+            "--tag",
+            image,
+            "--file",
+            dockerfile,
+            wsl_context,
+        ],
+        check=True,
+    )
+    return image
+
+
 def _assert_emulebb_rust_version_matches(rust_root: Path, release_version: str) -> None:
     """Requires a promoted Rust version or a nightly derived from that version."""
 
