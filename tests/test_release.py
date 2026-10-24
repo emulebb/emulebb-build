@@ -1448,16 +1448,14 @@ def test_emulebb_rust_local_image_loads_verified_amd64_asset(
 
     def run(command: list[str], **_kwargs):
         commands.append(command)
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            "/mnt/c/output/packages/build/emulebb-rust-image-local\n"
-            if "wslpath" in command
-            else "",
-            "",
-        )
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(release.subprocess, "run", run)
+    monkeypatch.setattr(
+        release,
+        "wsl_path",
+        lambda _path: "/mnt/c/output/packages/build/emulebb-rust-image-local",
+    )
 
     image = release.build_emulebb_rust_image_local(
         rust_root=rust_root,
@@ -1469,9 +1467,9 @@ def test_emulebb_rust_local_image_loads_verified_amd64_asset(
     )
 
     assert image == f"local/emulebb-rust:{version}"
-    assert commands[1][4:6] == ["docker", "build"]
-    assert "TARGETARCH=amd64" in commands[1]
-    assert "--tag" in commands[1]
+    assert commands[0][4:6] == ["docker", "build"]
+    assert "TARGETARCH=amd64" in commands[0]
+    assert "--tag" in commands[0]
     context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image-local"
     assert (context / "dist" / asset.name).read_bytes() == b"amd64"
 
