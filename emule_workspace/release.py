@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import uuid
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -725,20 +726,23 @@ def _build_emulebb_rust_deb(source: Path, destination: Path) -> None:
     if os.name == "nt":
         wsl_source = wsl_path(source)
         wsl_destination = wsl_path(destination)
+        package_root = f"/tmp/emulebb-rust-deb-{uuid.uuid4().hex}"
+        quoted_root = shlex.quote(package_root)
         script = "\n".join(
             (
                 "set -eu",
-                'package_root="$(mktemp -d)"',
-                'trap \'rm -rf "$package_root"\' EXIT',
-                f"cp -a {shlex.quote(wsl_source)}/. \"$package_root\"/",
-                'find "$package_root" -type d -exec chmod 0755 {} +',
-                'find "$package_root" -type f -exec chmod 0644 {} +',
-                'chmod 0755 "$package_root/usr/bin/emulebb-rust"',
-                'chmod 0755 "$package_root/usr/bin/emulebb-rust-launch"',
-                'chmod 0755 "$package_root/usr/lib/emulebb-rust/emulebb-rust"',
-                'chmod 0755 "$package_root/usr/lib/emulebb-rust/launch"',
+                f"rm -rf {quoted_root}",
+                f"mkdir -m 0755 {quoted_root}",
+                f"trap 'rm -rf {quoted_root}' EXIT",
+                f"cp -a {shlex.quote(wsl_source)}/. {quoted_root}/",
+                f"find {quoted_root} -type d -exec chmod 0755 {{}} +",
+                f"find {quoted_root} -type f -exec chmod 0644 {{}} +",
+                f"chmod 0755 {quoted_root}/usr/bin/emulebb-rust",
+                f"chmod 0755 {quoted_root}/usr/bin/emulebb-rust-launch",
+                f"chmod 0755 {quoted_root}/usr/lib/emulebb-rust/emulebb-rust",
+                f"chmod 0755 {quoted_root}/usr/lib/emulebb-rust/launch",
                 "dpkg-deb --build --root-owner-group "
-                f'"$package_root" {shlex.quote(wsl_destination)}',
+                f"{quoted_root} {shlex.quote(wsl_destination)}",
             )
         )
         command = (

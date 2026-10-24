@@ -1255,7 +1255,7 @@ def test_emulebb_rust_deb_normalizes_modes_in_wsl(
     release._build_emulebb_rust_deb(tmp_path / "source", tmp_path / "output.deb")
 
     assert commands[0][:4] == ("wsl.exe", "--", "bash", "-lc")
-    assert "mktemp -d" in commands[0][4]
+    assert "/tmp/emulebb-rust-deb-" in commands[0][4]
     assert "chmod 0755" in commands[0][4]
     assert "dpkg-deb --build --root-owner-group" in commands[0][4]
 
