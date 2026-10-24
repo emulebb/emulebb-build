@@ -923,15 +923,7 @@ def build_emulebb_rust_image_local(
     dist = context / "dist"
     dist.mkdir()
     shutil.copy2(asset, dist / asset_name)
-    converted = subprocess.run(
-        ["wsl.exe", "-d", wsl_distro, "--", "wslpath", "-a", str(context)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    wsl_context = converted.stdout.strip()
-    if not wsl_context.startswith("/"):
-        raise RuntimeError("WSL did not return an absolute image context path")
+    wsl_context = wsl_path(context)
     dockerfile = f"{wsl_context}/Dockerfile"
     subprocess.run(
         [
