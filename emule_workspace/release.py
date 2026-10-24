@@ -7,6 +7,7 @@ import json
 import os
 import plistlib
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -722,14 +723,30 @@ def _run_packaging_tool(command: tuple[str, ...], label: str) -> None:
 
 def _build_emulebb_rust_deb(source: Path, destination: Path) -> None:
     if os.name == "nt":
+        wsl_source = wsl_path(source)
+        wsl_destination = wsl_path(destination)
+        script = "\n".join(
+            (
+                "set -eu",
+                'package_root="$(mktemp -d)"',
+                'trap \'rm -rf "$package_root"\' EXIT',
+                f"cp -a {shlex.quote(wsl_source)}/. \"$package_root\"/",
+                'find "$package_root" -type d -exec chmod 0755 {} +',
+                'find "$package_root" -type f -exec chmod 0644 {} +',
+                'chmod 0755 "$package_root/usr/bin/emulebb-rust"',
+                'chmod 0755 "$package_root/usr/bin/emulebb-rust-launch"',
+                'chmod 0755 "$package_root/usr/lib/emulebb-rust/emulebb-rust"',
+                'chmod 0755 "$package_root/usr/lib/emulebb-rust/launch"',
+                "dpkg-deb --build --root-owner-group "
+                f'"$package_root" {shlex.quote(wsl_destination)}',
+            )
+        )
         command = (
             "wsl.exe",
             "--",
-            "dpkg-deb",
-            "--build",
-            "--root-owner-group",
-            wsl_path(source),
-            wsl_path(destination),
+            "bash",
+            "-lc",
+            script,
         )
     else:
         command = (
