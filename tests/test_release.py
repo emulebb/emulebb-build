@@ -385,7 +385,7 @@ def test_release_package_validates_diagnostics_markers(tmp_path: Path) -> None:
     exe_path.write_bytes(
         _pe_payload(0x8664)
         + "emulebb-diagnostics-startup.trace.json".encode("utf-16le")
-        + b"emulebb-diagnostics-packet.log"
+        + b"ed2k_client_udp"
         + "emulebb-diagnostics-upload-slot.log".encode("utf-16le")
         + "emulebb-diagnostics-download-slot.log".encode("utf-16le")
         + b"emulebb-diagnostics-bad-peer.log"
@@ -397,7 +397,7 @@ def test_release_package_validates_diagnostics_markers(tmp_path: Path) -> None:
 
 def test_standard_release_package_rejects_packet_diagnostics_marker(tmp_path: Path) -> None:
     exe_path = tmp_path / "emulebb.exe"
-    exe_path.write_bytes(_pe_payload(0x8664) + b"emulebb-diagnostics-packet.log")
+    exe_path.write_bytes(_pe_payload(0x8664) + b"ed2k_client_udp")
 
     with pytest.raises(RuntimeError, match="packet diagnostics support"):
         release._assert_release_binary_diagnostics(exe_path, release.RELEASE_PACKAGE_FLAVORS[0])
@@ -436,7 +436,7 @@ def test_diagnostics_release_package_requires_slot_diagnostics_markers(tmp_path:
     exe_path = tmp_path / "emulebb.exe"
     exe_path.write_bytes(
         _pe_payload(0x8664)
-        + b"emulebb-diagnostics-packet.log"
+        + b"ed2k_client_udp"
         + "emulebb-diagnostics-startup.trace.json".encode("utf-16le")
         + b"emulebb-diagnostics-bad-peer.log"
     )
@@ -446,7 +446,7 @@ def test_diagnostics_release_package_requires_slot_diagnostics_markers(tmp_path:
 
     exe_path.write_bytes(
         _pe_payload(0x8664)
-        + b"emulebb-diagnostics-packet.log"
+        + b"ed2k_client_udp"
         + "emulebb-diagnostics-startup.trace.json".encode("utf-16le")
         + b"emulebb-diagnostics-upload-slot.log"
         + b"emulebb-diagnostics-bad-peer.log"
@@ -460,7 +460,7 @@ def test_diagnostics_release_package_requires_bad_peer_diagnostics_marker(tmp_pa
     exe_path = tmp_path / "emulebb.exe"
     exe_path.write_bytes(
         _pe_payload(0x8664)
-        + b"emulebb-diagnostics-packet.log"
+        + b"ed2k_client_udp"
         + "emulebb-diagnostics-startup.trace.json".encode("utf-16le")
         + b"emulebb-diagnostics-upload-slot.log"
         + b"emulebb-diagnostics-download-slot.log"
@@ -474,7 +474,7 @@ def test_diagnostics_release_package_requires_kad_diagnostics_marker(tmp_path: P
     exe_path = tmp_path / "emulebb.exe"
     exe_path.write_bytes(
         _pe_payload(0x8664)
-        + b"emulebb-diagnostics-packet.log"
+        + b"ed2k_client_udp"
         + "emulebb-diagnostics-startup.trace.json".encode("utf-16le")
         + b"emulebb-diagnostics-upload-slot.log"
         + b"emulebb-diagnostics-download-slot.log"
