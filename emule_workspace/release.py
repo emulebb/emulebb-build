@@ -48,8 +48,8 @@ STARTUP_DIAGNOSTICS_BINARY_MARKERS = (
     "emulebb-diagnostics-startup.trace.json".encode("utf-16le"),
 )
 PACKET_DIAGNOSTICS_BINARY_MARKERS = (
-    b"emulebb-diagnostics-packet.log",
-    "emulebb-diagnostics-packet.log".encode("utf-16le"),
+    b"ed2k_client_udp",
+    "ed2k_client_udp".encode("utf-16le"),
 )
 UPLOAD_SLOT_DIAGNOSTICS_BINARY_MARKERS = (
     b"emulebb-diagnostics-upload-slot.log",
