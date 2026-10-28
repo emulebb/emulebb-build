@@ -41,6 +41,12 @@ def test_reusable_workspace_command_owns_materialized_ci_setup() -> None:
     assert "repos/amutorrent" not in text
     assert "python -m emule_workspace audit-artifacts" in text
     assert "materialize --workspace-root" not in text
+    assert "setup_wsl:" in text
+    assert "if: ${{ inputs.setup_wsl }}" in text
+    assert "Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7.0.0" in text
+    assert "distribution: Debian-13" in text
+    assert "wsl-version: 1" in text
+    assert "additional-packages: build-essential cargo rustc" in text
     assert (
         "python -m pip install \"click>=8.1\" \"pydantic>=2.0\" \"jinja2>=3\" "
         "\"jsonschema>=4\" \"PyYAML>=6\" \"pywin32\" \"pywinauto\""
@@ -83,7 +89,7 @@ def test_controlled_smoke_uses_reusable_core_offline_and_lan_suite() -> None:
     assert "label: windows-2022" in text
     assert "runs_on: windows-11-arm" in text
     assert "label: windows-2025-vs2026" not in text
-    assert "Hosted runner: windows-2022 with v143 ATL/MFC policy" in text
+    assert "Hosted runner: windows-2022 with v143 ATL/MFC" in text
     assert "Hosted runner: windows-11-arm" in text
     assert 'node_version: "24"' in text
     assert "app_ref: ${{ github.sha }}" in text
