@@ -138,7 +138,7 @@ def test_controlled_smoke_gates_expensive_lanes_behind_wsl_preflight() -> None:
     assert "timeout-minutes: 10" in text
     assert "repository: emulebb/emulebb-build-tests" in text
     assert "ref: main" in text
-    assert "EMULEBB_WORKSPACE_OUTPUT_ROOT: ${{ runner.temp }}/emulebb-output" in text
+    assert "EMULEBB_WORKSPACE_OUTPUT_ROOT: ${{ github.workspace }}/../emulebb-output" in text
     assert "Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364" in text
     assert "distribution: Debian-13" in text
     assert "wsl-version: 1" in text
