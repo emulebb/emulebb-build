@@ -384,6 +384,7 @@ def test_live_e2e_forwards_dependency_resolution_options(tmp_path: Path, monkeyp
     prowlarr_exe = r"tools\Prowlarr\Prowlarr.exe"
     radarr_exe = r"tools\Radarr\Radarr.exe"
     sonarr_exe = r"tools\Sonarr\Sonarr.exe"
+    ed2k_server_exe = r"tools\ed2k-server\bin\ed2k-server"
     test_runs.invoke_live_e2e_suite(
         layout,
         WorkspaceOptions(workspace_root=tmp_path, platform="x64"),
@@ -396,6 +397,7 @@ def test_live_e2e_forwards_dependency_resolution_options(tmp_path: Path, monkeyp
             prowlarr_exe=prowlarr_exe,
             radarr_exe=radarr_exe,
             sonarr_exe=sonarr_exe,
+            ed2k_server_exe=ed2k_server_exe,
         ),
     )
 
@@ -409,6 +411,7 @@ def test_live_e2e_forwards_dependency_resolution_options(tmp_path: Path, monkeyp
     assert option_values(command, "--prowlarr-exe") == [str((layout.emule_workspace_root / prowlarr_exe).resolve())]
     assert option_values(command, "--radarr-exe") == [str((layout.emule_workspace_root / radarr_exe).resolve())]
     assert option_values(command, "--sonarr-exe") == [str((layout.emule_workspace_root / sonarr_exe).resolve())]
+    assert option_values(command, "--ed2k-server-exe") == [str((layout.emule_workspace_root / ed2k_server_exe).resolve())]
 
 
 def test_live_e2e_forwards_search_ui_live_stress_options(tmp_path: Path, monkeypatch) -> None:

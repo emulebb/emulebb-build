@@ -593,6 +593,8 @@ def invoke_live_e2e_suite(layout: WorkspaceLayout, options: WorkspaceOptions, li
         args.extend(["--radarr-exe", _resolve_workspace_path_argument(layout, live_options.radarr_exe)])
     if live_options.sonarr_exe:
         args.extend(["--sonarr-exe", _resolve_workspace_path_argument(layout, live_options.sonarr_exe)])
+    if live_options.ed2k_server_exe:
+        args.extend(["--ed2k-server-exe", _resolve_workspace_path_argument(layout, live_options.ed2k_server_exe)])
     _append_optional_flag(args, live_options.preference_ui_directories_tree_stress, "--preference-ui-directories-tree-stress")
     for scenario_name in live_options.shared_files_ui_scenarios:
         args.extend(["--shared-files-ui-scenario", scenario_name])
