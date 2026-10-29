@@ -26,6 +26,14 @@ on:
         required: false
         type: boolean
         default: false
+      input_artifact_name:
+        required: false
+        type: string
+        default: ""
+      input_artifact_output_path:
+        required: false
+        type: string
+        default: input-artifacts
       app_repository:
         required: false
         type: string
@@ -173,6 +181,13 @@ jobs:
           distribution: Debian-13
           wsl-version: 1
           additional-packages: build-essential cargo rustc
+
+      - name: Download input artifact
+        if: ${{ inputs.input_artifact_name != '' }}
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ inputs.input_artifact_name }}
+          path: ${{ format('{0}/../emulebb-output/{1}', github.workspace, inputs.input_artifact_output_path) }}
 
       - name: Run workspace command
         shell: pwsh
