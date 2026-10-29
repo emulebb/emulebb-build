@@ -47,6 +47,11 @@ def test_reusable_workspace_command_owns_materialized_ci_setup() -> None:
     assert "distribution: Debian-13" in text
     assert "wsl-version: 1" in text
     assert "additional-packages: build-essential cargo rustc" in text
+    assert "input_artifact_name:" in text
+    assert "input_artifact_output_path:" in text
+    assert "if: ${{ inputs.input_artifact_name != '' }}" in text
+    assert "uses: actions/download-artifact@v7" in text
+    assert "github.workspace, inputs.input_artifact_output_path" in text
     assert (
         "python -m pip install \"click>=8.1\" \"pydantic>=2.0\" \"jinja2>=3\" "
         "\"jsonschema>=4\" \"PyYAML>=6\" \"pywin32\" \"pywinauto\""
