@@ -222,6 +222,7 @@ def _live_e2e_options(function: F) -> F:
     @click.option("--prowlarr-exe", default=None, help="Explicit Prowlarr executable for package-helper live tests.")
     @click.option("--radarr-exe", default=None, help="Explicit Radarr executable for package-helper live tests.")
     @click.option("--sonarr-exe", default=None, help="Explicit Sonarr executable for package-helper live tests.")
+    @click.option("--ed2k-server-exe", default=None, help="Explicit Rust ED2K server executable for live tests.")
     @click.option("--preference-ui-directories-tree-stress", is_flag=True, help="Exercise the Preferences Directories tree with a large shared-directory profile.")
     @click.option("--shared-files-ui-scenario", "shared_files_ui_scenarios", multiple=True)
     @click.option("--shared-files-tree-stress-churn-cycles", default=-1, show_default=True, type=int)

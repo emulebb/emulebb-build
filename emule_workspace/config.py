@@ -161,6 +161,7 @@ class LiveE2eOptions(BaseModel):
     prowlarr_exe: str | None = None
     radarr_exe: str | None = None
     sonarr_exe: str | None = None
+    ed2k_server_exe: str | None = None
     profile_cpu: bool = False
     profile_cpu_max_file_mb: int = 512
     profile_cpu_stack: bool = False
