@@ -51,7 +51,9 @@ def test_reusable_workspace_command_owns_materialized_ci_setup() -> None:
     assert "input_artifact_output_path:" in text
     assert "if: ${{ inputs.input_artifact_name != '' }}" in text
     assert "uses: actions/download-artifact@v7" in text
-    assert "github.workspace, inputs.input_artifact_output_path" in text
+    assert "id: workspace-output" in text
+    assert '"root=$outputRoot" | Add-Content -LiteralPath $env:GITHUB_OUTPUT' in text
+    assert "steps.workspace-output.outputs.root, inputs.input_artifact_output_path" in text
     assert (
         "python -m pip install \"click>=8.1\" \"pydantic>=2.0\" \"jinja2>=3\" "
         "\"jsonschema>=4\" \"PyYAML>=6\" \"pywin32\" \"pywinauto\""
