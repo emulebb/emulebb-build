@@ -89,12 +89,14 @@ jobs:
 
     steps:
       - name: Set workspace output root
+        id: workspace-output
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $outputRoot = [System.IO.Path]::GetFullPath((Join-Path $env:EMULEBB_WORKSPACE_ROOT '..\emulebb-output'))
           New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
           "EMULEBB_WORKSPACE_OUTPUT_ROOT=$outputRoot" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "root=$outputRoot" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
           if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
             $cargoTargetDir = Join-Path $outputRoot "builds\rust\target"
             New-Item -ItemType Directory -Force -Path $cargoTargetDir | Out-Null
@@ -187,7 +189,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: ${{ inputs.input_artifact_name }}
-          path: ${{ format('{0}/../emulebb-output/{1}', github.workspace, inputs.input_artifact_output_path) }}
+          path: ${{ format('{0}/{1}', steps.workspace-output.outputs.root, inputs.input_artifact_output_path) }}
 
       - name: Run workspace command
         shell: pwsh
