@@ -455,6 +455,7 @@ def test_build_ed2k_server_uses_wsl_and_stages_only_output_root_binary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     layout = make_layout(tmp_path, monkeypatch)
+    monkeypatch.setenv("CARGO_BUILD_JOBS", "1")
     repo_root = layout.ed2k_server_repo_root
     repo_root.mkdir(parents=True)
     (repo_root / "Cargo.toml").write_text("[package]\nname = 'ed2k-server'\n", encoding="utf-8")
@@ -492,7 +493,7 @@ def test_build_ed2k_server_uses_wsl_and_stages_only_output_root_binary(
     command = commands[0]
     assert command[0:4] == ["wsl.exe", "--", "bash", "-lc"]
     assert "export CARGO_TARGET_DIR=/mnt/c/rust/target-wsl" in command[-1]
-    assert "cargo build --locked --release --target x86_64-unknown-linux-gnu" in command[-1]
+    assert "cargo build --locked --release --target x86_64-unknown-linux-gnu --jobs 1" in command[-1]
     assert command[-1].endswith(
         "if [ /mnt/c/release/ed2k-server -ef /mnt/c/bin/ed2k-server ]; "
         "then rm -f -- /mnt/c/release/ed2k-server; "
@@ -507,6 +508,24 @@ def test_build_ed2k_server_uses_wsl_and_stages_only_output_root_binary(
         / "release"
         / "ed2k-server"
     ).exists()
+
+
+def test_build_ed2k_server_rejects_invalid_cargo_build_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = make_layout(tmp_path, monkeypatch)
+    repo_root = layout.ed2k_server_repo_root
+    repo_root.mkdir(parents=True)
+    (repo_root / "Cargo.toml").write_text("[package]\nname = 'ed2k-server'\n", encoding="utf-8")
+    monkeypatch.setenv("CARGO_BUILD_JOBS", "0")
+    session = build.BuildSession(
+        layout=layout,
+        options=WorkspaceOptions(workspace_root=layout.emule_workspace_root),
+        command_name="build ed2k-server",
+    )
+
+    with pytest.raises(RuntimeError, match="CARGO_BUILD_JOBS must be a positive integer"):
+        build.build_ed2k_server_service(session, clean=False)
 
 
 def test_build_ed2k_server_uses_native_cargo_on_linux(

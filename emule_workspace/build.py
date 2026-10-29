@@ -305,6 +305,15 @@ def build_ed2k_server_service(
         "--target",
         ED2K_SERVER_LINUX_TARGET,
     ]
+    cargo_build_jobs = os.environ.get("CARGO_BUILD_JOBS", "").strip()
+    if cargo_build_jobs:
+        try:
+            cargo_build_jobs_count = int(cargo_build_jobs)
+        except ValueError as error:
+            raise RuntimeError("CARGO_BUILD_JOBS must be a positive integer.") from error
+        if cargo_build_jobs_count < 1:
+            raise RuntimeError("CARGO_BUILD_JOBS must be a positive integer.")
+        cargo_arguments.extend(("--jobs", str(cargo_build_jobs_count)))
     cargo_path = None if use_wsl else find_tool(("cargo.exe", "cargo"))
     if not use_wsl and cargo_path is None:
         raise RuntimeError("build ed2k-server requires Rust cargo on PATH.")
