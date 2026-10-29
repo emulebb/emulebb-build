@@ -128,6 +128,31 @@ def test_controlled_smoke_uses_reusable_core_offline_and_lan_suite() -> None:
     assert "logs/builds/**" in text
 
 
+def test_controlled_smoke_gates_expensive_lanes_behind_wsl_preflight() -> None:
+    text = _read_app_workflow("controlled-smoke.yml")
+
+    assert "scope:" in text
+    assert "default: preflight" in text
+    assert "ed2k_wsl_preflight:" in text
+    assert "runs-on: windows-2022" in text
+    assert "timeout-minutes: 10" in text
+    assert "repository: emulebb/emulebb-build-tests" in text
+    assert "ref: main" in text
+    assert "EMULEBB_WORKSPACE_OUTPUT_ROOT: ${{ github.workspace }}/../emulebb-output" in text
+    assert "Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364" in text
+    assert "distribution: Debian-13" in text
+    assert "wsl-version: 1" in text
+    assert r"scripts\ed2k-server-readiness-smoke.py" in text
+    assert "reports/ed2k-server-readiness-smoke/**" in text
+    gate = (
+        "if: ${{ needs.ed2k_wsl_preflight.result == 'success' && "
+        "(github.event_name == 'schedule' || inputs.scope == 'full') }}"
+    )
+    assert text.count(gate) == 2
+    assert "if: ${{ github.event_name == 'schedule' || inputs.scope == 'full' }}" in text
+    assert "PREFLIGHT_RESULT: ${{ needs.ed2k_wsl_preflight.result }}" in text
+
+
 def test_controlled_smoke_keeps_first_lane_narrow() -> None:
     text = _read_app_workflow("controlled-smoke.yml").lower()
 
