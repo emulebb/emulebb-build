@@ -8,15 +8,18 @@ from emule_workspace import setup_commands
 from emule_workspace.topology import AppRepo, ManagedRepo, WorkspaceTopology, canonical_topology
 
 
-def test_compare_presets_include_current_amule_and_stock_references(tmp_path: Path) -> None:
+def test_compare_presets_separate_stable_amule_head_analysis_and_stock(tmp_path: Path) -> None:
     preset_keys = {
         preset.key for preset in setup_commands.compare_presets(tmp_path, canonical_topology())
     }
 
     assert preset_keys == {
-        "amule-vs-local-072-community",
-        "amule-vs-local-072-main",
-        "amule-vs-local-072-tracing-harness",
+        "amule-head-vs-local-072-community",
+        "amule-head-vs-local-072-main",
+        "amule-head-vs-local-072-tracing-harness",
+        "amule-stable-vs-local-072-community",
+        "amule-stable-vs-local-072-main",
+        "amule-stable-vs-local-072-tracing-harness",
         "emule-stock-vs-local-072-community",
         "emule-stock-vs-local-072-main",
         "emule-stock-vs-local-072-tracing-harness",

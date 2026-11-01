@@ -103,7 +103,8 @@ def compare_presets(root: Path, topology: WorkspaceTopology) -> tuple[ComparePre
     """Returns all configured comparison presets."""
 
     analysis_specs = {
-        "amule": ("aMule upstream", "aMule upstream vs local"),
+        "amule-stable": ("aMule 3.0.1 stable", "aMule stable vs local"),
+        "amule-head": ("aMule upstream HEAD", "aMule HEAD analysis vs local"),
         "emule-stock": ("Stock eMule 0.72", "Stock eMule 0.72 vs local"),
     }
     presets: list[ComparePreset] = []

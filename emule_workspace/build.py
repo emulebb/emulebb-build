@@ -842,7 +842,7 @@ def build_amule_client(session: BuildSession, *, clean: bool) -> None:
         raise RuntimeError("build clients --client amule currently supports only --platform x64 via MSYS2 MINGW64.")
     msys2_root = resolve_msys2_root()
     bash = msys2_root / "usr" / "bin" / "bash.exe"
-    script_path = session.layout.amule_repo_root / "packaging" / "windows" / "build.sh"
+    script_path = session.layout.amule_stable_repo_root / "packaging" / "windows" / "build.sh"
     if not script_path.is_file():
         raise RuntimeError(f"aMule Windows build script was not found: {script_path}")
     source_root = amule_build_source_root(session.layout)
@@ -1003,7 +1003,7 @@ def prepare_amule_build_worktree(layout: WorkspaceLayout) -> Path:
     source_root = amule_build_source_root(layout)
     source_root.parent.mkdir(parents=True, exist_ok=True)
     completed = subprocess.run(
-        ["git", "-C", str(layout.amule_repo_root), "worktree", "add", "--detach", str(source_root), "HEAD"],
+        ["git", "-C", str(layout.amule_stable_repo_root), "worktree", "add", "--detach", str(source_root), "HEAD"],
         capture_output=True,
         text=True,
         check=False,
@@ -1023,7 +1023,7 @@ def remove_amule_build_worktree(layout: WorkspaceLayout) -> None:
         raise RuntimeError(f"Refusing to remove aMule build worktree outside the output root: {source_root}")
 
     completed = subprocess.run(
-        ["git", "-C", str(layout.amule_repo_root), "worktree", "remove", "--force", str(source_root)],
+        ["git", "-C", str(layout.amule_stable_repo_root), "worktree", "remove", "--force", str(source_root)],
         capture_output=True,
         text=True,
         check=False,
@@ -1031,7 +1031,7 @@ def remove_amule_build_worktree(layout: WorkspaceLayout) -> None:
     if completed.returncode != 0 and source_root.exists():
         remove_tree_if_present(source_root)
     subprocess.run(
-        ["git", "-C", str(layout.amule_repo_root), "worktree", "prune"],
+        ["git", "-C", str(layout.amule_stable_repo_root), "worktree", "prune"],
         capture_output=True,
         text=True,
         check=True,

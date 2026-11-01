@@ -58,6 +58,52 @@ def test_optional_missing_branch_leaves_checkout_unchanged(tmp_path: Path, monke
     assert calls == []
 
 
+def test_tag_checkout_is_detached_and_revision_verified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    expected_revision = "02db0d7faecfc377694ff6242bc23346185990ed"
+    repo = ManagedRepo(
+        name="amule-stable",
+        url="https://github.com/amule-org/amule.git",
+        relative_path="repos\\amule-stable",
+        branch="3.0.1",
+        checkout_mode="tag",
+        expected_revision=expected_revision,
+    )
+    repo_path = tmp_path / "repos" / "amule-stable"
+    native_calls: list[tuple[str, ...]] = []
+    clean_calls: list[tuple[Path, str, Path]] = []
+    monkeypatch.setattr(materialize, "branch_ref_exists", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(materialize, "assert_clean_repo", lambda *args: clean_calls.append(args))
+    monkeypatch.setattr(
+        materialize,
+        "run_native",
+        lambda command, **_kwargs: native_calls.append(tuple(str(part) for part in command)),
+    )
+    monkeypatch.setattr(materialize, "run_captured", lambda *_args, **_kwargs: expected_revision)
+
+    materialize.ensure_managed_repo_tag(tmp_path, repo_path, repo)
+
+    assert clean_calls == [(repo_path, "amule-stable", tmp_path)]
+    assert native_calls == [("git", "-C", str(repo_path), "checkout", "--detach", "refs/tags/3.0.1")]
+
+
+def test_tag_checkout_rejects_unexpected_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = ManagedRepo(
+        name="amule-stable",
+        url="https://github.com/amule-org/amule.git",
+        relative_path="repos\\amule-stable",
+        branch="3.0.1",
+        checkout_mode="tag",
+        expected_revision="02db0d7faecfc377694ff6242bc23346185990ed",
+    )
+    monkeypatch.setattr(materialize, "branch_ref_exists", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(materialize, "assert_clean_repo", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(materialize, "run_native", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(materialize, "run_captured", lambda *_args, **_kwargs: "0" * 40)
+
+    with pytest.raises(RuntimeError, match="expected 02db0d7"):
+        materialize.ensure_managed_repo_tag(tmp_path, tmp_path / "repos" / "amule-stable", repo)
+
+
 def test_print_repo_provenance_reports_head_and_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     repo = tmp_path / "repo"
     calls: list[tuple[str, ...]] = []

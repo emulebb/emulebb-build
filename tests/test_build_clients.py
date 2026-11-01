@@ -87,12 +87,12 @@ def test_amule_build_source_root_is_output_owned(tmp_path: Path) -> None:
     source_root = build.amule_build_source_root(layout)
 
     assert source_root.is_relative_to(layout.output_root)
-    assert not source_root.is_relative_to(layout.amule_repo_root)
+    assert not source_root.is_relative_to(layout.amule_stable_repo_root)
 
 
 def test_amule_build_worktree_is_removed_after_use(tmp_path: Path) -> None:
     layout = make_layout(tmp_path)
-    repo = layout.amule_repo_root
+    repo = layout.amule_stable_repo_root
     repo.mkdir(parents=True)
     subprocess.run(["git", "init", "--initial-branch=master", str(repo)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True)
@@ -624,7 +624,8 @@ def make_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch | None = None) -
         tests_repo_root=emule_workspace_root / "repos" / "emulebb-build-tests",
         tooling_repo_root=emule_workspace_root / "repos" / "emulebb-tooling",
         ed2k_server_repo_root=emule_workspace_root / "repos" / "ed2k-server",
-        amule_repo_root=emule_workspace_root / "repos" / "amule",
+        amule_stable_repo_root=emule_workspace_root / "repos" / "amule-stable",
+        amule_head_repo_root=emule_workspace_root / "repos" / "amule",
         seed_repo_path=emule_workspace_root / "repos" / "emulebb",
         seed_repo_branch="main",
         dependencies=(),
