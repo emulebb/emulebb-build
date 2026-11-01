@@ -34,7 +34,8 @@ In practice this repo needs:
 - `repos\emulebb-build`
 - `repos\emulebb-build-tests`
 - `repos\emulebb-tooling`
-- `repos\amule`
+- `repos\amule-stable`
+- `repos\amule` (upstream HEAD analysis only)
 - `repos\emule-stock`
 - `repos\ed2k-server`
 - `repos\emulebb-rust`
@@ -44,10 +45,11 @@ In practice this repo needs:
 - `workspaces\workspace\app\emulebb-community-tracing-harness`
 
 The default `core` profile includes the MFC diagnostic/release worktrees, their
-third-party dependencies, the current stock 0.72 reference, aMule, the Rust
-client, and the upstream-following Rust ED2K server. Archived analysis and
-retired product-family repositories are not declared or materialized by
-workspace setup. The optional `public-presence` profile adds only the root
+third-party dependencies, the frozen stock 0.72 reference, frozen aMule 3.0.1
+parity source, upstream aMule HEAD analysis source, the Rust client, and the
+upstream-following Rust ED2K server. Archived analysis and retired
+product-family repositories are not declared or materialized by workspace
+setup. The optional `public-presence` profile adds only the root
 organization Pages site and organization profile repositories. The retired Go
 server is not managed or materialized by any profile.
 
@@ -113,9 +115,9 @@ python -m emule_workspace package-release
 python -m emule_workspace vm-lab prepare
 ```
 
-`build clients` defaults to the materialized `emulebb-rust` client. The managed
-`repos\amule` checkout tracks official `amule-org/amule` and is available through
-`--client amule`.
+`build clients` defaults to the materialized `emulebb-rust` client. The
+`--client amule` build always uses the exact frozen `repos\amule-stable` 3.0.1
+revision. Moving `repos\amule` HEAD is source-analysis input only.
 
 ## Suite Installer Examples
 

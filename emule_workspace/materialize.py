@@ -231,6 +231,39 @@ def ensure_managed_repo_branch(root: Path, repo_path: Path, repo: ManagedRepo) -
         )
 
 
+def ensure_managed_repo_tag(root: Path, repo_path: Path, repo: ManagedRepo) -> None:
+    """Checks out one immutable tag and verifies its exact commit provenance."""
+
+    tag_ref = f"refs/tags/{repo.branch}"
+    if not branch_ref_exists(repo_path, tag_ref, root, repo.name):
+        raise RuntimeError(f"Managed repository '{repo.name}' is missing required tag '{repo.branch}'.")
+    assert_clean_repo(repo_path, repo.name, root)
+    run_native(
+        ["git", "-C", repo_path, "checkout", "--detach", tag_ref],
+        label=f"checkout {repo.name} tag {repo.branch}",
+        cwd=root,
+    )
+    revision = run_captured(
+        ["git", "-C", repo_path, "rev-parse", "HEAD"],
+        label=f"verify {repo.name} tag revision",
+        cwd=root,
+    ).strip()
+    if revision.casefold() != str(repo.expected_revision).casefold():
+        raise RuntimeError(
+            f"Managed repository '{repo.name}' tag '{repo.branch}' resolved to {revision}, "
+            f"expected {repo.expected_revision}."
+        )
+
+
+def ensure_managed_repo_checkout(root: Path, repo_path: Path, repo: ManagedRepo) -> None:
+    """Converges one managed repository to its configured branch or immutable tag."""
+
+    if repo.checkout_mode == "tag":
+        ensure_managed_repo_tag(root, repo_path, repo)
+        return
+    ensure_managed_repo_branch(root, repo_path, repo)
+
+
 def ensure_required_tools() -> None:
     """Checks command-line tools required by materialization."""
 
@@ -265,13 +298,18 @@ def ensure_repo_clone(root: Path, repo: ManagedRepo) -> Path:
         clone_args.extend([repo.url, str(repo_path)])
         run_native(clone_args, label=f"clone {repo.name}", cwd=root)
         ensure_repo_additional_remotes(repo_path, repo)
+        if not isinstance(repo, AppRepo) and repo.checkout_mode == "tag":
+            ensure_managed_repo_tag(root, repo_path, repo)
         print_repo_provenance(root, repo_path, repo.name)
         return repo_path
 
-    run_native(["git", "-C", repo_path, "fetch", "origin", "--prune"], label=f"fetch {repo.name}", cwd=root)
+    fetch_args = ["git", "-C", repo_path, "fetch", "origin", "--prune"]
+    if repo.checkout_mode == "tag":
+        fetch_args.append("--tags")
+    run_native(fetch_args, label=f"fetch {repo.name}", cwd=root)
     ensure_repo_additional_remotes(repo_path, repo)
     if not isinstance(repo, AppRepo):
-        ensure_managed_repo_branch(root, repo_path, repo)
+        ensure_managed_repo_checkout(root, repo_path, repo)
         print_repo_provenance(root, repo_path, repo.name)
     if repo.has_submodules:
         run_native(

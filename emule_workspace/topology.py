@@ -5,15 +5,15 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 BUILD_MANIFEST_NAME = "deps.json"
 WORKSPACE_MANIFEST_NAME = "deps.json"
-WORKSPACE_MANIFEST_SCHEMA_VERSION = 11
+WORKSPACE_MANIFEST_SCHEMA_VERSION = 12
 REPO_ROLE_MANIFEST_NAME = "repo-roles.json"
-REPO_ROLE_MANIFEST_SCHEMA_VERSION = 2
+REPO_ROLE_MANIFEST_SCHEMA_VERSION = 3
 DEFAULT_WORKSPACE_NAME = "workspace"
 CORE_WORKSPACE_PROFILE = "core"
 PUBLIC_PRESENCE_PROFILE = "public-presence"
@@ -76,11 +76,26 @@ class ManagedRepo(BaseModel):
     url: str
     relative_path: str
     branch: str
+    checkout_mode: Literal["branch", "tag"] = "branch"
+    expected_revision: str | None = None
     branch_optional: bool = False
     has_submodules: bool = False
     compare_subdir: str | None = None
     additional_remotes: tuple[AdditionalRemote, ...] = ()
     update_policy: UpdatePolicy | None = None
+
+    @model_validator(mode="after")
+    def require_deterministic_tag_revision(self) -> "ManagedRepo":
+        """Requires immutable provenance for tag-pinned managed repositories."""
+
+        if self.checkout_mode == "tag":
+            if self.branch_optional:
+                raise ValueError("tag-pinned repositories cannot use branch_optional")
+            if self.expected_revision is None:
+                raise ValueError("tag-pinned repositories require expected_revision")
+        elif self.expected_revision is not None:
+            raise ValueError("expected_revision is valid only for tag-pinned repositories")
+        return self
 
 
 class AppWorktree(BaseModel):
@@ -156,7 +171,8 @@ class WorkspaceManifestRepos(BaseModel):
     build: str
     tests: str
     tooling: str
-    amule: str
+    amule_stable: str
+    amule_head: str
     emule_stock: str
     ed2k_server: str
     emulebb_rust: str
@@ -243,7 +259,8 @@ def build_workspace_manifest(topology: WorkspaceTopology, workspace_name: str | 
                 "build": _workspace_relative_repo_path(repo_by_name["emulebb-build"]),
                 "tests": _workspace_relative_repo_path(repo_by_name["emulebb-build-tests"]),
                 "tooling": _workspace_relative_repo_path(repo_by_name["emulebb-tooling"]),
-                "amule": _workspace_relative_repo_path(repo_by_name["amule"]),
+                "amule_stable": _workspace_relative_repo_path(repo_by_name["amule-stable"]),
+                "amule_head": _workspace_relative_repo_path(repo_by_name["amule-head"]),
                 "emule_stock": _workspace_relative_repo_path(repo_by_name["emule-stock"]),
                 "ed2k_server": _workspace_relative_repo_path(repo_by_name["ed2k-server"]),
                 "emulebb_rust": _workspace_relative_repo_path(repo_by_name["emulebb-rust"]),
@@ -285,7 +302,7 @@ def build_repo_role_manifest(topology: WorkspaceTopology, workspace_name: str | 
             for repo in topology.repos
         ],
         "analysis_repos": [
-            _repo_role_payload(repo, role="analysis-reference", group="analysis")
+            _repo_role_payload(repo, role=_repo_role(repo), group="analysis")
             for repo in topology.analysis_repos
         ],
         "third_party_repos": [
@@ -308,6 +325,7 @@ def _repo_role_payload(repo: ManagedRepo, *, role: str, group: str) -> dict[str,
         "group": group,
         "relative_path": repo.relative_path,
         "branch": repo.branch,
+        "checkout_mode": repo.checkout_mode,
         "url": repo.url,
         "branch_optional": repo.branch_optional,
         "has_submodules": repo.has_submodules,
@@ -318,6 +336,8 @@ def _repo_role_payload(repo: ManagedRepo, *, role: str, group: str) -> dict[str,
     }
     if repo.compare_subdir is not None:
         payload["compare_subdir"] = repo.compare_subdir
+    if repo.expected_revision is not None:
+        payload["expected_revision"] = repo.expected_revision
     if repo.update_policy is not None:
         payload["update_policy"] = repo.update_policy.model_dump(mode="json", exclude_none=True)
     return payload
@@ -333,7 +353,8 @@ def _repo_role(repo: ManagedRepo) -> str:
         "emulebb-build-tests": "test-harness",
         "emulebb-tooling": "workspace-policy-and-docs",
         "ed2k-server": "local-ed2k-test-server",
-        "amule": "upstream-parity-reference",
+        "amule-stable": "frozen-parity-reference",
+        "amule-head": "upstream-analysis-reference",
         "emule-stock": "upstream-stock-compatibility-reference",
         "emulebb-pages": "public-docs-site",
         "emulebb-org-profile": "public-org-profile",
@@ -403,10 +424,12 @@ def canonical_topology(*, profiles: Iterable[str] = ()) -> WorkspaceTopology:
                 branch="main",
             ),
             ManagedRepo(
-                name="amule",
+                name="amule-stable",
                 url="https://github.com/amule-org/amule.git",
-                relative_path="repos\\amule",
-                branch="master",
+                relative_path="repos\\amule-stable",
+                branch="3.0.1",
+                checkout_mode="tag",
+                expected_revision="02db0d7faecfc377694ff6242bc23346185990ed",
                 compare_subdir="src",
                 additional_remotes=(
                     AdditionalRemote(name="emulebb", url="https://github.com/emulebb/amule.git"),
@@ -453,7 +476,18 @@ def canonical_topology(*, profiles: Iterable[str] = ()) -> WorkspaceTopology:
                 branch="main",
             ),
         ),
-        analysis_repos=(),
+        analysis_repos=(
+            ManagedRepo(
+                name="amule-head",
+                url="https://github.com/amule-org/amule.git",
+                relative_path="repos\\amule",
+                branch="master",
+                compare_subdir="src",
+                additional_remotes=(
+                    AdditionalRemote(name="emulebb", url="https://github.com/emulebb/amule.git"),
+                ),
+            ),
+        ),
         third_party_repos=(
             ManagedRepo(
                 name="emulebb-cryptopp",

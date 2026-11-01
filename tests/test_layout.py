@@ -74,7 +74,9 @@ def test_workspace_manifest_uses_json_contract_shape() -> None:
     assert manifest["workspace"]["repos"]["ed2k_server"] == "..\\..\\repos\\ed2k-server"
     assert "ed2k_index_server" not in manifest["workspace"]["repos"]
     assert "goed2k_server" not in manifest["workspace"]["repos"]
-    assert manifest["workspace"]["repos"]["amule"] == "..\\..\\repos\\amule"
+    assert manifest["workspace"]["repos"]["amule_stable"] == "..\\..\\repos\\amule-stable"
+    assert manifest["workspace"]["repos"]["amule_head"] == "..\\..\\repos\\amule"
+    assert "amule" not in manifest["workspace"]["repos"]
     assert manifest["workspace"]["repos"]["emule_stock"] == "..\\..\\repos\\emule-stock"
     assert "amutorrent" not in manifest["workspace"]["repos"]
     assert "emuleai" not in manifest["workspace"]["repos"]
@@ -117,15 +119,19 @@ def test_repo_role_manifest_describes_workspace_repositories() -> None:
     assert "goed2k-server" not in repos
     assert repos["ed2k-server"]["role"] == "local-ed2k-test-server"
     assert repos["ed2k-server"]["group"] == "product-family"
-    assert repos["amule"]["role"] == "upstream-parity-reference"
-    assert repos["amule"]["group"] == "product-family"
+    assert repos["amule-stable"]["role"] == "frozen-parity-reference"
+    assert repos["amule-stable"]["group"] == "product-family"
+    assert repos["amule-stable"]["checkout_mode"] == "tag"
+    assert repos["amule-stable"]["expected_revision"] == "02db0d7faecfc377694ff6242bc23346185990ed"
     assert repos["emule-stock"]["role"] == "upstream-stock-compatibility-reference"
     assert repos["emule-stock"]["group"] == "product-family"
     assert "amutorrent" not in repos
     assert "p2p-overlord-be" not in repos
 
     analysis_repos = {repo["name"]: repo for repo in manifest["analysis_repos"]}
-    assert analysis_repos == {}
+    assert analysis_repos["amule-head"]["role"] == "upstream-analysis-reference"
+    assert analysis_repos["amule-head"]["group"] == "analysis"
+    assert analysis_repos["amule-head"]["checkout_mode"] == "branch"
 
     third_party_repos = {repo["name"]: repo for repo in manifest["third_party_repos"]}
     assert "emulebb-libtorrent" not in third_party_repos
@@ -139,7 +145,7 @@ def test_canonical_topology_excludes_retired_repository_names_and_paths() -> Non
 
     assert RETIRED_REPO_NAMES.isdisjoint(repo.name.casefold() for repo in repos)
     assert RETIRED_REPO_PATHS.isdisjoint(repo.relative_path.casefold() for repo in repos)
-    assert topology.analysis_repos == ()
+    assert tuple(repo.name for repo in topology.analysis_repos) == ("amule-head",)
     assert "analysis" not in topology.root_directories
     assert build_workspace_manifest(topology, "workspace")["workspace"]["optional_repos"] == {}
 
@@ -185,28 +191,38 @@ def test_public_presence_profile_is_explicit_and_manifested() -> None:
     assert role_repos["emulebb-org-profile"]["group"] == "public-presence"
 
 
-def test_canonical_topology_manages_current_compatibility_references() -> None:
+def test_canonical_topology_separates_frozen_and_head_compatibility_references() -> None:
     topology = canonical_topology()
     repos = {repo.name: repo for repo in topology.repos}
+    analysis_repos = {repo.name: repo for repo in topology.analysis_repos}
 
     assert "emuleai" not in repos
-    assert topology.analysis_repos == ()
-    amule = repos["amule"]
-    assert amule.url == "https://github.com/amule-org/amule.git"
-    assert amule.relative_path == "repos\\amule"
-    assert amule.branch == "master"
-    assert tuple((remote.name, remote.url) for remote in amule.additional_remotes) == (
+    amule_stable = repos["amule-stable"]
+    assert amule_stable.url == "https://github.com/amule-org/amule.git"
+    assert amule_stable.relative_path == "repos\\amule-stable"
+    assert amule_stable.branch == "3.0.1"
+    assert amule_stable.checkout_mode == "tag"
+    assert amule_stable.expected_revision == "02db0d7faecfc377694ff6242bc23346185990ed"
+    assert tuple((remote.name, remote.url) for remote in amule_stable.additional_remotes) == (
         ("emulebb", "https://github.com/emulebb/amule.git"),
     )
+    amule_head = analysis_repos["amule-head"]
+    assert amule_head.url == "https://github.com/amule-org/amule.git"
+    assert amule_head.relative_path == "repos\\amule"
+    assert amule_head.branch == "master"
+    assert amule_head.checkout_mode == "branch"
     stock = repos["emule-stock"]
     assert stock.url == "https://github.com/irwir/eMule.git"
     assert stock.relative_path == "repos\\emule-stock"
     assert stock.branch == "v0.72a"
     assert stock.compare_subdir == "srchybrid"
     role_manifest = build_repo_role_manifest(topology, "workspace")
-    amule_role = next(repo for repo in role_manifest["repos"] if repo["name"] == "amule")
-    assert amule_role["role"] == "upstream-parity-reference"
+    amule_role = next(repo for repo in role_manifest["repos"] if repo["name"] == "amule-stable")
+    assert amule_role["role"] == "frozen-parity-reference"
     assert amule_role["group"] == "product-family"
+    amule_head_role = next(repo for repo in role_manifest["analysis_repos"] if repo["name"] == "amule-head")
+    assert amule_head_role["role"] == "upstream-analysis-reference"
+    assert amule_head_role["group"] == "analysis"
 
 
 def test_canonical_topology_materializes_emulebb_rust_under_repos() -> None:
@@ -221,7 +237,7 @@ def test_canonical_topology_materializes_emulebb_rust_under_repos() -> None:
 def test_canonical_topology_does_not_materialize_retired_product_family_repos() -> None:
     repos = {repo.name: repo for repo in canonical_topology().repos}
 
-    assert "amule" in repos
+    assert "amule-stable" in repos
     assert "emule-stock" in repos
     assert "amutorrent" not in repos
     assert "p2p-overlord-agents" not in repos
@@ -233,7 +249,8 @@ def test_canonical_topology_does_not_materialize_retired_product_family_repos() 
 def test_compare_root_accepts_repo_targets_with_and_without_compare_subdirs(tmp_path: Path) -> None:
     topology = canonical_topology()
 
-    assert compare_root(tmp_path, topology, "amule") == tmp_path / "repos" / "amule" / "src"
+    assert compare_root(tmp_path, topology, "amule-stable") == tmp_path / "repos" / "amule-stable" / "src"
+    assert compare_root(tmp_path, topology, "amule-head") == tmp_path / "repos" / "amule" / "src"
     assert compare_root(tmp_path, topology, "emule-stock") == tmp_path / "repos" / "emule-stock" / "srchybrid"
     assert compare_root(tmp_path, topology, "ed2k-server") == tmp_path / "repos" / "ed2k-server"
     with pytest.raises(RuntimeError, match="Unknown compare target: mods-archive"):
@@ -258,7 +275,8 @@ def test_get_app_variant_error_lists_keys_paths_and_branches(tmp_path: Path) -> 
         tests_repo_root=tmp_path / "repos" / "emulebb-build-tests",
         tooling_repo_root=tmp_path / "repos" / "emulebb-tooling",
         ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
-        amule_repo_root=tmp_path / "repos" / "amule",
+        amule_stable_repo_root=tmp_path / "repos" / "amule-stable",
+        amule_head_repo_root=tmp_path / "repos" / "amule",
         emulebb_rust_repo_root=tmp_path / "repos" / "emulebb-rust",
         seed_repo_path=tmp_path / "repos" / "emulebb",
         seed_repo_branch="main",
@@ -295,7 +313,8 @@ def test_build_log_directory_uses_output_root_when_configured(tmp_path: Path) ->
         tests_repo_root=tmp_path / "repos" / "emulebb-build-tests",
         tooling_repo_root=tmp_path / "repos" / "emulebb-tooling",
         ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
-        amule_repo_root=tmp_path / "repos" / "amule",
+        amule_stable_repo_root=tmp_path / "repos" / "amule-stable",
+        amule_head_repo_root=tmp_path / "repos" / "amule",
         emulebb_rust_repo_root=tmp_path / "repos" / "emulebb-rust",
         seed_repo_path=tmp_path / "repos" / "emulebb",
         seed_repo_branch="main",
@@ -321,7 +340,8 @@ def test_generated_output_roots_require_output_root(tmp_path: Path) -> None:
         tests_repo_root=tmp_path / "repos" / "emulebb-build-tests",
         tooling_repo_root=tmp_path / "repos" / "emulebb-tooling",
         ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
-        amule_repo_root=tmp_path / "repos" / "amule",
+        amule_stable_repo_root=tmp_path / "repos" / "amule-stable",
+        amule_head_repo_root=tmp_path / "repos" / "amule",
         emulebb_rust_repo_root=tmp_path / "repos" / "emulebb-rust",
         seed_repo_path=tmp_path / "repos" / "emulebb",
         seed_repo_branch="main",
@@ -349,7 +369,8 @@ def test_layout_exposes_generated_output_subroots_and_child_environment(
         tests_repo_root=tmp_path / "repos" / "emulebb-build-tests",
         tooling_repo_root=tmp_path / "repos" / "emulebb-tooling",
         ed2k_server_repo_root=tmp_path / "repos" / "ed2k-server",
-        amule_repo_root=tmp_path / "repos" / "amule",
+        amule_stable_repo_root=tmp_path / "repos" / "amule-stable",
+        amule_head_repo_root=tmp_path / "repos" / "amule",
         emulebb_rust_repo_root=tmp_path / "repos" / "emulebb-rust",
         seed_repo_path=tmp_path / "repos" / "emulebb",
         seed_repo_branch="main",
