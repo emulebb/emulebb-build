@@ -34,9 +34,6 @@ from .process import find_tool, get_python_invocation, run_native
 
 MATERIALIZED_ARR_SERVICE_WAIT_SECONDS = 120.0
 MATERIALIZED_ARR_SERVICE_POLL_SECONDS = 1.0
-TRACING_HARNESS_EXE_NAMES = ("emule.exe", APP_EXE_NAME)
-MAIN_CLIENT2_SUITE_NAMES = frozenset({"deterministic-two-client-transfer"})
-
 # Native doctest suites run by ``test all`` across every certification tier. The
 # core three (parity, protocol-parity, web_api) carry the bulk of parity/REST
 # coverage; the rest are fast, seam-driven behavior suites that were previously
@@ -1253,66 +1250,28 @@ def _resolve_live_e2e_app_exe(
 def _resolve_live_e2e_client2_app_exe(
     layout: WorkspaceLayout,
     options: WorkspaceOptions,
-    live_options: LiveE2eOptions,
+    _live_options: LiveE2eOptions,
 ) -> Path | None:
-    """Returns the built client2 executable when staged under the output root."""
+    """Returns only the current built MFC diagnostics oracle for client2."""
 
-    if _live_e2e_prefers_main_client2(live_options):
-        candidate = _resolve_live_e2e_main_client2_app_exe(layout, options, live_options)
-        if candidate.is_file():
-            return candidate
-
-    try:
-        variant = layout.get_app_variant("tracing-harness")
-    except RuntimeError:
-        return None
-    for executable_name in TRACING_HARNESS_EXE_NAMES:
-        candidate = app_build_binary_path(
-            layout,
-            variant.name,
-            options.configuration,
-            options.platform,
-            executable_name=executable_name,
-        )
-        if candidate.is_file():
-            return candidate
-    return None
+    candidate = _resolve_live_e2e_mfc_oracle_app_exe(layout, options)
+    return candidate if candidate.is_file() else None
 
 
-def _resolve_live_e2e_main_client2_app_exe(
+def _resolve_live_e2e_mfc_oracle_app_exe(
     layout: WorkspaceLayout,
     options: WorkspaceOptions,
-    live_options: LiveE2eOptions,
 ) -> Path:
-    """Returns the native REST-capable main client preferred by deterministic transfer."""
+    """Returns the current output-root build of the MFC diagnostics oracle."""
 
-    arch = "arm64" if options.platform == "ARM64" else "x64"
-    package_candidate = (
-        layout.output_packages_root
-        / "build"
-        / f"emulebb-v{live_options.materialize_test_install_release_version}"
-        / arch
-        / "standard"
-        / "app"
-        / APP_EXE_NAME
-    )
-    if package_candidate.is_file():
-        return package_candidate
+    variant = layout.get_app_variant("main")
     return app_build_binary_path(
         layout,
-        layout.test_targets.test_run_variant,
+        variant.name,
         options.configuration,
         options.platform,
         executable_name=APP_EXE_NAME,
     )
-
-
-def _live_e2e_prefers_main_client2(options: LiveE2eOptions) -> bool:
-    """Reports whether the selected suite needs the native REST-capable main client."""
-
-    selected = set(options.suites)
-    selected.update(options.campaign_scenario_local_suites)
-    return any(suite_name in MAIN_CLIENT2_SUITE_NAMES for suite_name in selected)
 
 
 def _resolve_workspace_argument(layout: WorkspaceLayout, value: str) -> str:

@@ -292,7 +292,7 @@ def _live_e2e_options(function: F) -> F:
         type=click.Choice(["drive-letter"]),
         default="drive-letter",
         show_default=True,
-        help="Runtime root used by Godzilla VHD fixtures; mixed aMule/tracing-harness runs must stay on the short VHD drive-letter root.",
+        help="Runtime root used by Godzilla VHD fixtures; mixed aMule/MFC-oracle runs must stay on the short VHD drive-letter root.",
     )
     @click.option("--rest-cold-start-dump-stress-waves", default=4, show_default=True, type=int)
     @click.option("--rest-cold-start-dump-stress-searches-per-wave", default=12, show_default=True, type=int)

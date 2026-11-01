@@ -90,6 +90,10 @@ def test_workspace_manifest_uses_json_contract_shape() -> None:
         "path": "app\\emulebb-main",
         "branch": "main",
     }
+    assert [variant["name"] for variant in manifest["workspace"]["app_repo"]["variants"]] == [
+        "main",
+        "community",
+    ]
 
 
 def test_repo_role_manifest_describes_workspace_repositories() -> None:
@@ -109,6 +113,7 @@ def test_repo_role_manifest_describes_workspace_repositories() -> None:
         "active": True,
         "source_repo": "emulebb",
     }
+    assert [worktree["name"] for worktree in manifest["app_repo"]["worktrees"]] == ["main", "community"]
 
     repos = {repo["name"]: repo for repo in manifest["repos"]}
     assert repos["emulebb-build"]["role"] == "workspace-orchestration"

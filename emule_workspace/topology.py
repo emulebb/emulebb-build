@@ -397,11 +397,6 @@ def canonical_topology(*, profiles: Iterable[str] = ()) -> WorkspaceTopology:
                     branch="baseline/community-0.72a",
                     relative_path="workspaces\\workspace\\app\\emulebb-community-baseline",
                 ),
-                AppWorktree(
-                    name="tracing-harness",
-                    branch="tracing-harness/community-0.72a",
-                    relative_path="workspaces\\workspace\\app\\emulebb-community-tracing-harness",
-                ),
             ),
         ),
         repos=(
