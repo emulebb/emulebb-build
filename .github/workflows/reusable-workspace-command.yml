@@ -186,7 +186,7 @@ jobs:
 
       - name: Download input artifact
         if: ${{ inputs.input_artifact_name != '' }}
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.input_artifact_name }}
           path: ${{ format('{0}/{1}', steps.workspace-output.outputs.root, inputs.input_artifact_output_path) }}
