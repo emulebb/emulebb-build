@@ -105,7 +105,8 @@ def test_controlled_smoke_uses_reusable_core_offline_and_lan_suite() -> None:
     assert "python -m emule_workspace build app" in text
     assert "python -m emule_workspace package-release `\n          --workspace-root" not in text
     assert "python -m emule_workspace build app `\n          --workspace-root" not in text
-    assert "--variant tracing-harness" in text
+    assert "--variant main" in text
+    assert "tracing-harness" not in text
     assert "tmp\\ci\\live-wire-inputs.ci.json" in text
     assert "local_package_install" in text
     assert "Get-NetAdapter" in text

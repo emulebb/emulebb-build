@@ -1054,7 +1054,7 @@ def run_windows_vm_profile_smoke(
         run_report_dir,
         host_contracts,
     )
-    local_swarm_client2_app_exe = local_swarm_tracing_harness_app_exe(layout) if is_local_swarm_profile else None
+    local_swarm_client2_app_exe = local_swarm_mfc_oracle_app_exe(layout) if is_local_swarm_profile else None
     local_swarm_amule_daemon_exe, local_swarm_amule_control_exe = (
         local_swarm_amule_exes(layout)
         if is_local_swarm_profile
@@ -1150,15 +1150,20 @@ def run_windows_vm_profile_smoke(
     }
 
 
-def local_swarm_tracing_harness_app_exe(layout: WorkspaceLayout) -> Path | None:
-    """Returns the built tracing-harness executable staged into reusable VM swarm payloads."""
+def local_swarm_mfc_oracle_app_exe(layout: WorkspaceLayout) -> Path | None:
+    """Returns the current output-root MFC diagnostics oracle for VM swarm payloads."""
 
-    root = layout.workspace_root / "app" / "emulebb-community-tracing-harness" / "srchybrid" / "x64" / "Release"
-    for name in ("emule.exe", "emulebb.exe"):
-        candidate = root / name
-        if candidate.is_file():
-            return candidate
-    return None
+    candidate = (
+        layout.output_build_root
+        / "app"
+        / "main"
+        / "x64"
+        / "Release"
+        / "standard"
+        / "bin"
+        / "emulebb.exe"
+    )
+    return candidate if candidate.is_file() else None
 
 
 def local_swarm_rest_source_contract_paths(layout: WorkspaceLayout) -> tuple[Path, ...]:

@@ -42,7 +42,6 @@ In practice this repo needs:
 - `repos\third_party\...`
 - `workspaces\workspace\app\emulebb-main`
 - `workspaces\workspace\app\emulebb-community-baseline`
-- `workspaces\workspace\app\emulebb-community-tracing-harness`
 
 The default `core` profile includes the MFC diagnostic/release worktrees, their
 third-party dependencies, the frozen stock 0.72 reference, frozen aMule 3.0.1
@@ -66,7 +65,6 @@ descriptive, but they are not CLI variant keys:
 | --- | --- | --- |
 | `main` | `workspaces\workspace\app\emulebb-main` | `main` |
 | `community` | `workspaces\workspace\app\emulebb-community-baseline` | `baseline/community-0.72a` |
-| `tracing-harness` | `workspaces\workspace\app\emulebb-community-tracing-harness` | `tracing-harness/community-0.72a` |
 
 Branch roles, release intent, and baseline rules are owned by
 `EMULEBB_WORKSPACE_ROOT\repos\emulebb-tooling\docs\WORKSPACE-POLICY.md`.

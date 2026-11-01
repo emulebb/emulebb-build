@@ -540,7 +540,7 @@ def test_campaign_execute_dispatches_multi_client_matrix_script(
                 "python scripts/multi-client-p2p-matrix.py --lan-bind-addr ${X_LOCAL_IP} "
                 "--app-exe ${EMULEBB_WORKSPACE_OUTPUT_ROOT}/builds/app/main/x64/Release/standard/bin/emulebb.exe "
                 "--client2-app-exe "
-                "${EMULEBB_WORKSPACE_OUTPUT_ROOT}/builds/app/tracing-harness/x64/Release/standard/bin/emule.exe "
+                "${EMULEBB_WORKSPACE_OUTPUT_ROOT}/builds/app/main/x64/Release/standard/bin/emulebb.exe "
                 "--require-scenario cl-emulebb-001-cl-emulebb-rust-005-bidirectional-exchange"
             ),
             "blocking": True,
@@ -596,12 +596,12 @@ def test_campaign_execute_dispatches_multi_client_matrix_script(
                     layout.output_root
                     / "builds"
                     / "app"
-                    / "tracing-harness"
+                    / "main"
                     / "x64"
                     / "Release"
                     / "standard"
                     / "bin"
-                    / "emule.exe"
+                    / "emulebb.exe"
                 ),
                 "--require-scenario",
                 "cl-emulebb-001-cl-emulebb-rust-005-bidirectional-exchange",

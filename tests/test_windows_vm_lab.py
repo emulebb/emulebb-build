@@ -18,6 +18,7 @@ def _layout(tmp_path: Path) -> SimpleNamespace:
         emule_workspace_root=tmp_path,
         workspace_root=tmp_path / "workspaces" / "workspace",
         output_artifacts_root=output_root / "artifacts",
+        output_build_root=output_root / "builds",
         output_release_root=output_root / "release",
         output_reports_root=output_root / "reports",
         output_tools_root=output_root / "tools",
@@ -906,19 +907,20 @@ def test_windows_vm_profile_smoke_payload_stages_local_swarm_harness(tmp_path: P
     _write_config(config_path)
     config = windows_vm_lab.load_vm_lab_config(layout, config_file=str(config_path))
     captured: list[str] = []
-    tracing_harness_exe = (
-        layout.workspace_root
+    mfc_oracle_exe = (
+        layout.output_build_root
         / "app"
-        / "emulebb-community-tracing-harness"
-        / "srchybrid"
+        / "main"
         / "x64"
         / "Release"
-        / "emule.exe"
+        / "standard"
+        / "bin"
+        / "emulebb.exe"
     )
     amule_daemon_exe = layout.output_tools_root / "amule" / "bin" / "amuled.exe"
     amule_control_exe = layout.output_tools_root / "amule" / "bin" / "amulecmd.exe"
     release_asset_paths = windows_vm_lab._local_swarm_release_asset_paths(layout, "0.7.3-rc.2", "x64")
-    for path in (tracing_harness_exe, amule_daemon_exe, amule_control_exe):
+    for path in (mfc_oracle_exe, amule_daemon_exe, amule_control_exe):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
     (layout.tests_repo_root / "scripts").mkdir(parents=True, exist_ok=True)
@@ -976,7 +978,7 @@ def test_windows_vm_profile_smoke_payload_stages_local_swarm_harness(tmp_path: P
     assert "192.168.251.10" in captured[0]
     assert "192.168.251.1" in captured[0]
     assert "1.1.1.1" in captured[0]
-    assert "emule.exe" in captured[0]
+    assert "emulebb.exe" in captured[0]
     assert "amuled.exe" in captured[0]
     assert "amulecmd.exe" in captured[0]
     assert "emulebb-0.7.3-rc.2-amutorrent-x64.zip" not in captured[0]
@@ -1168,7 +1170,7 @@ def test_local_swarm_harness_payload_archive_is_curated(tmp_path: Path) -> None:
 def test_local_swarm_companion_exes_are_optional(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
 
-    assert windows_vm_lab.local_swarm_tracing_harness_app_exe(layout) is None
+    assert windows_vm_lab.local_swarm_mfc_oracle_app_exe(layout) is None
     assert windows_vm_lab.local_swarm_amule_exes(layout) == (None, None)
 
 

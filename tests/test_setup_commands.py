@@ -16,13 +16,10 @@ def test_compare_presets_separate_stable_amule_head_analysis_and_stock(tmp_path:
     assert preset_keys == {
         "amule-head-vs-local-072-community",
         "amule-head-vs-local-072-main",
-        "amule-head-vs-local-072-tracing-harness",
         "amule-stable-vs-local-072-community",
         "amule-stable-vs-local-072-main",
-        "amule-stable-vs-local-072-tracing-harness",
         "emule-stock-vs-local-072-community",
         "emule-stock-vs-local-072-main",
-        "emule-stock-vs-local-072-tracing-harness",
     }
 
 
