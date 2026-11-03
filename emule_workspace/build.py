@@ -293,10 +293,11 @@ def build_ed2k_server_service(
     source_binary = release_root / "ed2k-server"
     staged_root = staged_ed2k_server_root(session.layout)
     staged_binary = staged_root / "bin" / "ed2k-server"
-    if clean:
+    if clean and not use_wsl:
         remove_tree_if_present(staged_root)
         source_binary.unlink(missing_ok=True)
-    staged_binary.parent.mkdir(parents=True, exist_ok=True)
+    if not use_wsl:
+        staged_binary.parent.mkdir(parents=True, exist_ok=True)
 
     cargo_arguments = [
         "build",
@@ -325,13 +326,27 @@ def build_ed2k_server_service(
         wsl_target = wsl_path(target_root)
         wsl_repo = wsl_path(repo_root)
         wsl_source_binary = wsl_path(source_binary)
+        wsl_staged_root = wsl_path(staged_root)
         wsl_staged_binary = wsl_path(staged_binary)
+        wsl_staged_parent = wsl_staged_binary.rpartition("/")[0]
         translated_paths = (
             (str(session.layout.emule_workspace_root), wsl_workspace),
             (str(session.layout.output_root), wsl_output),
             (str(target_root), wsl_target),
             (str(repo_root), wsl_repo),
         )
+        staging_commands = []
+        if clean:
+            # WHY: Windows deletion followed immediately by a WSL move can leave
+            # DrvFS observing the removed destination as a directory. Keep the
+            # clean, build, and stage operations in one filesystem view.
+            staging_commands.extend(
+                (
+                    f"rm -rf -- {shlex.quote(wsl_staged_root)}",
+                    f"rm -f -- {shlex.quote(wsl_source_binary)}",
+                )
+            )
+        staging_commands.append(f"mkdir -p -- {shlex.quote(wsl_staged_parent)}")
         command = [
             "wsl.exe",
             "--",
@@ -344,6 +359,7 @@ def build_ed2k_server_service(
                     f"export CARGO_TARGET_DIR={shlex.quote(wsl_target)}",
                     f"cd {shlex.quote(wsl_repo)}",
                     "exec 1>&2",
+                    *staging_commands,
                     "cargo --version",
                     "rustc --version",
                     f"cargo {shlex.join(cargo_arguments)}",

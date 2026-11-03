@@ -472,6 +472,7 @@ def test_build_ed2k_server_uses_wsl_and_stages_only_output_root_binary(
         built.mkdir(parents=True)
         (built / "ed2k-server").write_bytes(b"linux-server")
         staged = build.staged_ed2k_server_root(layout) / "bin" / "ed2k-server"
+        staged.parent.mkdir(parents=True, exist_ok=True)
         (built / "ed2k-server").replace(staged)
         return subprocess.CompletedProcess(command, 0)
 
@@ -493,6 +494,9 @@ def test_build_ed2k_server_uses_wsl_and_stages_only_output_root_binary(
     command = commands[0]
     assert command[0:4] == ["wsl.exe", "--", "bash", "-lc"]
     assert "export CARGO_TARGET_DIR=/mnt/c/rust/target-wsl" in command[-1]
+    assert "rm -rf -- /mnt/c/tools/ed2k-server" in command[-1]
+    assert "rm -f -- /mnt/c/release/ed2k-server" in command[-1]
+    assert "mkdir -p -- /mnt/c/bin" in command[-1]
     assert "cargo build --locked --release --target x86_64-unknown-linux-gnu --jobs 1" in command[-1]
     assert command[-1].endswith(
         "if [ /mnt/c/release/ed2k-server -ef /mnt/c/bin/ed2k-server ]; "
