@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -178,10 +179,8 @@ def _path_anomaly_candidates(layout: WorkspaceLayout) -> list[CleanupCandidate]:
             anomalous_name = entry.name != entry.name.rstrip(" .")
             try:
                 is_directory = entry.is_dir(follow_symlinks=False)
-                is_file = entry.is_file(follow_symlinks=False)
             except OSError:
                 is_directory = False
-                is_file = False
             if anomalous_name:
                 kind = "directory" if is_directory else "file"
                 candidates.append(_path_anomaly_candidate(path, kind))
@@ -338,9 +337,13 @@ def _direct_heavy_file_candidates(
 ) -> list[CleanupCandidate]:
     candidates: list[CleanupCandidate] = []
     for path in scope.iterdir() if scope.is_dir() else ():
-        if not path.is_file():
+        if path.suffix.lower() not in HEAVY_SUFFIXES:
             continue
-        if path.stat().st_mtime >= cutoff.timestamp() or path.suffix.lower() not in HEAVY_SUFFIXES:
+        try:
+            path_stat = path.lstat()
+        except OSError:
+            continue
+        if stat.S_ISDIR(path_stat.st_mode) or path_stat.st_mtime >= cutoff.timestamp():
             continue
         candidates.append(_file_candidate(path, category, f"heavy {reason_label} payload older than {retention_hours:g}h"))
     return candidates
@@ -741,13 +744,26 @@ def _directory_candidate(path: Path, category: str, reason: str) -> CleanupCandi
     stack = [path]
     while stack:
         current = stack.pop()
-        for child in current.iterdir():
-            if child.is_dir():
-                stack.append(child)
-                continue
-            if child.is_file():
-                total += child.stat().st_size
-                file_count += 1
+        try:
+            entries = os.scandir(current)
+        except OSError:
+            estimated = True
+            continue
+        with entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                        continue
+                    # WHY: extracted Linux/AppImage payloads can contain Windows
+                    # reparse points whose targets cannot be followed. Cleanup owns
+                    # the containing generated tree, so size the entry itself rather
+                    # than aborting the whole plan while resolving its target.
+                    total += entry.stat(follow_symlinks=False).st_size
+                    file_count += 1
+                except OSError:
+                    estimated = True
+                    continue
                 if file_count >= MAX_DIRECTORY_SIZE_SCAN_FILES:
                     estimated = True
                     stack.clear()
@@ -764,7 +780,7 @@ def _directory_candidate(path: Path, category: str, reason: str) -> CleanupCandi
 
 
 def _file_candidate(path: Path, category: str, reason: str) -> CleanupCandidate:
-    return CleanupCandidate(path=path, kind="file", category=category, reason=reason, bytes=path.stat().st_size, files=1)
+    return CleanupCandidate(path=path, kind="file", category=category, reason=reason, bytes=path.lstat().st_size, files=1)
 
 
 def _delete_candidate(candidate: CleanupCandidate) -> None:
