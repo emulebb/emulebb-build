@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from emule_workspace import cleanup
 from emule_workspace.cleanup import plan_cleanup
@@ -218,6 +221,45 @@ def test_delete_candidate_uses_windows_long_path_prefix(tmp_path: Path, monkeypa
     assert removed_paths
     assert removed_paths[0].startswith("\\\\?\\")
     assert "shared-rest-exact-names. " in removed_paths[0]
+
+
+def test_directory_candidate_does_not_follow_broken_link(tmp_path: Path) -> None:
+    candidate_root = tmp_path / "generated-report"
+    regular_file = write_file(candidate_root / "result.json", 10)
+    broken_link = candidate_root / "payload-link"
+    try:
+        os.symlink(candidate_root / "missing-payload", broken_link)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+
+    candidate = cleanup._directory_candidate(candidate_root, "report-run", "old generated report")
+
+    assert candidate.path == candidate_root
+    assert candidate.files == 2
+    assert candidate.bytes >= regular_file.stat().st_size
+
+
+def test_heavy_file_scan_ignores_non_heavy_entry_before_resolving_it(tmp_path: Path, monkeypatch) -> None:
+    scope = tmp_path / "generated-report"
+    inaccessible_entry = write_file(scope / ".DirIcon", 0)
+    original_is_file = Path.is_file
+
+    def fail_for_inaccessible_entry(path: Path) -> bool:
+        if path == inaccessible_entry:
+            raise OSError("reparse target cannot be accessed")
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", fail_for_inaccessible_entry)
+
+    candidates = cleanup._direct_heavy_file_candidates(
+        scope,
+        datetime.max,
+        24.0,
+        category="report-payload",
+        reason_label="report",
+    )
+
+    assert candidates == []
 
 
 def write_file(path: Path, size: int) -> Path:
