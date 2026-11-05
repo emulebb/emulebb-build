@@ -52,7 +52,7 @@ def workspace_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CARGO_TARGET_DIR", str(cargo_target_dir))
 
 
-def test_protocol_parity_runs_surface_goldens_then_live_diff(tmp_path: Path, monkeypatch) -> None:
+def test_protocol_parity_runs_surface_catalog_then_live_diff(tmp_path: Path, monkeypatch) -> None:
     commands: list[list[object]] = []
     labels: list[str] = []
 
@@ -71,11 +71,11 @@ def test_protocol_parity_runs_surface_goldens_then_live_diff(tmp_path: Path, mon
 
     assert labels == [
         "protocol surface diff main vs community",
-        "protocol oracle golden validation",
+        "protocol parity catalog validation",
         "protocol parity live diff main vs community",
     ]
     assert any(str(part).endswith("run-protocol-surface-diff.py") for part in commands[0])
-    assert any(str(part).endswith("validate-protocol-goldens.py") for part in commands[1])
+    assert any(str(part).endswith("validate-protocol-catalog.py") for part in commands[1])
     assert any(str(part).endswith("run-live-diff.py") for part in commands[2])
     assert "--suite-name" in commands[2]
     assert "protocol-parity" in commands[2]

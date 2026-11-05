@@ -281,12 +281,12 @@ def invoke_protocol_parity(
     run_native(
         python.command(
             [
-                layout.tests_repo_root / "scripts" / "validate-protocol-goldens.py",
+                layout.tests_repo_root / "scripts" / "validate-protocol-catalog.py",
                 "--test-repo-root",
                 layout.tests_repo_root,
             ]
         ),
-        label="protocol oracle golden validation",
+        label="protocol parity catalog validation",
         cwd=layout.emule_workspace_root,
         env=_workspace_env(layout),
     )
