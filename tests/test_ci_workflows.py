@@ -43,14 +43,14 @@ def test_reusable_workspace_command_owns_materialized_ci_setup() -> None:
     assert "materialize --workspace-root" not in text
     assert "setup_wsl:" in text
     assert "if: ${{ inputs.setup_wsl }}" in text
-    assert "Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7.0.0" in text
+    assert "Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0" in text
     assert "distribution: Debian-13" in text
     assert "wsl-version: 1" in text
     assert "additional-packages: build-essential cargo rustc" in text
     assert "input_artifact_name:" in text
     assert "input_artifact_output_path:" in text
     assert "if: ${{ inputs.input_artifact_name != '' }}" in text
-    assert "uses: actions/download-artifact@v7" in text
+    assert "uses: actions/download-artifact@v8" in text
     assert "id: workspace-output" in text
     assert '"root=$outputRoot" | Add-Content -LiteralPath $env:GITHUB_OUTPUT' in text
     assert "steps.workspace-output.outputs.root, inputs.input_artifact_output_path" in text
