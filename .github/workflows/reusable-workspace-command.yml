@@ -178,7 +178,7 @@ jobs:
 
       - name: Set up WSL runtime
         if: ${{ inputs.setup_wsl }}
-        uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7.0.0
+        uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
         with:
           distribution: Debian-13
           wsl-version: 1
@@ -186,7 +186,7 @@ jobs:
 
       - name: Download input artifact
         if: ${{ inputs.input_artifact_name != '' }}
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.input_artifact_name }}
           path: ${{ format('{0}/{1}', steps.workspace-output.outputs.root, inputs.input_artifact_output_path) }}
