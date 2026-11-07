@@ -1576,14 +1576,16 @@ def smoke_emulebb_rust_linux(*, archive: Path, libc: str, architecture: str,
 @click.option("--webui-dist", type=click.Path(path_type=Path))
 @click.option("--release-version")
 @click.option("--smoke", is_flag=True, help="Run the shared non-root runtime and local-transfer gate.")
+@click.option("--test-scope", type=click.Choice(["portable", "full"]), default="portable", show_default=True,
+              help="Full compiles every test; native CPUs execute the workspace, cross CPUs execute portable libraries.")
 def package_emulebb_rust_linux(*, libc: str, architecture: str, webui_dist: Path | None,
-                              release_version: str | None, smoke: bool, workspace_options: WorkspaceOptions, layout) -> None:
+                              release_version: str | None, smoke: bool, test_scope: str, workspace_options: WorkspaceOptions, layout) -> None:
     """Build a verified native GNU/musl archive through Linux/WSL Docker."""
     from .linux_containers import build_linux_artifacts
 
     def package(**kwargs: Any) -> None:
         build_linux_artifacts(kwargs["layout"], libc=libc, architecture=architecture,
-                              webui_dist=webui_dist, release_version=release_version, smoke=smoke)
+                              webui_dist=webui_dist, release_version=release_version, smoke=smoke, test_scope=test_scope)
 
     _locked("package emulebb-rust linux", package)(workspace_options=workspace_options, layout=layout)
 
@@ -1594,7 +1596,8 @@ def package_emulebb_rust_linux(*, libc: str, architecture: str, webui_dist: Path
 @click.option("--webui-dist", type=click.Path(path_type=Path))
 @click.option("--release-version", required=True)
 @click.option("--smoke", is_flag=True)
-def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: Path | None, release_version: str, smoke: bool) -> None:
+@click.option("--test-scope", type=click.Choice(["portable", "full"]), default="portable", show_default=True)
+def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: Path | None, release_version: str, smoke: bool, test_scope: str) -> None:
     """Use the local Linux container recipe on a minimal native CI checkout."""
     from .linux_containers import build_linux_artifacts
     required = [WORKSPACE_OUTPUT_ROOT_ENV, "EMULEBB_RUST_REPO", "EMULEBB_TOOLING_REPO", "MINIUPNP_ROOT", "PCPNATPMP_ROOT"]
@@ -1610,7 +1613,7 @@ def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: P
         layout = replace(layout, tests_repo_root=Path(os.environ["EMULEBB_BUILD_TESTS_REPO"]).resolve())
     try:
         build_linux_artifacts(layout, libc=libc, architecture=architecture,
-                              webui_dist=webui_dist, release_version=release_version, smoke=smoke)
+                              webui_dist=webui_dist, release_version=release_version, smoke=smoke, test_scope=test_scope)
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 

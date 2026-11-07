@@ -10,6 +10,17 @@ from emule_workspace.linux_containers import validate_elf_audit
 from emule_workspace.linux_containers import build_configuration, RUST_IMAGES, MUSL_CROSS_IMAGE
 from emule_workspace.linux_containers import run_owned_container
 from emule_workspace.linux_containers import _package_gnu_deb
+from emule_workspace.linux_containers import linux_test_plan
+
+
+def test_full_native_suite_executes_workspace_and_cross_suite_compiles_it():
+    assert linux_test_plan("full", cross=False) == [("workspace-tests", ["--workspace"])]
+    cross = linux_test_plan("full", cross=True)
+    assert cross[0] == ("all-tests-build", ["--workspace", "--no-run"])
+    assert [label for label, _ in cross[1:]] == ["native-library-tests", "durability-tests"]
+    assert linux_test_plan("portable", cross=False) == cross[1:]
+    with pytest.raises(ValueError):
+        linux_test_plan("skip", cross=False)
 
 
 def test_timed_out_wsl_job_removes_only_its_owned_container(tmp_path, monkeypatch):
