@@ -26,6 +26,7 @@ SHARED_HOOK_REPO_NAMES = frozenset(
         "emulebb-build",
         "emulebb-build-tests",
         "emulebb-tooling",
+        "emulebb-rust",
         "ed2k-server",
     }
 )

@@ -52,7 +52,8 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
     if not policy.is_file():
         policy = tooling / "manifests" / "privacy-guard" / "policy.v1.json"
     commands.append((repo, [py, str(tooling / "ci" / "guard-tracked-files.py"),
-                            "--repo-root", str(repo), "--policy-path", str(policy)]))
+                            "--repo-root", str(repo), "--policy-path", str(policy),
+                            "--paths-file", str(output / "tmp" / "local-check" / f"{repo.name}-{stage}-paths.json")]))
     commands.append((repo, [py, str(tooling / "ci" / "check-basic-hygiene.py"),
                             "--repo-root", str(repo)]))
     if any(p.startswith(".github/workflows/") for p in paths):
@@ -83,6 +84,8 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
         commands.append((repo, [py, "-m", "pytest", *sorted(tests), "--basetemp", str(output / "tmp" / "local-check-pytest")]))
     if repo.name == "emulebb-tooling":
         if stage == "push":
+            if implementation:
+                commands.append((repo, [py, "-m", "unittest", "discover", "-s", "ci/tests"]))
             if any(p.startswith("docs/") or p in {"mkdocs.yml", "requirements-docs.txt"} for p in paths):
                 commands.append((repo, [py, "scripts/docs-publish-check.py"]))
     return commands
@@ -112,6 +115,7 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
     child_env = os.environ.copy()
     scratch = output / "tmp" / "local-check"
     scratch.mkdir(parents=True, exist_ok=True)
+    (scratch / f"{repo.name}-{stage}-paths.json").write_text(json.dumps(sorted(paths)), encoding="utf-8")
     child_env.update(TEMP=str(scratch), TMP=str(scratch), TMPDIR=str(scratch),
                      PYTHONPYCACHEPREFIX=str(output / "cache" / "pycache"),
                      GOPATH=str(output / "cache" / "go"), GOCACHE=str(output / "cache" / "go-build"))
