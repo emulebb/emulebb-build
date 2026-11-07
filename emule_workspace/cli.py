@@ -1553,6 +1553,20 @@ def package_emulebb_rust(
     )(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("linux-containers")
+@_common_options
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+@click.option("--setup-arm64", is_flag=True, help="Register pinned ARM64 QEMU in the Docker host.")
+def linux_containers(*, wsl_distro: str, setup_arm64: bool, workspace_options: WorkspaceOptions, layout) -> None:
+    """Verify local WSL/Linux Docker and actual ARM64 execution."""
+    from .linux_containers import LinuxDocker
+
+    def verify(**kwargs: Any) -> None:
+        LinuxDocker(wsl_distro).preflight(kwargs["layout"].output_root, setup_arm64=setup_arm64)
+
+    _locked("linux containers", verify)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("package-emulebb-rust-image-local")
 @_common_options
 @click.option("--release-version", required=True)
