@@ -8,7 +8,7 @@ RUN if command -v apk >/dev/null; then \
         python3 binutils cmake perl zstd ca-certificates tzdata && rm -rf /var/lib/apt/lists/*; \
     fi
 RUN if [ -n "$CROSS_TARGET" ]; then \
-      rustup toolchain install 1.98.1 --profile minimal --target "$CROSS_TARGET"; \
+      rustup toolchain install 1.98.1 --profile minimal --no-self-update --target "$CROSS_TARGET"; \
       if [ "$CROSS_TARGET" = aarch64-unknown-linux-gnu ]; then \
         apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
           && rm -rf /var/lib/apt/lists/*; \
