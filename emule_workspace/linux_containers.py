@@ -20,6 +20,7 @@ RUST_IMAGES = {
     "musl": "docker.io/library/rust:1.98.1-alpine3.24@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f",
 }
 MUSL_CROSS_IMAGE = "ghcr.io/rust-cross/rust-musl-cross:aarch64-musl@sha256:02e790506c5f15a533bc05b3af8719b16a8a2314480f6f0fdc0166432035d9b4"
+RUNTIME_IMAGES = {"musl": ALPINE_IMAGE, "gnu": "docker.io/library/ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c"}
 
 
 def build_configuration(libc: str, architecture: str, host: str) -> tuple[str, str, bool]:
@@ -126,15 +127,82 @@ class LinuxDocker:
 
 
 def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: Path | None = None,
-                          release_version: str | None = None) -> Path:
+                          release_version: str | None = None, smoke: bool = False) -> Path:
     """@brief Build and inventory one GNU/musl package using pinned Docker inputs.
 
     Container paths translate valid operator roots; only generated output is
     writable. ARM64 uses the same recipe under QEMU locally and natively in CI.
     """
     with LinuxDocker() as docker:
-        return _build_linux_artifacts(layout, docker, libc=libc, architecture=architecture,
-                                      webui_dist=webui_dist, release_version=release_version)
+        archive = _build_linux_artifacts(layout, docker, libc=libc, architecture=architecture,
+                                         webui_dist=webui_dist, release_version=release_version)
+    if smoke:
+        smoke_linux_archive(layout, archive=archive, libc=libc, architecture=architecture)
+    return archive
+
+
+def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) -> Path:
+    """@brief Run the shared two-peer lifecycle harness as a non-root container user."""
+    if libc not in RUNTIME_IMAGES or architecture not in {"amd64", "arm64"}:
+        raise ValueError("Expected GNU/musl and AMD64/ARM64")
+    output = layout.output_root.resolve()
+    archive = archive.resolve()
+    if not archive.is_relative_to(output) or not archive.is_file():
+        raise RuntimeError("Runtime tests require an archive below the operator output root")
+    manifest = json.loads(archive.with_name(archive.name + ".manifest.json").read_text(encoding="utf-8"))
+    prefix = "emulebb-rust-v"
+    suffix = f"-linux-{architecture}-{libc}.tar.zst"
+    if not archive.name.startswith(prefix) or not archive.name.endswith(suffix):
+        raise RuntimeError("Runtime archive name does not match the selected architecture/libc")
+    version = archive.name[len(prefix):-len(suffix)]
+    source_sha = git_output(layout.emulebb_rust_repo_root, "rev-parse", "HEAD").strip()
+    if (git_output(layout.emulebb_rust_repo_root, "status", "--porcelain").strip()
+            or git_output(layout.tests_repo_root, "status", "--porcelain").strip()):
+        raise RuntimeError("Runtime validation requires clean Rust and harness sources")
+    if manifest.get("sourceDirty") is not False or manifest.get("source", {}).get("emulebbRust", {}).get("commit") != source_sha:
+        raise RuntimeError("Runtime archive must match the clean current Rust revision")
+    context = Path(__file__).parent / "release_assets/rust_linux"
+    runtime = f"local/emulebb-rust-runtime:{libc}-{architecture}"
+    reports = output / "reports/rust-linux" / f"{libc}-{architecture}" / uuid4().hex
+    reports.mkdir(parents=True)
+    (reports / "tmp").mkdir()
+    with LinuxDocker() as docker:
+        docker.run("build", "--platform", f"linux/{architecture}", "--build-arg", f"BASE_IMAGE={RUNTIME_IMAGES[libc]}",
+                   "--file", docker.path(context) + "/Dockerfile.runtime", "--tag", runtime, docker.path(context))
+        mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
+                  "--mount", f"type=bind,source={docker.path(layout.emulebb_rust_repo_root)},target=/workspace/repos/emulebb-rust,readonly",
+                  "--mount", f"type=bind,source={docker.path(layout.tests_repo_root)},target=/workspace/repos/emulebb-build-tests,readonly"]
+        relative = reports.relative_to(output).as_posix()
+        docker.run("run", "--rm", "--platform", f"linux/{architecture}", *mounts, runtime,
+                   "chmod", "0777", f"/output/{relative}", f"/output/{relative}/tmp")
+        uid = subprocess.check_output([*docker.prefix, "id", "-u"], text=True).strip()
+        gid = subprocess.check_output([*docker.prefix, "id", "-g"], text=True).strip()
+        user = f"{uid}:{gid}" if uid != "0" else "65534:65534"
+        runtime_uid, runtime_gid = user.split(":")
+        # WHY: DrvFS rejects RENAME_NOREPLACE, while native Linux filesystems
+        # support the publication invariant. Keep disposable profiles on Linux
+        # tmpfs inside the output namespace and retain receipts outside it.
+        scratch_mount = f"/output/{relative}/tmp:rw,exec,nosuid,nodev,size=8g,uid={runtime_uid},gid={runtime_gid},mode=0700"
+        command = ["--rm", "--platform", f"linux/{architecture}", "--user", user,
+                   "--tmpfs", scratch_mount,
+                   "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "bridge", *mounts,
+                   "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                   "--env", f"TMPDIR=/output/{relative}/tmp", runtime,
+                   "python3", "-B", "/workspace/repos/emulebb-build-tests/scripts/smoke-rust-release-package.py",
+                   "--release-dir", "/output/" + archive.parent.relative_to(output).as_posix(),
+                   "--release-version", version, "--target-os", "linux", "--platform", "x64" if architecture == "amd64" else "ARM64",
+                   "--linux-libc", libc, "--expected-source-sha", source_sha,
+                   "--rust-repo", "/workspace/repos/emulebb-rust", "--report-path", f"/output/{relative}/package-smoke.json"]
+        run_owned_container(docker, command, reports / "runtime.log", timeout=600)
+        host_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True).stdout.strip()
+        (reports / "runtime-inputs.json").write_text(json.dumps({
+            "runtimeBase": RUNTIME_IMAGES[libc], "filesystem": "tmpfs", "user": user,
+            "execution": "native" if host_arch == architecture else "qemu",
+            "sourceSha": source_sha, "archiveSha256": manifest["sha256"],
+            "harnessSha": git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip(),
+        }, indent=2) + "\n", encoding="utf-8")
+    print(f"Non-root Linux {architecture}/{libc} lifecycle passed: {reports / 'package-smoke.json'}")
+    return reports / "package-smoke.json"
 
 
 def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architecture: str,
@@ -183,6 +251,8 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                    "--env", "PCPNATPMP_ROOT=/native/pcpnatpmp", "--env", "CARGO_BUILD_JOBS=4"]
     source_revision = release._git_value(rust, "rev-parse", "HEAD")
     hosted = os.environ.get("GITHUB_ACTIONS") == "true"
+    if hosted:
+        release._assert_clean_emulebb_rust_package_inputs(layout, rust)
     channel = os.environ.get("RELEASE_CHANNEL", "candidate") if hosted else "development"
     environment.extend(["--env", f"EMULEBB_RELEASE_VERSION={version}",
                         "--env", f"EMULEBB_SOURCE_REVISION={source_revision}",
