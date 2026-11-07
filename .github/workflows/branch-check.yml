@@ -9,6 +9,6 @@ concurrency:
   cancel-in-progress: true
 jobs:
   check:
-    uses: emulebb/emulebb-tooling/.github/workflows/branch-check.yml@283eabd95e2a1d8176d526ea559ff05c2114f626
+    uses: emulebb/emulebb-tooling/.github/workflows/branch-check.yml@bb2d4d185836d86cf107b23b93a91312a7794410
     with:
-      tooling_ref: 283eabd95e2a1d8176d526ea559ff05c2114f626
+      tooling_ref: bb2d4d185836d86cf107b23b93a91312a7794410

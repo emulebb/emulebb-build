@@ -79,6 +79,17 @@ def test_commit_never_runs_heavy_checks(tmp_path):
     assert not any(command[-1] == "ci" or "deny" in command for _, command in plan)
 
 
+def test_topology_routes_to_its_existing_test_owners(tmp_path):
+    repo = tmp_path / "repos" / "emulebb-build"
+    plan = check_plan(repo, {"emule_workspace/topology.py"}, "push", tmp_path, tmp_path / "out")
+    command = next(command for _, command in plan if "pytest" in command)
+    assert "tests/test_layout.py" in command
+    assert "tests/test_materialize.py" in command
+    assert "tests/test_validation.py" in command
+    assert "tests/test_setup_commands.py" in command
+    assert "tests" not in command
+
+
 def test_failure_blocks_later_checks_and_writes_evidence(tmp_path, monkeypatch):
     repo = tmp_path / "repos" / "emulebb-build"
     repo.mkdir(parents=True)
