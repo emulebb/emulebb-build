@@ -1553,6 +1553,46 @@ def package_emulebb_rust(
     )(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("package-emulebb-rust-linux")
+@_common_options
+@click.option("--libc", type=click.Choice(["gnu", "musl"]), required=True)
+@click.option("--architecture", type=click.Choice(["amd64", "arm64"]), required=True)
+@click.option("--webui-dist", type=click.Path(path_type=Path))
+@click.option("--release-version")
+def package_emulebb_rust_linux(*, libc: str, architecture: str, webui_dist: Path | None,
+                              release_version: str | None, workspace_options: WorkspaceOptions, layout) -> None:
+    """Build a verified native GNU/musl archive through Linux/WSL Docker."""
+    from .linux_containers import build_linux_artifacts
+
+    def package(**kwargs: Any) -> None:
+        build_linux_artifacts(kwargs["layout"], libc=libc, architecture=architecture,
+                              webui_dist=webui_dist, release_version=release_version)
+
+    _locked("package emulebb-rust linux", package)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("package-emulebb-rust-linux-ci")
+@click.option("--libc", type=click.Choice(["gnu", "musl"]), required=True)
+@click.option("--architecture", type=click.Choice(["amd64", "arm64"]), required=True)
+@click.option("--webui-dist", type=click.Path(path_type=Path))
+@click.option("--release-version", required=True)
+def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: Path | None, release_version: str) -> None:
+    """Use the local Linux container recipe on a minimal native CI checkout."""
+    from .linux_containers import build_linux_artifacts
+    required = [WORKSPACE_OUTPUT_ROOT_ENV, "EMULEBB_RUST_REPO", "EMULEBB_TOOLING_REPO", "MINIUPNP_ROOT", "PCPNATPMP_ROOT"]
+    missing = [name for name in required if not os.environ.get(name)]
+    if missing:
+        raise click.ClickException(f"Linux packaging requires inherited values: {', '.join(missing)}")
+    layout = replace(build_ci_layout(output_root=Path(os.environ[WORKSPACE_OUTPUT_ROOT_ENV])),
+                     emulebb_rust_repo_root=Path(os.environ["EMULEBB_RUST_REPO"]).resolve(),
+                     tooling_repo_root=Path(os.environ["EMULEBB_TOOLING_REPO"]).resolve())
+    try:
+        build_linux_artifacts(layout, libc=libc, architecture=architecture,
+                              webui_dist=webui_dist, release_version=release_version)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @main.command("linux-containers")
 @_common_options
 @click.option("--wsl-distro", default="Ubuntu", show_default=True)
