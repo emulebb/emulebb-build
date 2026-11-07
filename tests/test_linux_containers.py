@@ -10,7 +10,7 @@ from emule_workspace.linux_containers import validate_elf_audit
 from emule_workspace.linux_containers import build_configuration, RUST_IMAGES, MUSL_CROSS_IMAGE
 from emule_workspace.linux_containers import run_owned_container
 from emule_workspace.linux_containers import _package_gnu_deb
-from emule_workspace.linux_containers import linux_test_plan
+from emule_workspace.linux_containers import linux_test_plan, linux_quality_plan
 
 
 def test_full_native_suite_uses_candidate_definitions_and_cross_compiles_both(tmp_path):
@@ -51,6 +51,27 @@ def test_vpn_leak_step():
 ''')
     with pytest.raises(RuntimeError, match="locked Cargo test"):
         linux_test_plan("full", cross=False, rust_root=tmp_path)
+
+
+def test_linux_lint_and_diagnostics_preserve_candidate_flags_and_cargo_target_boundary(tmp_path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    definition = tools / "rust_quality_gate.py"
+    definition.write_text('''
+def clippy_step():
+    return "lint", ["cargo", "clippy", "--workspace", "--all-targets", "--features", "candidate-feature", "--locked", "--", "-D", "warnings"]
+def diagnostics_step():
+    return "diagnostics", ["cargo", "check", "--bin", "candidate-diagnostics", "--features", "packet-diagnostics", "--locked"]
+''')
+    target = "aarch64-unknown-linux-musl"
+    plan = linux_quality_plan(tmp_path, target)
+    assert plan == [
+        ("clippy", ["clippy", "--workspace", "--all-targets", "--features", "candidate-feature", "--locked", "--target", target, "--", "-D", "warnings"]),
+        ("packet-diagnostics", ["check", "--bin", "candidate-diagnostics", "--features", "packet-diagnostics", "--locked", "--target", target]),
+    ]
+    definition.write_text(definition.read_text().replace(', "--locked"', ""))
+    with pytest.raises(RuntimeError, match="locked Cargo clippy"):
+        linux_quality_plan(tmp_path, target)
 
 
 def test_timed_out_wsl_job_removes_only_its_owned_container(tmp_path, monkeypatch):
