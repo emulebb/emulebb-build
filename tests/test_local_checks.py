@@ -146,6 +146,8 @@ def test_rust_push_runs_host_then_native_musl_and_docs_stay_light(tmp_path):
     '#[cfg(any(target_os = "linux", target_os = "android"))]\nfn platform_logic() {}\n',
     "use std::os::unix::ffi::OsStrExt;\n",
     "#[cfg(not(windows))]\nfn platform_logic() {}\n",
+    'let enabled = cfg!(unix);\n',
+    'use windows_sys::Win32::Foundation;\n',
 ])
 def test_platform_source_outside_named_owners_expands_the_matrix(tmp_path, content):
     source = tmp_path / "arbitrary.rs"
@@ -155,6 +157,25 @@ def test_platform_source_outside_named_owners_expands_the_matrix(tmp_path, conte
 
 def test_deleted_rust_source_cannot_escape_cross_target_checks(tmp_path):
     assert linux_push_scope({"removed.rs"}, tmp_path) == "full"
+
+
+def test_ordinary_rolling_windows_do_not_trigger_platform_matrix(tmp_path):
+    (tmp_path / "tracker.rs").write_text("// Count packets across three full windows.\nfn track() {}\n")
+    assert linux_push_scope({"tracker.rs"}, tmp_path) == "musl"
+
+
+@pytest.mark.parametrize("name,path", [
+    ("emulebb-build", "emule_workspace/linux_containers.py"),
+    ("emulebb-build", "emule_workspace/image_security.py"),
+    ("emulebb-build", "emule_workspace/release_assets/rust_linux/Dockerfile"),
+    ("emulebb-build-tests", "scripts/smoke-rust-release-package.py"),
+    ("emulebb-build-tests", "scripts/smoke-rust-container.py"),
+])
+def test_shared_linux_pipeline_pushes_require_actual_local_integration(tmp_path, name, path):
+    plan = check_plan(tmp_path / "repos" / name, {path}, "push", tmp_path, tmp_path / "out")
+    assert plan[-1][1][-3:] == ["validate-emulebb-rust-linux", "--scope", "full"]
+    commit = check_plan(tmp_path / "repos" / name, {path}, "commit", tmp_path, tmp_path / "out")
+    assert not any("validate-emulebb-rust-linux" in command for _, command in commit)
 
 
 def test_harness_push_selects_the_changed_scripts_test_owner(tmp_path):

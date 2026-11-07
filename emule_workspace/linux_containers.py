@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import shlex
@@ -34,17 +35,31 @@ def build_configuration(libc: str, architecture: str, host: str) -> tuple[str, s
     return MUSL_CROSS_IMAGE if cross and libc == "musl" else RUST_IMAGES[libc], host, cross
 
 
-def linux_test_plan(scope: str, *, cross: bool) -> list[tuple[str, list[str]]]:
+def linux_test_plan(scope: str, *, cross: bool, rust_root: Path | None = None) -> list[tuple[str, list[str]]]:
     """Select executable coverage separately from cross-target compilation."""
     if scope not in {"portable", "full"}:
         raise ValueError("Linux test scope must be portable or full")
-    if scope == "full" and not cross:
-        return [("workspace-tests", ["--workspace"])]
     plan = []
     if scope == "full":
-        plan.append(("all-tests-build", ["--workspace", "--no-run"]))
+        if rust_root is None:
+            raise ValueError("Full Linux tests require the candidate Rust quality definitions")
+        definitions = runpy.run_path(str(rust_root / "tools/rust_quality_gate.py"))
+        for label, factory in (("workspace-tests", "test_workspace_step"), ("vpn-egress-tests", "test_vpn_leak_step")):
+            _description, command = definitions[factory]()
+            if command[:2] != ["cargo", "test"] or "--locked" not in command:
+                raise RuntimeError(f"Canonical {factory} must remain a locked Cargo test command")
+            arguments = [value for value in command[2:] if value != "--locked"]
+            if cross:
+                arguments.insert(arguments.index("--") if "--" in arguments else len(arguments), "--no-run")
+            plan.append((label + ("-build" if cross else ""), arguments))
+        if not cross:
+            return plan
     plan.extend([
-        ("native-library-tests", ["--lib", "-p", "emulebb-metadata", "-p", "emulebb-miniupnpc", "-p", "emulebb-pcpnatpmp"]),
+        ("native-library-tests", ["--lib", *[argument for package in (
+            "emulebb-metadata", "emulebb-miniupnpc", "emulebb-pcpnatpmp", "emulebb-kad-proto",
+            "emulebb-kad-routing", "emulebb-index", "emulebb-settings", "emulebb-diagnostics", "emulebb-tools",
+        ) for argument in ("-p", package)]]),
+        ("tracker-tests", ["--lib", "-p", "emulebb-kad-net", "tracker::tests"]),
         ("durability-tests", ["--lib", "-p", "emulebb-ed2k", "fs_durability::tests"]),
     ])
     return plan
@@ -245,7 +260,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     target = f"{'x86_64' if architecture == 'amd64' else 'aarch64'}-unknown-linux-{libc}"
     engine_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True).stdout.strip()
     base, build_arch, cross = build_configuration(libc, architecture, engine_arch)
-    test_plan = linux_test_plan(test_scope, cross=cross)
+    test_plan = linux_test_plan(test_scope, cross=cross, rust_root=rust)
     builder = f"local/emulebb-rust-builder:{libc}-{architecture}"
     context = Path(__file__).parent / "release_assets" / "rust_linux"
     docker.run("build", "--platform", f"linux/{build_arch}", "--build-arg", f"BASE_IMAGE={base}",
@@ -290,8 +305,9 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     print(f"Building Linux {architecture}/{libc}; log: {log}", flush=True)
     run_owned_container(docker, command[1:], log, timeout=7200)
     tests = ["run", "--rm", "--platform", f"linux/{build_arch}", *mounts, *environment,
-             "--workdir", "/source", builder, "cargo", "test", "--locked", "--release", "--target", target]
+             "--workdir", "/source", builder, "cargo", "test", "--locked", "--target", target]
     for label, arguments in test_plan:
+        print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
         run_owned_container(docker, [*tests[1:], *arguments], log_root / f"{label}.log", timeout=3600)
     binary = output / "builds" / "rust" / f"target-linux-{libc}-{architecture}" / target / "release" / "emulebb-rust"
     audit = docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}", *mounts,
@@ -349,6 +365,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                 "buildExecution": "cross" if cross else "native", "libraryTestExecution": "qemu" if cross else "native",
                 "testCompilation": "workspace" if test_scope == "full" else "selected-libraries",
                 "testExecution": "workspace" if test_scope == "full" and not cross else "selected-libraries",
+                "testProfile": "test", "testPlan": test_plan,
                 "resolvedToolchain": tools,
                 "builderRecipeSha256": release._sha256(context / "Dockerfile"),
                 "cargoLockSha256": release._sha256(rust / "Cargo.lock"),
