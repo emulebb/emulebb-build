@@ -27,6 +27,8 @@ def changed_paths(repo: Path, stage: str, remote: str, updates: str | None) -> s
             local_ref, local_sha, remote_ref, remote_sha = line.split()
             if set(local_sha) == {"0"}:
                 continue
+            if local_ref.startswith("refs/tags/"):
+                local_sha = git(repo, "rev-parse", f"{local_sha}^{{commit}}")
             # WHY: build commands inspect the checkout; validating another ref
             # here would falsely certify code that was never tested.
             if local_sha != head:
@@ -60,9 +62,9 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
         commands.append((repo, ["go", "run", "github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca"]))
     implementation = any(not (p.endswith(".md") or p.startswith("docs/")) for p in paths)
     if repo.name == "emulebb-rust":
-        commands.append((repo, [py, "tools/rust_quality_gate.py", "branch-check"]))
+        gate = "ci" if stage == "push" and implementation else "branch-check"
+        commands.append((repo, [py, "tools/rust_quality_gate.py", gate]))
         if stage == "push" and implementation:
-            commands.extend((repo, [py, "tools/rust_quality_gate.py", gate]) for gate in ("ci",))
             commands.append((repo, ["cargo", "deny", "check", "advisories", "licenses", "sources"]))
             harness = root / "repos" / "emulebb-build-tests"
             commands.append((harness, [py, "scripts/rust-rest-openapi-ci.py"]))
@@ -84,12 +86,17 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
             elif path in {"pyproject.toml", "deps.json"}:
                 tests = {"tests"}
                 break
-        commands.append((repo, [py, "-m", "pytest", *sorted(tests), "--basetemp", str(output / "tmp" / "local-check-pytest")]))
+        commands.append((repo, [py, "-m", "pytest", *sorted(tests), "-o", f"cache_dir={output / 'cache' / 'pytest' / repo.name}", "--basetemp", str(output / "tmp" / "local-check-pytest")]))
     if repo.name == "emulebb-tooling":
         if stage == "push":
             if implementation:
                 commands.append((repo, [py, "-m", "unittest", "discover", "-s", "ci/tests"]))
-            if any(p.startswith("docs/") or p in {"mkdocs.yml", "requirements-docs.txt"} for p in paths):
+            if any(p.startswith("docs/") or p in {
+                "mkdocs.yml", "requirements-docs.txt", ".github/workflows/docs-site.yml",
+                "helpers/public-presence.py", "manifests/public-presence.v1.json",
+                "scripts/docs-item-taxonomy-check.py", "scripts/docs-structure-check.py",
+                "scripts/github-roadmap-check.py", "scripts/docs-publish-check.py",
+            } for p in paths):
                 commands.append((repo, [py, "scripts/docs-publish-check.py"]))
     return commands
 

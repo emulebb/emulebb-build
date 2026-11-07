@@ -380,7 +380,10 @@ def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, worksp
         )
 
     if stage == "commit":
-        execute()
+        try:
+            execute()
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
     else:
         _locked("local-check", execute)(workspace_options=workspace_options, layout=layout)
 
