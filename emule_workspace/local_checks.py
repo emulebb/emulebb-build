@@ -72,6 +72,9 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
             if path.startswith("tests/") and path.endswith(".py") and (repo / path).is_file():
                 tests.add(path)
             elif path.startswith("emule_workspace/") and path.endswith(".py"):
+                if path == "emule_workspace/topology.py":
+                    tests.update({"tests/test_layout.py", "tests/test_materialize.py", "tests/test_validation.py", "tests/test_setup_commands.py"})
+                    continue
                 test = f"tests/test_{Path(path).stem}.py"
                 if (repo / test).is_file():
                     tests.add(test)

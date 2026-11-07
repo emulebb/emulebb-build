@@ -14,11 +14,11 @@ permissions:
 
 jobs:
   baseline:
-    uses: emulebb/emulebb-tooling/.github/workflows/reusable-baseline.yml@283eabd95e2a1d8176d526ea559ff05c2114f626
+    uses: emulebb/emulebb-tooling/.github/workflows/reusable-baseline.yml@bb2d4d185836d86cf107b23b93a91312a7794410
     with:
       policy_path: manifests/privacy-guard/policy.v1.json
       repo_kind: emulebb-build
       extra_commands: |
         python -m pip install -e .[dev]
         python -m pytest tests/test_ci_workflows.py
-      tooling_ref: 283eabd95e2a1d8176d526ea559ff05c2114f626
+      tooling_ref: bb2d4d185836d86cf107b23b93a91312a7794410
