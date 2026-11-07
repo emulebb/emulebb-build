@@ -1359,7 +1359,6 @@ def test_emulebb_rust_image_context_stages_only_verified_debs(
         output_root=tmp_path / "output",
         assets_dir=assets,
         version="0.1.0-beta.1",
-        push=False,
     )
     assert archive == tmp_path / "output" / "artifacts" / "emulebb-rust-v0.1.0-beta.1-multiarch.oci.tar"
     context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image"
@@ -1368,7 +1367,7 @@ def test_emulebb_rust_image_context_stages_only_verified_debs(
     assert "--push" not in commands[0]
 
 
-def test_emulebb_rust_image_can_publish_versioned_and_nightly_tags(
+def test_emulebb_rust_nightly_image_is_an_archive_without_channel_promotion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1390,34 +1389,13 @@ def test_emulebb_rust_image_can_publish_versioned_and_nightly_tags(
         output_root=tmp_path / "output",
         assets_dir=assets,
         version=version,
-        push=True,
-        channel_tag="nightly",
     )
 
-    assert commands[0].count("--tag") == 2
+    assert commands[0].count("--tag") == 1
     assert f"ghcr.io/emulebb/emulebb-rust:{version}" in commands[0]
-    assert "ghcr.io/emulebb/emulebb-rust:nightly" in commands[0]
-    assert "--push" in commands[0]
-
-
-def test_emulebb_rust_image_rejects_invalid_channel_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    rust_root = tmp_path / "workspace" / "repos" / "emulebb-rust"
-    docker_root = rust_root / "packaging" / "docker"
-    docker_root.mkdir(parents=True)
-    (docker_root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
-    assets = tmp_path / "output" / "release" / "rust-v0.1.0-beta.2"
-    assets.mkdir(parents=True)
-    monkeypatch.setattr(release, "assemble_emulebb_rust_release_assets", lambda *_args: assets / "SHA256SUMS")
-
-    with pytest.raises(RuntimeError, match="Invalid Rust image channel tag"):
-        release.build_emulebb_rust_image_ci(
-            rust_root=rust_root,
-            output_root=tmp_path / "output",
-            assets_dir=assets,
-            version="0.1.0-beta.2",
-            push=True,
-            channel_tag="nightly/latest",
-        )
+    assert "ghcr.io/emulebb/emulebb-rust:nightly" not in commands[0]
+    assert "--push" not in commands[0]
+    assert f"type=oci,dest={tmp_path / 'output' / 'artifacts' / f'emulebb-rust-v{version}-multiarch.oci.tar'}" in commands[0]
 
 
 def test_emulebb_rust_local_image_loads_verified_amd64_asset(

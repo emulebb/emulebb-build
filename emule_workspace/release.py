@@ -831,13 +831,8 @@ def build_emulebb_rust_image_ci(
     output_root: Path,
     assets_dir: Path,
     version: str,
-    push: bool,
-    channel_tag: str | None = None,
-) -> Path | None:
-    """Builds the two-architecture image from verified native DEB assets."""
-
-    if channel_tag and not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", channel_tag):
-        raise RuntimeError(f"Invalid Rust image channel tag: {channel_tag}")
+) -> Path:
+    """Build the verified candidate archive; GitHub owns all publication."""
     assemble_emulebb_rust_release_assets(assets_dir, version)
     output_root = output_root.resolve()
     context = output_root / "packages" / "build" / "emulebb-rust-image"
@@ -860,15 +855,9 @@ def build_emulebb_rust_image_ci(
         "--file", str(context / "Dockerfile"), "--build-arg", f"VERSION={version}",
         "--tag", image,
     ]
-    if channel_tag:
-        command.extend(("--tag", f"ghcr.io/emulebb/emulebb-rust:{channel_tag}"))
-    archive = None
-    if push:
-        command.append("--push")
-    else:
-        archive = output_root / "artifacts" / f"emulebb-rust-v{version}-multiarch.oci.tar"
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        command.extend(("--output", f"type=oci,dest={archive}"))
+    archive = output_root / "artifacts" / f"emulebb-rust-v{version}-multiarch.oci.tar"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    command.extend(("--output", f"type=oci,dest={archive}"))
     command.append(str(context))
     subprocess.run(command, check=True)
     return archive
