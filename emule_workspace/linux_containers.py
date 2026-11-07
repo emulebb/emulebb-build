@@ -34,6 +34,22 @@ def build_configuration(libc: str, architecture: str, host: str) -> tuple[str, s
     return MUSL_CROSS_IMAGE if cross and libc == "musl" else RUST_IMAGES[libc], host, cross
 
 
+def linux_test_plan(scope: str, *, cross: bool) -> list[tuple[str, list[str]]]:
+    """Select executable coverage separately from cross-target compilation."""
+    if scope not in {"portable", "full"}:
+        raise ValueError("Linux test scope must be portable or full")
+    if scope == "full" and not cross:
+        return [("workspace-tests", ["--workspace"])]
+    plan = []
+    if scope == "full":
+        plan.append(("all-tests-build", ["--workspace", "--no-run"]))
+    plan.extend([
+        ("native-library-tests", ["--lib", "-p", "emulebb-metadata", "-p", "emulebb-miniupnpc", "-p", "emulebb-pcpnatpmp"]),
+        ("durability-tests", ["--lib", "-p", "emulebb-ed2k", "fs_durability::tests"]),
+    ])
+    return plan
+
+
 def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int, append: bool = False) -> None:
     """@brief Retain failure output and stop only this invocation's container on interruption."""
     name = f"emulebb-linux-{uuid4().hex}"
@@ -128,15 +144,16 @@ class LinuxDocker:
 
 
 def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: Path | None = None,
-                          release_version: str | None = None, smoke: bool = False) -> Path:
+                          release_version: str | None = None, smoke: bool = False, test_scope: str = "portable") -> Path:
     """@brief Build and inventory one GNU/musl package using pinned Docker inputs.
 
     Container paths translate valid operator roots; only generated output is
-    writable. ARM64 uses the same recipe under QEMU locally and natively in CI.
+    writable. ARM64 cross-compiles on x64 and runs selected tests under QEMU;
+    native CI can execute the full workspace suite with the same recipe.
     """
     with LinuxDocker() as docker:
         archive = _build_linux_artifacts(layout, docker, libc=libc, architecture=architecture,
-                                         webui_dist=webui_dist, release_version=release_version)
+                                         webui_dist=webui_dist, release_version=release_version, test_scope=test_scope)
     if smoke:
         smoke_linux_archive(layout, archive=archive, libc=libc, architecture=architecture)
     return archive
@@ -207,7 +224,7 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) 
 
 
 def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architecture: str,
-                           webui_dist: Path | None, release_version: str | None) -> Path:
+                           webui_dist: Path | None, release_version: str | None, test_scope: str) -> Path:
     from . import release
     if libc not in RUST_IMAGES or architecture not in {"amd64", "arm64"}:
         raise ValueError("Expected gnu/musl and amd64/arm64")
@@ -228,6 +245,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     target = f"{'x86_64' if architecture == 'amd64' else 'aarch64'}-unknown-linux-{libc}"
     engine_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True).stdout.strip()
     base, build_arch, cross = build_configuration(libc, architecture, engine_arch)
+    test_plan = linux_test_plan(test_scope, cross=cross)
     builder = f"local/emulebb-rust-builder:{libc}-{architecture}"
     context = Path(__file__).parent / "release_assets" / "rust_linux"
     docker.run("build", "--platform", f"linux/{build_arch}", "--build-arg", f"BASE_IMAGE={base}",
@@ -272,11 +290,9 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     print(f"Building Linux {architecture}/{libc}; log: {log}", flush=True)
     run_owned_container(docker, command[1:], log, timeout=7200)
     tests = ["run", "--rm", "--platform", f"linux/{build_arch}", *mounts, *environment,
-             "--workdir", "/source", builder, "cargo", "test", "--locked", "--release", "--target", target,
-             "--lib", "-p", "emulebb-metadata", "-p", "emulebb-miniupnpc", "-p", "emulebb-pcpnatpmp"]
-    run_owned_container(docker, tests[1:], log_root / "native-library-tests.log", timeout=3600)
-    durability = tests[:tests.index("--lib")] + ["--lib", "-p", "emulebb-ed2k", "fs_durability::tests"]
-    run_owned_container(docker, durability[1:], log_root / "native-library-tests.log", timeout=3600, append=True)
+             "--workdir", "/source", builder, "cargo", "test", "--locked", "--release", "--target", target]
+    for label, arguments in test_plan:
+        run_owned_container(docker, [*tests[1:], *arguments], log_root / f"{label}.log", timeout=3600)
     binary = output / "builds" / "rust" / f"target-linux-{libc}-{architecture}" / target / "release" / "emulebb-rust"
     audit = docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}", *mounts,
                        builder, "readelf", "-h", "-l", "-d", f"{target_root}/{target}/release/emulebb-rust", capture=True).stdout
@@ -331,6 +347,8 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                 "origin": "github-actions" if hosted else "local-development", "channel": channel,
                 "workflow": {key: os.environ.get(key) for key in ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")} if hosted else None,
                 "buildExecution": "cross" if cross else "native", "libraryTestExecution": "qemu" if cross else "native",
+                "testCompilation": "workspace" if test_scope == "full" else "selected-libraries",
+                "testExecution": "workspace" if test_scope == "full" and not cross else "selected-libraries",
                 "resolvedToolchain": tools,
                 "builderRecipeSha256": release._sha256(context / "Dockerfile"),
                 "cargoLockSha256": release._sha256(rust / "Cargo.lock"),
