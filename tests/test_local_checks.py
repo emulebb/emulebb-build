@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from emule_workspace.local_checks import changed_paths, check_plan
+from emule_workspace.local_checks import changed_paths, check_plan, linux_push_scope
 from emule_workspace import local_checks
 
 
@@ -115,6 +115,46 @@ def test_rust_docs_avoid_native_build_but_source_push_gets_full_gate(tmp_path):
 def test_commit_never_runs_heavy_checks(tmp_path):
     plan = check_plan(tmp_path / "repos" / "emulebb-rust", {"src/main.rs"}, "commit", tmp_path, tmp_path / "out")
     assert not any(command[-1] == "pre-push" or "deny" in command for _, command in plan)
+    assert not any("validate-emulebb-rust-linux" in command for _, command in plan)
+
+
+@pytest.mark.parametrize("path", ["Cargo.lock", "crates/emulebb-core/Cargo.toml",
+    "crates/emulebb-daemon/build.rs", "rust-toolchain.toml", ".cargo/config.toml",
+    ".github/workflows/ci.yml", "packaging/docker/Dockerfile", "policy/rust-client.toml",
+    "tools/release_publish.py", "tools/ci-toolchain.json", "tools/rust_quality_gate.py",
+    "crates/emulebb-kad-net/src/socket_opts.rs",
+    "crates/emulebb-ed2k/src/ed2k_transfer/fs_durability.rs",
+    "crates/emulebb-pcpnatpmp-sys/src/lib.rs"])
+def test_platform_inputs_require_full_available_linux_matrix(path):
+    assert linux_push_scope({path}) == "full"
+
+
+def test_rust_push_runs_host_then_native_musl_and_docs_stay_light(tmp_path):
+    repo = tmp_path / "repos/emulebb-rust"
+    source = repo / "crates/emulebb-core/src/lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text("pub fn ordinary_logic() {}\n")
+    plan = check_plan(repo, {"crates/emulebb-core/src/lib.rs"}, "push", tmp_path, tmp_path / "out")
+    assert plan[-2][1][-1] == "pre-push"
+    assert plan[-1][0] == tmp_path / "repos/emulebb-build"
+    assert plan[-1][1][-3:] == ["validate-emulebb-rust-linux", "--scope", "musl"]
+    docs = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
+    assert not any("validate-emulebb-rust-linux" in command for _, command in docs)
+
+
+@pytest.mark.parametrize("content", [
+    '#[cfg(any(target_os = "linux", target_os = "android"))]\nfn platform_logic() {}\n',
+    "use std::os::unix::ffi::OsStrExt;\n",
+    "#[cfg(not(windows))]\nfn platform_logic() {}\n",
+])
+def test_platform_source_outside_named_owners_expands_the_matrix(tmp_path, content):
+    source = tmp_path / "arbitrary.rs"
+    source.write_text(content)
+    assert linux_push_scope({"arbitrary.rs"}, tmp_path) == "full"
+
+
+def test_deleted_rust_source_cannot_escape_cross_target_checks(tmp_path):
+    assert linux_push_scope({"removed.rs"}, tmp_path) == "full"
 
 
 def test_harness_push_selects_the_changed_scripts_test_owner(tmp_path):
