@@ -12,14 +12,11 @@ from uuid import uuid4
 
 def git(repo: Path, *args: str) -> str:
     """Run a read-only Git query, propagating errors."""
-    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).rstrip("\r\n")
 
 
-def changed_paths(repo: Path, stage: str, remote: str, updates: str | None) -> set[str]:
-    """Select staged paths or every outgoing ref's complete change range."""
-    if stage == "commit":
-        raw = git(repo, "diff", "--cached", "--name-only", "-z", "--")
-        return set(filter(None, raw.split("\0")))
+def outgoing_ranges(repo: Path, remote: str, updates: str | None) -> list[tuple[str, str]]:
+    """Resolve every non-deleted outgoing ref to the committed range it changes."""
     head = git(repo, "rev-parse", "HEAD")
     ranges = []
     if updates is not None:
@@ -36,13 +33,35 @@ def changed_paths(repo: Path, stage: str, remote: str, updates: str | None) -> s
             ranges.append((None if set(remote_sha) == {"0"} else remote_sha, local_sha))
     else:
         ranges.append((None, head))
-    paths: set[str] = set()
+    resolved = []
     for base, tip in ranges:
         if base is None:
             default_ref = git(repo, "symbolic-ref", f"refs/remotes/{remote}/HEAD")
             base = git(repo, "merge-base", tip, default_ref)
+        resolved.append((base, tip))
+    return resolved
+
+
+def changed_paths(repo: Path, stage: str, remote: str, updates: str | None) -> set[str]:
+    """Select staged paths or every outgoing ref's complete change range."""
+    if stage == "commit":
+        raw = git(repo, "diff", "--cached", "--name-only", "-z", "--")
+        return set(filter(None, raw.split("\0")))
+    paths: set[str] = set()
+    for base, tip in outgoing_ranges(repo, remote, updates):
         paths.update(filter(None, git(repo, "diff", "--name-only", "-z", base, tip, "--").split("\0")))
     return paths
+
+
+def check_whitespace(repo: Path, stage: str, remote: str, updates: str | None) -> None:
+    """Check the index at commit time and actual outgoing changes at push time."""
+    if stage == "commit":
+        git(repo, "diff", "--cached", "--check", "--")
+    else:
+        # WHY: HEAD versus a clean worktree is empty, even when outgoing commits
+        # introduce whitespace errors. Use the same ranges as change selection.
+        for base, tip in outgoing_ranges(repo, remote, updates):
+            git(repo, "diff", "--check", base, tip, "--")
 
 
 def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path) -> list[tuple[Path, list[str]]]:
@@ -116,10 +135,7 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
     dirty = git(repo, "status", "--porcelain") if stage == "push" else git(repo, "diff", "--name-only")
     if dirty:
         raise RuntimeError("Local validation requires a clean worktree for push and no unstaged tracked edits for commit")
-    if stage == "commit":
-        subprocess.run(["git", "diff", "--cached", "--check"], cwd=repo, check=True)
-    else:
-        subprocess.run(["git", "diff", "--check", "HEAD"], cwd=repo, check=True)
+    check_whitespace(repo, stage, remote, updates)
     target = Path(os.environ.get("CARGO_TARGET_DIR", "")).resolve()
     if repo.name == "emulebb-rust" and target != output / "builds" / "rust" / "target":
         raise RuntimeError("CARGO_TARGET_DIR must equal EMULEBB_WORKSPACE_OUTPUT_ROOT/builds/rust/target")

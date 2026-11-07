@@ -74,6 +74,35 @@ def test_staged_paths_exclude_unstaged_new_files(repo):
     assert changed_paths(repo, "commit", "origin", None) == {"selected.txt"}
 
 
+@pytest.mark.parametrize("kind", ["first", "existing", "tag", "multiple"])
+def test_clean_tree_with_bad_outgoing_whitespace_is_rejected(repo, kind):
+    base = git(repo, "rev-parse", "HEAD")
+    (repo / "selected.txt").write_text("trailing space \n")
+    git(repo, "add", "selected.txt")
+    git(repo, "commit", "-m", "synthetic whitespace fixture")
+    tip = git(repo, "rev-parse", "HEAD")
+    assert git(repo, "status", "--porcelain") == ""
+    local_ref = "refs/heads/chore/checks"
+    if kind == "tag":
+        git(repo, "tag", "-a", "fixture-tag", "-m", "synthetic tag")
+        tip = git(repo, "rev-parse", "fixture-tag")
+        local_ref = "refs/tags/fixture-tag"
+    remote_sha = base if kind == "existing" else "0" * 40
+    updates = f"{local_ref} {tip} {local_ref} {remote_sha}\n"
+    if kind == "multiple":
+        updates = f"(delete) {'0'*40} refs/heads/old {base}\n" + updates
+    with pytest.raises(subprocess.CalledProcessError):
+        local_checks.check_whitespace(repo, "push", "origin", updates)
+
+
+def test_staged_whitespace_is_rejected_and_delete_only_push_is_allowed(repo):
+    (repo / "selected.txt").write_text("trailing space \n")
+    git(repo, "add", "selected.txt")
+    with pytest.raises(subprocess.CalledProcessError):
+        local_checks.check_whitespace(repo, "commit", "origin", None)
+    local_checks.check_whitespace(repo, "push", "origin", f"(delete) {'0'*40} refs/heads/old {'1'*40}\n")
+
+
 def test_rust_docs_avoid_native_build_but_source_push_gets_full_gate(tmp_path):
     repo = tmp_path / "repos" / "emulebb-rust"
     docs = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
