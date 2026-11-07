@@ -1,12 +1,38 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from emule_workspace import materialize
 from emule_workspace.setup_commands import ComparePreset
 from emule_workspace.topology import AppRepo, ManagedRepo, WorkspaceTopology
+
+
+def test_hook_install_adopts_empty_default_directory_but_preserves_custom_hooks(tmp_path, monkeypatch):
+    shared = tmp_path / "repos" / "emulebb-tooling" / "hooks"
+    shared.mkdir(parents=True)
+    for hook in ("pre-commit", "pre-push"):
+        (shared / hook).write_text("#!/bin/sh\n")
+    repo = tmp_path / "repos" / "emulebb-rust"
+    default = repo / ".git" / "hooks"
+    default.mkdir(parents=True)
+    topology = SimpleNamespace(repos=[SimpleNamespace(name="emulebb-rust", relative_path="repos/emulebb-rust")],
+                               app_repo=SimpleNamespace(worktrees=[]))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(materialize, "run_native", run)
+    monkeypatch.setattr(materialize, "run_captured", lambda *args, **kwargs: str(default))
+    materialize.install_workspace_hooks(tmp_path, topology)
+    assert any(command[-2:] == ["core.hooksPath", str(shared)] for command in calls)
+    (default / "pre-push").write_text("custom\n")
+    with pytest.raises(RuntimeError, match="unmanaged"):
+        materialize.install_workspace_hooks(tmp_path, topology)
 
 
 def test_bootstrap_root_allows_only_required_build_clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

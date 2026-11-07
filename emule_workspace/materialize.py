@@ -622,7 +622,14 @@ def install_workspace_hooks(root: Path, topology: WorkspaceTopology) -> None:
         if current:
             current_path = (target / current).resolve() if not Path(current).is_absolute() else Path(current).resolve()
             if current_path != hooks_path.resolve():
-                raise RuntimeError(f"Refusing to replace unmanaged core.hooksPath for '{target}'.")
+                default_hooks = Path(run_captured(
+                    ["git", "-C", target, "rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+                    label=f"default hooks path {target}", cwd=root,
+                ).strip()).resolve()
+                if current_path != default_hooks or any(
+                    path.is_file() and not path.name.endswith(".sample") for path in current_path.iterdir()
+                ):
+                    raise RuntimeError(f"Refusing to replace unmanaged core.hooksPath for '{target}'.")
         run_native(["git", "-C", target, "config", "--local", "core.hooksPath", str(hooks_path)], label=f"install hooks {target}", cwd=root)
         run_native(["git", "-C", target, "config", "--local", "core.autocrlf", "false"], label=f"configure autocrlf {target}", cwd=root)
 

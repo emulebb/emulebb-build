@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from emule_workspace.local_checks import changed_paths, check_plan
+from emule_workspace import local_checks
 
 
 def git(repo, *args):
@@ -76,3 +77,31 @@ def test_rust_docs_avoid_native_build_but_source_push_gets_full_gate(tmp_path):
 def test_commit_never_runs_heavy_checks(tmp_path):
     plan = check_plan(tmp_path / "repos" / "emulebb-rust", {"src/main.rs"}, "commit", tmp_path, tmp_path / "out")
     assert not any(command[-1] == "ci" or "deny" in command for _, command in plan)
+
+
+def test_failure_blocks_later_checks_and_writes_evidence(tmp_path, monkeypatch):
+    repo = tmp_path / "repos" / "emulebb-build"
+    repo.mkdir(parents=True)
+    monkeypatch.setattr(local_checks, "changed_paths", lambda *args: {"sample.py"})
+    monkeypatch.setattr(local_checks, "git", lambda repo, *args: str(repo) if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(local_checks, "check_plan", lambda *args: [(repo, ["check", "first"]), (repo, ["check", "second"])])
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 7 if command[-1] == "first" else 0)
+
+    monkeypatch.setattr(local_checks.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="Local check failed"):
+        local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=tmp_path, output=tmp_path / "output")
+    assert ["check", "second"] not in calls
+    assert list((tmp_path / "output" / "reports").rglob("results.json"))
+
+
+def test_dirty_tree_blocks_push_before_any_check(tmp_path, monkeypatch):
+    repo = tmp_path / "repos" / "emulebb-build"
+    repo.mkdir(parents=True)
+    monkeypatch.setattr(local_checks, "changed_paths", lambda *args: {"sample.py"})
+    monkeypatch.setattr(local_checks, "git", lambda repo, *args: str(repo) if args[0] == "rev-parse" else "dirty.txt")
+    with pytest.raises(RuntimeError, match="clean worktree"):
+        local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=tmp_path, output=tmp_path / "output")
