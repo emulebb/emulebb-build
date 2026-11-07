@@ -83,7 +83,7 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
     cache = output_root / "cache/rust-image-buildkit"
     cache.mkdir(parents=True, exist_ok=True)
     report = {"status": "running", "origin": "github-actions" if os.environ.get("GITHUB_ACTIONS") == "true" else "local-development",
-              "image": image, "architectures": architectures, "buildkitImage": BUILDKIT_IMAGE, "inputs": inputs,
+              "image": image, "version": version, "architectures": architectures, "buildkitImage": BUILDKIT_IMAGE, "inputs": inputs,
               "dockerfileSha256": _sha256(source / "Dockerfile"),
               "sourceSha": inputs[0]["source"]["emulebbRust"]["commit"] if inputs else None,
               "builderSha": git_output(Path(__file__).resolve().parents[1], "rev-parse", "HEAD").strip()}
@@ -137,14 +137,36 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
     return archive
 
 
-def remove_smoke_containers(docker: LinuxDocker, owner: str) -> None:
-    """Remove only containers carrying this invocation's unpredictable owner token."""
-    listing = docker.run("ps", "--all", "--filter", f"label=io.emulebb.ci.image-smoke-owner={owner}",
-                         "--format", "{{.ID}}", capture=True, timeout=30).stdout.split()
-    if listing:
-        if any(re.fullmatch(r"[0-9a-f]{12,64}", value) is None for value in listing):
-            raise RuntimeError("Docker returned an invalid owned-container ID")
-        docker.run("rm", "--force", *listing, capture=True, timeout=60)
+def remove_smoke_resources(docker: LinuxDocker, owner: str) -> None:
+    """Remove only containers/networks carrying this invocation's owner token."""
+    for inspect, remove in ((["ps", "--all"], ["rm", "--force"]),
+                            (["network", "ls"], ["network", "rm"])):
+        listing = docker.run(*inspect, "--filter", f"label=io.emulebb.ci.image-smoke-owner={owner}",
+                             "--format", "{{.ID}}", capture=True, timeout=30).stdout.split()
+        if listing:
+            if any(re.fullmatch(r"[0-9a-f]{12,64}", value) is None for value in listing):
+                raise RuntimeError("Docker returned an invalid owned-resource ID")
+            docker.run(*remove, *listing, capture=True, timeout=60)
+
+
+def collect_linux_debs(layout, *, version: str, architectures: tuple[str, ...]) -> Path:
+    """Collect only verified local GNU inputs for the selected image CPUs."""
+    from .release import _is_release_version
+
+    if not _is_release_version(version):
+        raise RuntimeError("GNU image input version must be valid SemVer")
+    root = layout.output_root.resolve() / "packages/rust-linux" / version
+    destination = root / "image-inputs"
+    if not destination.resolve().is_relative_to(layout.output_root.resolve()):
+        raise RuntimeError("GNU image inputs must remain below the operator output root")
+    verified = [(root / f"gnu-{arch}", verified_debs(layout.emulebb_rust_repo_root, root / f"gnu-{arch}", version, (arch,)))
+                for arch in architectures]
+    destination.mkdir(parents=True, exist_ok=True)
+    for source, items in verified:
+        for item in items:
+            for name in (item["asset"], item["asset"] + ".manifest.json", item["sbom"]):
+                shutil.copy2(source / name, destination / name)
+    return destination
 
 
 def smoke_image(layout, *, archive: Path, image: str, architectures: tuple[str, ...], wsl_distro: str = "Ubuntu") -> Path:
@@ -198,7 +220,7 @@ def smoke_image(layout, *, archive: Path, image: str, architectures: tuple[str, 
         finally:
             original_error = sys.exception()
             try:
-                remove_smoke_containers(docker, owner)
+                remove_smoke_resources(docker, owner)
             except Exception as cleanup_error:
                 report.update(status="failed", cleanupError=str(cleanup_error))
                 if original_error is not None:
