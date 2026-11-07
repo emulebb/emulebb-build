@@ -117,6 +117,29 @@ def test_commit_never_runs_heavy_checks(tmp_path):
     assert not any(command[-1] == "pre-push" or "deny" in command for _, command in plan)
 
 
+def test_harness_push_selects_the_changed_scripts_test_owner(tmp_path):
+    repo = tmp_path / "repos/emulebb-build-tests"
+    tests = repo / "tests/python"
+    tests.mkdir(parents=True)
+    (tests / "test_smoke_rust_release_package.py").touch()
+    plan = check_plan(repo, {"scripts/smoke-rust-release-package.py"}, "push", tmp_path, tmp_path / "out")
+    command = next(command for _, command in plan if "pytest" in command)
+    assert "tests/python/test_smoke_rust_release_package.py" in command
+    assert "tests/python" not in command
+
+
+def test_harness_shared_owner_without_a_single_suite_requires_all_unit_tests(tmp_path):
+    plan = check_plan(tmp_path / "repos/emulebb-build-tests", {"emule_test_harness/shared.py"},
+                      "push", tmp_path, tmp_path / "out")
+    assert any("tests/python" in command for _, command in plan)
+
+
+def test_harness_docs_and_commit_checks_do_not_run_pytest(tmp_path):
+    repo = tmp_path / "repos/emulebb-build-tests"
+    for paths, stage in (({"README.md"}, "push"), ({"scripts/smoke-rust-release-package.py"}, "commit")):
+        assert not any("pytest" in command for _, command in check_plan(repo, paths, stage, tmp_path, tmp_path / "out"))
+
+
 def test_docs_workflow_gets_local_publication_validation(tmp_path):
     plan = check_plan(tmp_path / "repos" / "emulebb-tooling", {".github/workflows/docs-site.yml"}, "push", tmp_path, tmp_path / "out")
     assert any(command[-1] == "scripts/docs-publish-check.py" for _, command in plan)
