@@ -105,6 +105,27 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
                 tests = {"tests"}
                 break
         commands.append((repo, [py, "-m", "pytest", *sorted(tests), "-o", f"cache_dir={output / 'cache' / 'pytest' / repo.name}", "--basetemp", str(output / "tmp" / "local-check-pytest")]))
+    if stage == "push" and repo.name == "emulebb-build-tests" and implementation:
+        tests: set[str] = set()
+        for path in paths:
+            if path.startswith("tests/python/") and path.endswith(".py") and (repo / path).is_file():
+                tests.add(path)
+            elif path.endswith(".py") and path.startswith(("scripts/", "emule_test_harness/")):
+                test = f"tests/python/test_{Path(path).stem.replace('-', '_')}.py"
+                if (repo / test).is_file():
+                    tests.add(test)
+                else:
+                    # Shared owners without a single test file can affect
+                    # several suites. Pytest's normal live/native exclusions apply.
+                    tests = {"tests/python"}
+                    break
+            elif path in {"pyproject.toml", "requirements.txt"} or path.startswith(".github/workflows/"):
+                tests = {"tests/python"}
+                break
+        if tests:
+            commands.append((repo, [py, "-m", "pytest", *sorted(tests), "-o",
+                                    f"cache_dir={output / 'cache' / 'pytest' / repo.name}",
+                                    "--basetemp", str(output / "tmp" / "local-check-harness-pytest")]))
     if repo.name == "emulebb-tooling":
         if stage == "push":
             if implementation:
