@@ -87,7 +87,9 @@ def linux_push_scope(paths: set[str], repo: Path | None = None) -> str:
             # WHY: platform code can live outside known owners. Missing files
             # include deletions; neither case may escape cross-target checks.
             if not source.is_file() or re.search(
-                r"\b(?:windows|unix|target_(?:os|arch|env|family|endian|pointer_width))\b",
+                r"\btarget_(?:os|arch|env|family|endian|pointer_width|vendor|feature)\s*="
+                r"|\bcfg(?:_attr)?\s*!?\s*\([^;\]]*\b(?:windows|unix)\b"
+                r"|\b(?:std|core)::os::(?:windows|unix)\b|\bwindows(?:_sys)?::",
                 source.read_text(encoding="utf-8"),
             ):
                 return "full"
@@ -158,6 +160,15 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
             commands.append((repo, [py, "-m", "pytest", *sorted(tests), "-o",
                                     f"cache_dir={output / 'cache' / 'pytest' / repo.name}",
                                     "--basetemp", str(output / "tmp" / "local-check-harness-pytest")]))
+    linux_owners = {
+        "emulebb-build": ("emule_workspace/linux_containers.py", "emule_workspace/linux_validation.py",
+                          "emule_workspace/rust_images.py", "emule_workspace/image_security.py",
+                          "emule_workspace/release_assets/rust_linux/"),
+        "emulebb-build-tests": ("scripts/smoke-rust-release-package.py", "scripts/smoke-rust-container.py"),
+    }
+    if stage == "push" and any(path.startswith(linux_owners.get(repo.name, ())) for path in paths):
+        commands.append((root / "repos/emulebb-build", [py, "-B", "-m", "emule_workspace",
+                         "validate-emulebb-rust-linux", "--scope", "full"]))
     if repo.name == "emulebb-tooling":
         if stage == "push":
             if implementation:

@@ -79,13 +79,15 @@ def validate_linux(layout, *, scope: str) -> Path:
                 entry.update(build="passed", archive=archive.name,
                              testsExecuted="workspace" if target["runtime"] == "native" else "portable-libraries-and-durability",
                              runtimeResult="passed" if target["runtime"] == "native" else "delegated")
+                print(f"PASSED Linux {target['libc']}/{target['architecture']}; network runtime: {entry['runtimeResult']}", flush=True)
             except Exception as error:
                 entry.update(build="failed", error=str(error))
-                failures.append(f"{target['libc']}/{target['architecture']}")
+                failures.append(f"{target['libc']}/{target['architecture']}: {error}")
+                print(f"FAILED Linux {failures[-1]}", flush=True)
             finally:
                 path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-        gnu = [entry for entry in report["targets"] if entry["libc"] == "gnu" and entry["build"] == "passed"]
-        if scope == "full" and gnu:
+        gnu = [entry for entry in report["targets"] if entry["libc"] == "gnu" and entry["buildAvailable"]]
+        if scope == "full" and gnu and all(entry["build"] == "passed" for entry in gnu):
             arches = tuple(entry["architecture"] for entry in gnu)
             image = f"local/emulebb-rust:{version}"
             assets = collect_linux_debs(layout, version=version, architectures=arches)
@@ -93,12 +95,16 @@ def validate_linux(layout, *, scope: str) -> Path:
                                                       version=version, image=image, wsl_distro="Ubuntu", architectures=arches)
             evidence = validate_image(layout, archive=archive, image=image, architectures=arches)
             report["image"] = {"status": "passed", "architectures": arches, "securityEvidence": str(evidence)}
+        elif scope == "full":
+            # WHY: a successful subset must not look like proof of the required
+            # image CPU set when another GNU package gate failed.
+            report["image"] = {"status": "not-run", "reason": "Required available GNU package gates did not all pass"}
         if failures:
             raise RuntimeError("Local Linux gates failed: " + ", ".join(failures))
         report["status"] = "passed"
     except BaseException as error:
         report.update(status="failed", error=str(error))
-        raise RuntimeError(f"Local Linux CI failed; inspect {root}") from error
+        raise RuntimeError(f"Local Linux CI failed: {error}; inspect {root}") from error
     finally:
         path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return path

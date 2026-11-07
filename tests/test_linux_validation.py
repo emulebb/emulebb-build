@@ -91,14 +91,21 @@ def test_full_batch_reuses_only_its_fresh_ui_and_runs_available_checks(batch):
     assert report["image"]["status"] == "passed"
 
 
-def test_failed_targets_do_not_reuse_old_image_inputs_or_hide_other_failures(batch):
-    batch.failures.update({("gnu", "amd64"), ("gnu", "arm64")})
-    with pytest.raises(RuntimeError, match="Local Linux CI failed"):
+@pytest.mark.parametrize("failed_cpus", [("amd64",), ("arm64",), ("amd64", "arm64")])
+def test_failed_targets_do_not_reuse_old_image_inputs_or_hide_other_failures(batch, failed_cpus, capsys):
+    batch.failures.update(("gnu", cpu) for cpu in failed_cpus)
+    with pytest.raises(RuntimeError, match="Local Linux CI failed: .*target failed"):
         linux_validation.validate_linux(batch.layout, scope="full")
     report = json.loads(next(batch.layout.output_root.glob("reports/local-linux-ci/*/results.json")).read_text())
     assert report["status"] == "failed"
-    assert [item["build"] for item in report["targets"]] == ["failed", "failed", "passed", "passed"]
+    assert [item["build"] for item in report["targets"]] == [
+        "failed" if cpu in failed_cpus else "passed" for cpu in ("amd64", "arm64")
+    ] + ["passed", "passed"]
+    assert report["image"]["status"] == "not-run"
     assert not any(kind in {"collect", "image", "security"} for kind, _ in batch.calls)
+    output = capsys.readouterr().out
+    assert all(f"FAILED Linux gnu/{cpu}: target failed" in output for cpu in failed_cpus)
+    assert "PASSED Linux musl/amd64; network runtime: passed" in output
 
 
 @pytest.mark.parametrize("failure", ["webui", "security"])

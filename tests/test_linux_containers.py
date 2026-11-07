@@ -13,14 +13,44 @@ from emule_workspace.linux_containers import _package_gnu_deb
 from emule_workspace.linux_containers import linux_test_plan
 
 
-def test_full_native_suite_executes_workspace_and_cross_suite_compiles_it():
-    assert linux_test_plan("full", cross=False) == [("workspace-tests", ["--workspace"])]
-    cross = linux_test_plan("full", cross=True)
-    assert cross[0] == ("all-tests-build", ["--workspace", "--no-run"])
-    assert [label for label, _ in cross[1:]] == ["native-library-tests", "durability-tests"]
-    assert linux_test_plan("portable", cross=False) == cross[1:]
+def test_full_native_suite_uses_candidate_definitions_and_cross_compiles_both(tmp_path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "rust_quality_gate.py").write_text('''
+def test_workspace_step():
+    return "workspace", ["cargo", "test", "--workspace", "--locked"]
+def test_vpn_leak_step():
+    return "egress", ["cargo", "test", "--features", "egress-audit", "--test", "vpn_leak_egress", "--locked", "--", "--test-threads=1"]
+''')
+    native = linux_test_plan("full", cross=False, rust_root=tmp_path)
+    assert native == [("workspace-tests", ["--workspace"]), ("vpn-egress-tests", [
+        "--features", "egress-audit", "--test", "vpn_leak_egress", "--", "--test-threads=1"])]
+    cross = linux_test_plan("full", cross=True, rust_root=tmp_path)
+    assert cross[0] == ("workspace-tests-build", ["--workspace", "--no-run"])
+    assert cross[1][1][-3:] == ["--no-run", "--", "--test-threads=1"]
+    assert [label for label, _ in cross[2:]] == ["native-library-tests", "tracker-tests", "durability-tests"]
+    assert cross[3][1] == ["--lib", "-p", "emulebb-kad-net", "tracker::tests"]
+    assert linux_test_plan("portable", cross=False) == cross[2:]
+    portable = cross[2][1]
+    assert "emulebb-kad-proto" in portable and "emulebb-kad-routing" in portable and "emulebb-index" in portable
+    assert "emulebb-core" not in portable and "emulebb-kad-dht" not in portable
     with pytest.raises(ValueError):
         linux_test_plan("skip", cross=False)
+    with pytest.raises(ValueError, match="candidate Rust"):
+        linux_test_plan("full", cross=False)
+
+
+def test_changed_canonical_egress_definition_is_not_silently_replaced(tmp_path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "rust_quality_gate.py").write_text('''
+def test_workspace_step():
+    return "workspace", ["cargo", "test", "--workspace", "--locked"]
+def test_vpn_leak_step():
+    return "unsafe drift", ["cargo", "test", "--test", "different-test"]
+''')
+    with pytest.raises(RuntimeError, match="locked Cargo test"):
+        linux_test_plan("full", cross=False, rust_root=tmp_path)
 
 
 def test_timed_out_wsl_job_removes_only_its_owned_container(tmp_path, monkeypatch):
