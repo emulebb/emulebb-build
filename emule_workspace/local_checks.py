@@ -78,16 +78,13 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
     commands.append((repo, [py, str(tooling / "ci" / "check-basic-hygiene.py"),
                             "--repo-root", str(repo), "--repo-kind",
                             {"emulebb-build": "emulebb-build", "emulebb-tooling": "tooling"}.get(repo.name, "generic")]))
-    if any(p.startswith(".github/workflows/") for p in paths):
+    workflow_changed = any(p.startswith(".github/workflows/") for p in paths)
+    if workflow_changed and repo.name != "emulebb-rust":
         commands.append((repo, ["go", "run", "github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca"]))
     implementation = any(not (p.endswith(".md") or p.startswith("docs/")) for p in paths)
     if repo.name == "emulebb-rust":
-        gate = "ci" if stage == "push" and implementation else "branch-check"
+        gate = "pre-push" if stage == "push" and implementation else "branch-ci" if workflow_changed else "branch-check"
         commands.append((repo, [py, "tools/rust_quality_gate.py", gate]))
-        if stage == "push" and implementation:
-            commands.append((repo, ["cargo", "deny", "check", "advisories", "licenses", "sources"]))
-            harness = root / "repos" / "emulebb-build-tests"
-            commands.append((harness, [py, "scripts/rust-rest-openapi-ci.py"]))
     if stage == "push" and repo.name == "emulebb-build" and implementation:
         tests = {"tests/test_local_checks.py", "tests/test_ci_workflows.py", "tests/test_locks.py"}
         for path in paths:
