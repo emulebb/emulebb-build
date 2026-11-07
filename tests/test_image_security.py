@@ -76,9 +76,11 @@ def scanner(tmp_path, monkeypatch):
         elif faults["vulnerability"] and command[command.index("--platform", command.index("image")) + 1] == "linux/amd64":
             raise RuntimeError("fixable HIGH CVE")
     monkeypatch.setattr(image_security, "LinuxDocker", Docker)
+    monkeypatch.setattr(image_security, "git_output", lambda *args: "a" * 40)
+    monkeypatch.setattr(image_security.subprocess, "check_output", lambda *args, **kwargs: "1000\n")
     monkeypatch.setattr(image_security, "smoke_image", lambda *args, **kwargs: smoke)
     monkeypatch.setattr(image_security, "run_owned_container", run)
-    return SimpleNamespace(layout=SimpleNamespace(output_root=output), archive=archive,
+    return SimpleNamespace(layout=SimpleNamespace(output_root=output, tests_repo_root=tmp_path / "harness"), archive=archive,
                            evidence=evidence, faults=faults, calls=calls)
 
 
@@ -93,6 +95,8 @@ def test_both_cpu_scans_require_inventory_and_hard_vulnerability_gate(scanner):
         assert image_security.TRIVY_IMAGE in command
         assert command[command.index("--input") + 1] in ("/scan/amd64.tar", "/scan/arm64.tar")
         assert not any("docker.sock" in argument for argument in command)
+        assert command[command.index("--user") + 1] == "1000:1000"
+        assert "TRIVY_CACHE_DIR=/cache" in command
     vulnerabilities = [command for command in scanner.calls if "--scanners" in command]
     assert len(vulnerabilities) == 2
     for command in vulnerabilities:
