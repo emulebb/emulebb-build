@@ -9,6 +9,13 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def test_branch_check_leaves_concurrency_to_reusable_workflow() -> None:
+    text = (_repo_root() / ".github/workflows/branch-check.yml").read_text(encoding="utf-8")
+    # WHY: identical caller/callee groups cancel the caller before any jobs run.
+    assert "concurrency:" not in text
+    assert "emulebb/emulebb-tooling/.github/workflows/branch-check.yml@" in text
+
+
 def _workspace_root() -> Path:
     return _repo_root().parents[1]
 
