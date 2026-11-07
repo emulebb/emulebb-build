@@ -190,6 +190,7 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
         raise RuntimeError("Local checks require a repository inside repos or workspaces")
     if repo != Path(git(repo, "rev-parse", "--show-toplevel")).resolve():
         raise RuntimeError("--repo must identify the repository root")
+    checked_head = git(repo, "rev-parse", "HEAD") if stage == "push" else None
     paths = changed_paths(repo, stage, remote, updates)
     if not paths:
         print("No outgoing file changes; no local checks needed.")
@@ -233,7 +234,12 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
         if result.returncode:
             print("\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-25:]))
             raise RuntimeError(f"Local check failed ({result.returncode}); evidence: {log_path}")
-    if stage == "push" and git(repo, "status", "--porcelain"):
-        raise RuntimeError("Validation changed the worktree; review changes before pushing")
+    if stage == "push":
+        # WHY: a clean commit made during validation changes the checked source
+        # without leaving a dirty tree. Its gates must run before it can push.
+        if git(repo, "rev-parse", "HEAD") != checked_head:
+            raise RuntimeError("HEAD changed during validation; validate the intended commit before pushing")
+        if git(repo, "status", "--porcelain"):
+            raise RuntimeError("Validation changed the worktree; review changes before pushing")
     print(f"Local checks passed; evidence: {reports}")
     print("Other OS builds, hosted CodeQL, permissions and publication still require GitHub.")
