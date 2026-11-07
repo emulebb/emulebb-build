@@ -53,6 +53,7 @@ def validate_linux(layout, *, scope: str) -> Path:
               "targets": [], "githubRequired": []}
     failures = []
     print(f"Local Linux CI ({scope}); evidence: {root}", flush=True)
+    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     try:
         webui = root / "webui"
         with (root / "webui-build.log").open("w", encoding="utf-8") as log:
@@ -61,6 +62,7 @@ def validate_linux(layout, *, scope: str) -> Path:
         for target in plan:
             entry = {**target, "build": "delegated" if not target["buildAvailable"] else "running"}
             report["targets"].append(entry)
+            path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             if target["runtime"] != "native":
                 reason = "Pinned QEMU user-mode lacks SO_BINDTOIFINDEX; network runtime requires a native runner"
                 if not target["buildAvailable"]:

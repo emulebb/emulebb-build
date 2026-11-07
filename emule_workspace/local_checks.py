@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -65,6 +66,34 @@ def check_whitespace(repo: Path, stage: str, remote: str, updates: str | None) -
             git(repo, "diff", "--check", base, tip, "--")
 
 
+def linux_push_scope(paths: set[str], repo: Path | None = None) -> str:
+    """Expand platform, dependency, and packaging changes to all available CPUs."""
+    platform_owners = (
+        ".github/workflows/", ".cargo/", "packaging/", "policy/",
+        "crates/emulebb-miniupnpc", "crates/emulebb-pcpnatpmp",
+        "crates/emulebb-kad-net/src/socket_opts", "crates/emulebb-ed2k/src/long_path",
+        "crates/emulebb-ed2k/src/ed2k_transfer/fs_durability",
+        "tools/ci-toolchain.json", "tools/rust_quality_gate.py", "tools/release_",
+    )
+    if any(path.startswith(platform_owners) or Path(path).name in {
+        "Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml",
+    } for path in paths):
+        return "full"
+    if repo is not None:
+        for path in paths:
+            if not path.endswith(".rs"):
+                continue
+            source = repo / path
+            # WHY: platform code can live outside known owners. Missing files
+            # include deletions; neither case may escape cross-target checks.
+            if not source.is_file() or re.search(
+                r"\b(?:windows|unix|target_(?:os|arch|env|family|endian|pointer_width))\b",
+                source.read_text(encoding="utf-8"),
+            ):
+                return "full"
+    return "musl"
+
+
 def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path) -> list[tuple[Path, list[str]]]:
     """Choose checks by repository and changed surface, without running them."""
     tooling = root / "repos" / "emulebb-tooling"
@@ -86,6 +115,9 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
     if repo.name == "emulebb-rust":
         gate = "pre-push" if stage == "push" and implementation else "branch-ci" if workflow_changed else "branch-check"
         commands.append((repo, [py, "tools/rust_quality_gate.py", gate]))
+        if stage == "push" and implementation:
+            commands.append((root / "repos/emulebb-build", [py, "-B", "-m", "emule_workspace",
+                             "validate-emulebb-rust-linux", "--scope", linux_push_scope(paths, repo)]))
     if stage == "push" and repo.name == "emulebb-build" and implementation:
         tests = {"tests/test_local_checks.py", "tests/test_ci_workflows.py", "tests/test_locks.py"}
         for path in paths:
