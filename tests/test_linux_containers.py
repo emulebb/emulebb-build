@@ -9,6 +9,7 @@ from emule_workspace.linux_containers import LinuxDocker, BINFMT_IMAGE
 from emule_workspace.linux_containers import validate_elf_audit
 from emule_workspace.linux_containers import build_configuration, RUST_IMAGES, MUSL_CROSS_IMAGE
 from emule_workspace.linux_containers import run_owned_container
+from emule_workspace.linux_containers import _package_gnu_deb
 
 
 def test_timed_out_wsl_job_removes_only_its_owned_container(tmp_path, monkeypatch):
@@ -41,6 +42,52 @@ def test_static_musl_audit_rejects_interpreter_shared_dependencies_and_wrong_cpu
     for audit in ("Machine: AArch64\nINTERP", "Machine: AArch64\nNEEDED libgcc_s.so", "Machine: X86-64"):
         with pytest.raises(RuntimeError):
             validate_elf_audit(audit, libc="musl", architecture="arm64")
+
+
+def test_gnu_deb_uses_verified_linux_payload_and_private_native_modes(tmp_path, monkeypatch):
+    from emule_workspace import release
+
+    output = tmp_path / "out"
+    root = output / "packages/gnu-arm64"
+    stage = root / "staging/emulebb-rust"
+    (stage / "webui").mkdir(parents=True)
+    (stage / "licenses").mkdir()
+    (stage / "emulebb-rust").write_bytes(b"verified Linux ELF payload")
+    (stage / "webui/index.html").write_text("bundled SPA")
+    (stage / "licenses/native-LICENSE").write_text("native notice")
+    rust = tmp_path / "rust"
+    rust.mkdir()
+    for name in ("LICENSE", "emulebb-rust-settings.example.toml"):
+        (rust / name).write_text("fixture")
+    tooling = tmp_path / "tooling"
+    docs = tooling / "docs/products/emulebb-rust"
+    docs.mkdir(parents=True)
+    (docs / "RELEASE-SCOPE.md").write_text("scope")
+    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=rust, tooling_repo_root=tooling)
+    version = "0.1.0-beta.2"
+    deb = root / f"emulebb-rust-v{version}-linux-arm64.deb"
+    calls = []
+    def package(docker, arguments, log, **kwargs):
+        calls.append(arguments)
+        deb.write_bytes(b"DEB fixture")
+    def sbom(**kwargs):
+        (kwargs["package_root"] / "SBOM.spdx.json").write_text('{"spdxVersion":"SPDX-2.3"}')
+    monkeypatch.setattr("emule_workspace.linux_containers.run_owned_container", package)
+    monkeypatch.setattr(release, "_write_emulebb_rust_linux_sbom", sbom)
+    files = _package_gnu_deb(layout, object(), root=root, stage=stage, version=version,
+                             architecture="arm64", build_arch="amd64", builder="cross-builder",
+                             mounts=[], manifest={"sourceDirty": False, "target": "aarch64-unknown-linux-gnu"},
+                             log_root=root)
+    assert (root / "deb/usr/lib/emulebb-rust/emulebb-rust").read_bytes() == (stage / "emulebb-rust").read_bytes()
+    assert set(path.name for path in (root / "deb").iterdir()) == {"usr", "DEBIAN"}
+    control = (root / "deb/DEBIAN/control").read_text()
+    assert "Architecture: arm64" in control and "Depends: libc6 (>= 2.36)" in control
+    assert "--tmpfs" in calls[0]
+    assert "--root-owner-group" in calls[0][-1] and "chmod 0644" in calls[0][-1]
+    manifest = json.loads(files[1].read_text())
+    assert manifest["sha256"] == release._sha256(deb)
+    assert manifest["target"] == "aarch64-unknown-linux-gnu"
+    assert manifest["sbomSha256"] == release._sha256(files[2])
 
 
 @pytest.mark.parametrize("platforms,machine", [("linux/amd64", "aarch64"), ("linux/amd64, linux/arm64", "x86_64")])

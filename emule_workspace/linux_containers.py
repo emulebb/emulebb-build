@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shlex
 import shutil
 import sys
 import tomllib
@@ -339,9 +340,69 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     manifest["sourceDirty"] = bool(git_output(rust, "status", "--porcelain"))
     manifest_path = root / f"{archive.name}.manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    release._write_sha256sums(root / "SHA256SUMS", (archive, manifest_path, sbom))
+    deb_files = ()
+    if libc == "gnu":
+        deb_files = _package_gnu_deb(layout, docker, root=root, stage=stage, version=version,
+                                     architecture=architecture, build_arch=build_arch,
+                                     builder=builder, mounts=mounts, manifest=manifest, log_root=log_root)
+    release._write_sha256sums(root / "SHA256SUMS", (archive, manifest_path, sbom, *deb_files))
     print(f"Linux {architecture}/{libc} package: {archive}")
     return archive
+
+
+def _package_gnu_deb(layout, docker, *, root: Path, stage: Path, version: str, architecture: str,
+                     build_arch: str, builder: str, mounts: list[str], manifest: dict, log_root: Path) -> tuple[Path, ...]:
+    """Package the exact GNU payload without touching the canonical Windows stage."""
+    from . import release
+    deb_root = root / "deb"
+    if not deb_root.resolve().is_relative_to(layout.output_root.resolve()):
+        raise RuntimeError("GNU DEB staging must remain below the operator output root")
+    if deb_root.exists():
+        shutil.rmtree(deb_root)
+    release._stage_emulebb_rust_linux_tree(
+        destination=deb_root / "usr", executable=stage / "emulebb-rust", webui=stage / "webui",
+        rust_root=layout.emulebb_rust_repo_root, tooling_root=layout.tooling_repo_root,
+        version=version, arch=architecture)
+    release._write_emulebb_rust_deb_control(deb_root, version=version, arch=architecture,
+                                           dependencies="libc6 (>= 2.36), libgcc-s1, ca-certificates")
+    docs = deb_root / "usr/share/doc/emulebb-rust"
+    shutil.copytree(stage / "licenses", docs / "licenses")
+    deb = root / f"emulebb-rust-v{version}-linux-{architecture}.deb"
+    release._write_emulebb_rust_linux_sbom(layout=layout, rust_root=layout.emulebb_rust_repo_root,
+                                         package_root=deb_root, release_root=root,
+                                         asset_name=deb.name, version=version, arch=architecture)
+    sbom = deb.with_name(deb.name + ".sbom.spdx.json")
+    shutil.copy2(deb_root / "SBOM.spdx.json", sbom)
+    (deb_root / "SBOM.spdx.json").replace(docs / "SBOM.spdx.json")
+    scratch = root / "native-deb"
+    scratch.mkdir(exist_ok=True)
+    relative = root.relative_to(layout.output_root.resolve()).as_posix()
+    native = f"/output/{relative}/native-deb"
+    source = f"/output/{relative}/deb"
+    destination = f"/output/{relative}/{deb.name}"
+    q = shlex.quote
+    script = "\n".join([
+        "set -eu", f"cp -a {q(source)}/. {q(native)}/",
+        f"find {q(native)} -type d -exec chmod 0755 {{}} +",
+        f"find {q(native)} -type f -exec chmod 0644 {{}} +",
+        "chmod 0755 " + " ".join(q(native + path) for path in
+            ("/usr/bin/emulebb-rust", "/usr/bin/emulebb-rust-launch",
+             "/usr/lib/emulebb-rust/emulebb-rust", "/usr/lib/emulebb-rust/launch")),
+        f"dpkg-deb --build --root-owner-group {q(native)} {q(destination)}",
+    ])
+    # DrvFS modes must not enter an installable Linux artifact.
+    run_owned_container(docker, ["--rm", "--platform", f"linux/{build_arch}", *mounts,
+                                 "--tmpfs", f"{native}:rw,exec,nosuid,nodev,size=256m,mode=0700",
+                                 builder, "sh", "-ec", script], log_root / "deb.log", timeout=300)
+    deb_manifest = {**manifest, "asset": deb.name, "sha256": release._sha256(deb),
+                    "sbom": sbom.name, "sbomSha256": release._sha256(sbom),
+                    "executable": "/usr/lib/emulebb-rust/emulebb-rust",
+                    "webuiRoot": "/usr/lib/emulebb-rust/webui",
+                    "files": release._staged_package_file_hashes(deb_root)}
+    manifest_path = deb.with_name(deb.name + ".manifest.json")
+    manifest_path.write_text(json.dumps(deb_manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"Linux {architecture} GNU DEB: {deb}")
+    return deb, manifest_path, sbom
 
 
 def validate_elf_audit(audit: str, *, libc: str, architecture: str) -> None:
