@@ -57,7 +57,8 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
                             "--repo-root", str(repo), "--policy-path", str(policy),
                             "--paths-file", str(output / "tmp" / "local-check" / f"{repo.name}-{stage}-paths.json")]))
     commands.append((repo, [py, str(tooling / "ci" / "check-basic-hygiene.py"),
-                            "--repo-root", str(repo)]))
+                            "--repo-root", str(repo), "--repo-kind",
+                            {"emulebb-build": "emulebb-build", "emulebb-tooling": "tooling"}.get(repo.name, "generic")]))
     if any(p.startswith(".github/workflows/") for p in paths):
         commands.append((repo, ["go", "run", "github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca"]))
     implementation = any(not (p.endswith(".md") or p.startswith("docs/")) for p in paths)

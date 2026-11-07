@@ -13,6 +13,7 @@ def test_branch_check_leaves_concurrency_to_reusable_workflow() -> None:
     text = (_repo_root() / ".github/workflows/branch-check.yml").read_text(encoding="utf-8")
     # WHY: identical caller/callee groups cancel the caller before any jobs run.
     assert "concurrency:" not in text
+    assert "repo_kind: emulebb-build" in text
     assert "emulebb/emulebb-tooling/.github/workflows/branch-check.yml@" in text
 
 
@@ -85,7 +86,7 @@ def test_build_baseline_uses_supported_reusable_inputs() -> None:
     workflow = _repo_root() / ".github" / "workflows" / "baseline.yml"
     text = workflow.read_text(encoding="utf-8")
 
-    assert "uses: emulebb/emulebb-tooling/.github/workflows/reusable-baseline.yml@96825d9f3e2d8241abd8aa6a39a33bfdd7c9c264" in text
+    assert "uses: emulebb/emulebb-tooling/.github/workflows/reusable-baseline.yml@01e96f56d9f3939e109f78f724902fbb7febc029" in text
     assert "repo_kind: emulebb-build" in text
     assert "extra_step_script:" not in text
     assert "extra_commands:" in text
