@@ -263,3 +263,30 @@ def test_dirty_tree_blocks_push_before_any_check(tmp_path, monkeypatch):
     monkeypatch.setattr(local_checks, "git", lambda repo, *args: str(repo) if args[0] == "rev-parse" else "dirty.txt")
     with pytest.raises(RuntimeError, match="clean worktree"):
         local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=tmp_path, output=tmp_path / "output")
+
+
+@pytest.mark.parametrize("commit_during_check", [False, True])
+def test_push_is_bound_to_checked_head_even_when_tree_stays_clean(tmp_path, monkeypatch, commit_during_check):
+    repo = tmp_path / "repos/emulebb-build"
+    repo.mkdir(parents=True)
+    revision = ["a" * 40]
+    def git_state(repo, *args):
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(repo)
+        if args == ("rev-parse", "HEAD"):
+            return revision[0]
+        return ""
+    def check(command, **kwargs):
+        if commit_during_check:
+            revision[0] = "b" * 40
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(local_checks, "git", git_state)
+    monkeypatch.setattr(local_checks, "changed_paths", lambda *args: {"sample.py"})
+    monkeypatch.setattr(local_checks, "check_whitespace", lambda *args: None)
+    monkeypatch.setattr(local_checks, "check_plan", lambda *args: [(repo, ["check"])])
+    monkeypatch.setattr(local_checks.subprocess, "run", check)
+    if commit_during_check:
+        with pytest.raises(RuntimeError, match="HEAD changed during validation"):
+            local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=tmp_path, output=tmp_path / "output")
+    else:
+        local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=tmp_path, output=tmp_path / "output")
