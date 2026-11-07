@@ -1629,6 +1629,27 @@ def linux_containers(*, wsl_distro: str, setup_arm64: bool, workspace_options: W
     _locked("linux containers", verify)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("validate-emulebb-rust-image")
+@_common_options
+@click.option("--archive", type=click.Path(path_type=Path), required=True)
+@click.option("--image", required=True)
+@click.option("--architecture", "architectures", type=click.Choice(["amd64", "arm64"]), multiple=True,
+              default=("amd64", "arm64"), show_default=True)
+@click.option("--security-dir", type=click.Path(path_type=Path))
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def validate_emulebb_rust_image(*, archive: Path, image: str, architectures: tuple[str, ...], security_dir: Path | None,
+                                wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
+    """Run fresh image lifecycle, SBOM and fixable HIGH/CRITICAL CVE gates."""
+    from .image_security import validate_image
+
+    def validate(**kwargs: Any) -> None:
+        report = validate_image(kwargs["layout"], archive=archive, image=image, architectures=architectures,
+                                security_dir=security_dir, wsl_distro=wsl_distro)
+        print(f"Image validation passed: {report}")
+
+    _locked("validate emulebb-rust image", validate)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("smoke-emulebb-rust-image")
 @_common_options
 @click.option("--archive", type=click.Path(path_type=Path), required=True)
