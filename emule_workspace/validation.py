@@ -137,8 +137,9 @@ def assert_workspace_hooks_installed(layout: WorkspaceLayout) -> None:
 
     topology = canonical_topology()
     expected_hooks_path = (layout.emule_workspace_root / "repos" / "emulebb-tooling" / "hooks").resolve()
-    if not (expected_hooks_path / "pre-commit").is_file():
-        raise RuntimeError(f"Shared pre-commit hook is missing: {expected_hooks_path / 'pre-commit'}")
+    for hook in ("pre-commit", "pre-push"):
+        if not (expected_hooks_path / hook).is_file():
+            raise RuntimeError(f"Shared hook is missing: {expected_hooks_path / hook}")
     targets = [layout.emule_workspace_root / repo.relative_path for repo in topology.repos if repo.name in SHARED_HOOK_REPO_NAMES]
     targets.extend(layout.emule_workspace_root / worktree.relative_path for worktree in topology.app_repo.worktrees if worktree.active)
     for target in targets:

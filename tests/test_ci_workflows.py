@@ -50,7 +50,7 @@ def test_reusable_workspace_command_owns_materialized_ci_setup() -> None:
     assert "input_artifact_name:" in text
     assert "input_artifact_output_path:" in text
     assert "if: ${{ inputs.input_artifact_name != '' }}" in text
-    assert "uses: actions/download-artifact@v8" in text
+    assert "uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" in text
     assert "id: workspace-output" in text
     assert '"root=$outputRoot" | Add-Content -LiteralPath $env:GITHUB_OUTPUT' in text
     assert "steps.workspace-output.outputs.root, inputs.input_artifact_output_path" in text
@@ -78,7 +78,7 @@ def test_build_baseline_uses_supported_reusable_inputs() -> None:
     workflow = _repo_root() / ".github" / "workflows" / "baseline.yml"
     text = workflow.read_text(encoding="utf-8")
 
-    assert "uses: emulebb/emulebb-tooling/.github/workflows/reusable-baseline.yml@main" in text
+    assert "uses: emulebb/emulebb-tooling/.github/workflows/reusable-baseline.yml@283eabd95e2a1d8176d526ea559ff05c2114f626" in text
     assert "repo_kind: emulebb-build" in text
     assert "extra_step_script:" not in text
     assert "extra_commands:" in text

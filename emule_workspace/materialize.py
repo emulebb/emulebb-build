@@ -600,8 +600,9 @@ def install_workspace_hooks(root: Path, topology: WorkspaceTopology) -> None:
     """Configures workspace repos and worktrees to use the shared hook path."""
 
     hooks_path = root / "repos" / "emulebb-tooling" / "hooks"
-    if not (hooks_path / "pre-commit").is_file():
-        raise RuntimeError(f"Shared pre-commit hook is missing: {hooks_path / 'pre-commit'}")
+    for hook in ("pre-commit", "pre-push"):
+        if not (hooks_path / hook).is_file():
+            raise RuntimeError(f"Shared hook is missing: {hooks_path / hook}")
     targets = [root / repo.relative_path for repo in topology.repos if repo.name in SHARED_HOOK_REPO_NAMES]
     targets.extend(root / worktree.relative_path for worktree in topology.app_repo.worktrees if worktree.active)
     for target in targets:

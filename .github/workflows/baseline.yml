@@ -2,18 +2,23 @@ name: Baseline
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: baseline-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   baseline:
-    uses: emulebb/emulebb-tooling/.github/workflows/reusable-baseline.yml@main
+    uses: emulebb/emulebb-tooling/.github/workflows/reusable-baseline.yml@283eabd95e2a1d8176d526ea559ff05c2114f626
     with:
       policy_path: manifests/privacy-guard/policy.v1.json
       repo_kind: emulebb-build
       extra_commands: |
         python -m pip install -e .[dev]
         python -m pytest tests/test_ci_workflows.py
-      tooling_ref: main
+      tooling_ref: 283eabd95e2a1d8176d526ea559ff05c2114f626

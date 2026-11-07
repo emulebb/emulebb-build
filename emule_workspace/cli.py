@@ -360,6 +360,31 @@ def main() -> None:
     """Build, validate, test, and package an eMuleBB workspace."""
 
 
+@main.command("local-check")
+@click.option("--repo", type=click.Path(path_type=Path, exists=True), required=True)
+@click.option("--stage", type=click.Choice(["commit", "push"]), default="push")
+@click.option("--remote", default="origin")
+@click.option("--push-stdin", is_flag=True, help="Read Git pre-push ref updates from stdin.")
+@_common_options
+def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, workspace_options, layout) -> None:
+    """Run local CI equivalents before committing or pushing."""
+    import sys
+    from .local_checks import run_checks
+
+    updates = sys.stdin.read() if push_stdin else None
+
+    def execute(**kwargs):
+        return run_checks(
+            repo=repo, stage=stage, remote=remote, updates=updates,
+            root=workspace_options.workspace_root.resolve(), output=workspace_options.output_root.resolve(),
+        )
+
+    if stage == "commit":
+        execute()
+    else:
+        _locked("local-check", execute)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command()
 @click.option("--workspace-name", default=None, help="Workspace name. Defaults to canonical topology.")
 @click.option("--artifacts-seed-root", default=None, help="Optional third-party artifact seed root.")
