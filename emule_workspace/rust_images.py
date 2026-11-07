@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 from uuid import uuid4
 
 from .git import git_output
@@ -82,7 +84,9 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
     cache.mkdir(parents=True, exist_ok=True)
     report = {"status": "running", "origin": "github-actions" if os.environ.get("GITHUB_ACTIONS") == "true" else "local-development",
               "image": image, "architectures": architectures, "buildkitImage": BUILDKIT_IMAGE, "inputs": inputs,
-              "dockerfileSha256": _sha256(source / "Dockerfile")}
+              "dockerfileSha256": _sha256(source / "Dockerfile"),
+              "sourceSha": inputs[0]["source"]["emulebbRust"]["commit"] if inputs else None,
+              "builderSha": git_output(Path(__file__).resolve().parents[1], "rev-parse", "HEAD").strip()}
     path = reports / "inputs.json"
     log = reports / "build.log"
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -128,4 +132,79 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
             path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             if failed_cleanup_only:
                 raise RuntimeError(f"Could not remove owned image builder {builder}; diagnostics: {reports}")
+    manifest = {"schema": "emulebb.rust.image/1", **{key: value for key, value in report.items() if key != "status"}}
+    archive.with_name(archive.name + ".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return archive
+
+
+def remove_smoke_containers(docker: LinuxDocker, owner: str) -> None:
+    """Remove only containers carrying this invocation's unpredictable owner token."""
+    listing = docker.run("ps", "--all", "--filter", f"label=io.emulebb.ci.image-smoke-owner={owner}",
+                         "--format", "{{.ID}}", capture=True, timeout=30).stdout.split()
+    if listing:
+        if any(re.fullmatch(r"[0-9a-f]{12,64}", value) is None for value in listing):
+            raise RuntimeError("Docker returned an invalid owned-container ID")
+        docker.run("rm", "--force", *listing, capture=True, timeout=60)
+
+
+def smoke_image(layout, *, archive: Path, image: str, architectures: tuple[str, ...], wsl_distro: str = "Ubuntu") -> Path:
+    """Run the shared image contract against exact bytes through local Linux/WSL."""
+    from .release import _sha256
+
+    archive, output = archive.resolve(), layout.output_root.resolve()
+    if not archive.is_relative_to(output) or not archive.is_file():
+        raise RuntimeError("Image smoke requires an archive below the operator output root")
+    manifest = json.loads(archive.with_name(archive.name + ".manifest.json").read_text(encoding="utf-8"))
+    source_sha = git_output(layout.emulebb_rust_repo_root, "rev-parse", "HEAD").strip()
+    for repo in (layout.emulebb_rust_repo_root, layout.tests_repo_root):
+        if git_output(repo, "status", "--porcelain").strip():
+            raise RuntimeError("Image smoke requires clean Rust and harness sources")
+    if (manifest.get("schema") != "emulebb.rust.image/1" or manifest.get("sourceSha") != source_sha
+            or manifest.get("archiveSha256") != _sha256(archive) or manifest.get("image") != image):
+        raise RuntimeError("Image archive does not match the selected clean source, tag and bytes")
+    if (not architectures or len(set(architectures)) != len(architectures)
+            or set(architectures) - set(manifest.get("architectures", []))):
+        raise RuntimeError("Image archive does not cover the requested architectures")
+    owner = uuid4().hex
+    reports = output / "reports/rust-image-smoke" / owner
+    reports.mkdir(parents=True)
+    report = {"status": "running", "image": image, "archiveSha256": manifest["archiveSha256"],
+              "sourceSha": source_sha, "architectures": architectures,
+              "harnessSha": git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip()}
+    log = reports / "smoke.log"
+    with LinuxDocker(wsl_distro) as docker:
+        docker.path(output)
+        python = "python3" if docker.prefix else sys.executable
+        command = [*docker.prefix, python, "-B", docker.path(layout.tests_repo_root) + "/scripts/smoke-rust-container.py",
+                   "--archive", docker.path(archive.parent) + "/" + archive.name, "--image", image,
+                   "--report-path", docker.path(reports) + "/image-smoke.json", "--run-id", owner]
+        for arch in architectures:
+            command.extend(["--platform", f"linux/{arch}"])
+        print(f"Validating {image}; diagnostics: {reports}", flush=True)
+        try:
+            with log.open("w", encoding="utf-8") as stream:
+                subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=600)
+            result = json.loads((reports / "image-smoke.json").read_text(encoding="utf-8"))
+            if (result.get("status") != "passed" or result.get("archiveSha256") != manifest["archiveSha256"]
+                    or sorted(item["platform"] for item in result.get("platforms", []))
+                    != sorted(f"linux/{arch}" for arch in architectures)):
+                raise RuntimeError("Fresh image smoke evidence is incomplete or does not match the archive")
+            report["status"] = "passed"
+        except BaseException as error:
+            report.update(status="failed", error=str(error))
+            if log.is_file():
+                print("\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-30:]), flush=True)
+            raise RuntimeError(f"Image smoke failed; diagnostics: {reports}") from error
+        finally:
+            original_error = sys.exception()
+            try:
+                remove_smoke_containers(docker, owner)
+            except Exception as cleanup_error:
+                report.update(status="failed", cleanupError=str(cleanup_error))
+                if original_error is not None:
+                    original_error.add_note(f"Owned image-smoke cleanup failed: {cleanup_error}")
+                else:
+                    raise
+            finally:
+                (reports / "inputs.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return reports / "image-smoke.json"

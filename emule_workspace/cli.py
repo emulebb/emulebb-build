@@ -1629,6 +1629,26 @@ def linux_containers(*, wsl_distro: str, setup_arm64: bool, workspace_options: W
     _locked("linux containers", verify)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("smoke-emulebb-rust-image")
+@_common_options
+@click.option("--archive", type=click.Path(path_type=Path), required=True)
+@click.option("--image", required=True)
+@click.option("--architecture", "architectures", type=click.Choice(["amd64", "arm64"]), multiple=True,
+              default=("amd64", "arm64"), show_default=True)
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def smoke_emulebb_rust_image(*, archive: Path, image: str, architectures: tuple[str, ...], wsl_distro: str,
+                             workspace_options: WorkspaceOptions, layout) -> None:
+    """Validate a source-verified OCI archive through Linux/WSL Docker."""
+    from .rust_images import smoke_image
+
+    def smoke(**kwargs: Any) -> None:
+        report = smoke_image(kwargs["layout"], archive=archive, image=image,
+                             architectures=architectures, wsl_distro=wsl_distro)
+        print(f"Image smoke passed: {report}")
+
+    _locked("smoke emulebb-rust image", smoke)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("package-emulebb-rust-image-local")
 @_common_options
 @click.option("--release-version", required=True)
