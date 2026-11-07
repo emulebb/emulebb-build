@@ -1553,6 +1553,20 @@ def package_emulebb_rust(
     )(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("validate-emulebb-rust-linux")
+@_common_options
+@click.option("--scope", type=click.Choice(["musl", "full"]), default="musl", show_default=True)
+def validate_emulebb_rust_linux(*, scope: str, workspace_options: WorkspaceOptions, layout) -> None:
+    """Run local GNU/musl gates and name the native GitHub checks still required."""
+    from .linux_validation import validate_linux
+
+    def validate(**kwargs: Any) -> None:
+        report = validate_linux(kwargs["layout"], scope=scope)
+        print(f"Available local Linux gates passed: {report}")
+
+    _locked("validate emulebb-rust linux", validate)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("smoke-emulebb-rust-linux")
 @_common_options
 @click.option("--archive", type=click.Path(path_type=Path), required=True)
