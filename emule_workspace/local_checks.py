@@ -8,6 +8,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from uuid import uuid4
+from time import perf_counter
 
 
 def git(repo: Path, *args: str) -> str:
@@ -150,13 +151,21 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
     for index, (cwd, command) in enumerate(check_plan(repo, paths, stage, root, output)):
         print(f"Local {stage}: {' '.join(command)}", flush=True)
         log_path = reports / f"{index:02d}.log"
-        with log_path.open("w", encoding="utf-8") as log:
-            try:
+        started = perf_counter()
+        result = None
+        error = None
+        try:
+            with log_path.open("w", encoding="utf-8") as log:
                 result = subprocess.run(command, cwd=cwd, env=child_env, stdout=log, stderr=subprocess.STDOUT)
-            except OSError as exc:
-                raise RuntimeError(f"Cannot start required local check {command[0]}: {exc}") from exc
-        results.append({"command": command, "returncode": result.returncode, "log": str(log_path)})
-        (reports / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            error = str(exc)
+            raise RuntimeError(f"Cannot start required local check {command[0]}: {exc}") from exc
+        finally:
+            results.append({"command": command, "returncode": result.returncode if result else None,
+                            "log": str(log_path), "elapsed_seconds": round(perf_counter() - started, 3),
+                            "error": error})
+            (reports / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+        print(f"Local check finished in {results[-1]['elapsed_seconds']:.3f}s", flush=True)
         if result.returncode:
             print("\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-25:]))
             raise RuntimeError(f"Local check failed ({result.returncode}); evidence: {log_path}")

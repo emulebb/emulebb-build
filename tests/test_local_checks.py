@@ -152,6 +152,26 @@ def test_failure_blocks_later_checks_and_writes_evidence(tmp_path, monkeypatch):
     assert list((tmp_path / "output" / "reports").rglob("results.json"))
 
 
+def test_missing_tool_retains_failed_start_evidence(tmp_path, monkeypatch):
+    import json
+    repo = tmp_path / "repos" / "emulebb-build"
+    repo.mkdir(parents=True)
+    monkeypatch.setattr(local_checks, "changed_paths", lambda *args: {"sample.py"})
+    monkeypatch.setattr(local_checks, "git", lambda repo, *args: str(repo) if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(local_checks, "check_plan", lambda *args: [(repo, ["missing-fixture-tool"])])
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("synthetic missing tool")
+
+    monkeypatch.setattr(local_checks.subprocess, "run", missing)
+    with pytest.raises(RuntimeError, match="Cannot start required local check"):
+        local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=tmp_path, output=tmp_path / "output")
+    record = json.loads(next((tmp_path / "output" / "reports").rglob("results.json")).read_text())[0]
+    assert record["returncode"] is None
+    assert record["elapsed_seconds"] >= 0
+    assert record["error"] == "synthetic missing tool"
+
+
 def test_dirty_tree_blocks_push_before_any_check(tmp_path, monkeypatch):
     repo = tmp_path / "repos" / "emulebb-build"
     repo.mkdir(parents=True)
