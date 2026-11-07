@@ -1742,14 +1742,10 @@ def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path) 
 @main.command("package-emulebb-rust-image-ci")
 @click.option("--release-version", required=True)
 @click.option("--assets-dir", type=click.Path(path_type=Path), required=True)
-@click.option("--push", is_flag=True, help="Push the versioned image to GHCR after release approval.")
-@click.option("--channel-tag", help="Also tag the image with a validated channel name such as nightly.")
 def package_emulebb_rust_image_ci(
     *,
     release_version: str,
     assets_dir: Path,
-    push: bool,
-    channel_tag: str | None,
 ) -> None:
     """Build a verified multi-architecture image from the native DEB assets."""
 
@@ -1767,12 +1763,10 @@ def package_emulebb_rust_image_ci(
             output_root=output_root,
             assets_dir=assets_dir,
             version=release_version,
-            push=push,
-            channel_tag=channel_tag,
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
-    print(f"Rust image {'pushed' if push else 'archived'}: {archive or release_version}")
+    print(f"Rust image archived: {archive}")
 
 
 @main.group("vm-lab")

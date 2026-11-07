@@ -7,6 +7,13 @@ from click.testing import CliRunner
 from emule_workspace import cli
 
 
+def test_image_packaging_rejects_direct_publication_options() -> None:
+    for option in ("--push", "--channel-tag"):
+        result = CliRunner().invoke(cli.main, ["package-emulebb-rust-image-ci", option])
+        assert result.exit_code != 0
+        assert f"No such option: {option}" in result.output
+
+
 def test_cli_requires_workspace_root() -> None:
     runner = CliRunner()
 
