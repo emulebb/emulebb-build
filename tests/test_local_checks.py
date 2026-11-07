@@ -41,6 +41,16 @@ def test_deletion_only_push_has_no_checks(repo):
     assert changed_paths(repo, "push", "origin", f"(delete) {'0'*40} refs/heads/old {'1'*40}\n") == set()
 
 
+def test_annotated_tag_checks_the_commit_it_names(repo):
+    (repo / "new.txt").write_text("new\n")
+    git(repo, "add", "new.txt")
+    git(repo, "commit", "-m", "new")
+    git(repo, "tag", "-a", "fixture-tag", "-m", "synthetic tag")
+    tag = git(repo, "rev-parse", "fixture-tag")
+    update = f"refs/tags/fixture-tag {tag} refs/tags/fixture-tag {'0'*40}\n"
+    assert changed_paths(repo, "push", "origin", update) == {"new.txt"}
+
+
 def test_other_ref_cannot_be_certified_by_head(repo):
     update = f"refs/heads/other {'1'*40} refs/heads/other {'0'*40}\n"
     with pytest.raises(RuntimeError, match="push it separately"):
@@ -77,6 +87,11 @@ def test_rust_docs_avoid_native_build_but_source_push_gets_full_gate(tmp_path):
 def test_commit_never_runs_heavy_checks(tmp_path):
     plan = check_plan(tmp_path / "repos" / "emulebb-rust", {"src/main.rs"}, "commit", tmp_path, tmp_path / "out")
     assert not any(command[-1] == "ci" or "deny" in command for _, command in plan)
+
+
+def test_docs_workflow_gets_local_publication_validation(tmp_path):
+    plan = check_plan(tmp_path / "repos" / "emulebb-tooling", {".github/workflows/docs-site.yml"}, "push", tmp_path, tmp_path / "out")
+    assert any(command[-1] == "scripts/docs-publish-check.py" for _, command in plan)
 
 
 def test_topology_routes_to_its_existing_test_owners(tmp_path):
