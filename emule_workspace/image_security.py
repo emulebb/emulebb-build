@@ -2,15 +2,42 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
+import tempfile
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from .linux_containers import LinuxDocker, run_owned_container
 from .rust_images import smoke_image
 
 TRIVY_IMAGE = "docker.io/aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa"
+
+
+def verify_platform_export(path: Path, *, architecture: str, expected_config: str) -> None:
+    """Bind a single-platform Docker export to the verified OCI image config."""
+    with tarfile.open(path, "r:*") as archive:
+        members = archive.getmembers()
+        def read(name: str) -> bytes:
+            matches = [member for member in members if member.name == name]
+            if len(matches) != 1 or not matches[0].isfile() or matches[0].size > 1024 * 1024:
+                raise RuntimeError(f"Docker export requires one bounded regular metadata file: {name}")
+            stream = archive.extractfile(matches[0])
+            if stream is None:
+                raise RuntimeError(f"Cannot read Docker export metadata: {name}")
+            return stream.read()
+        manifest = json.loads(read("manifest.json"))
+        if not isinstance(manifest, list) or len(manifest) != 1 or not isinstance(manifest[0], dict):
+            raise RuntimeError("Scanner input must export exactly one Docker image")
+        config = read(manifest[0]["Config"])
+        if "sha256:" + hashlib.sha256(config).hexdigest() != expected_config:
+            raise RuntimeError("Docker export config does not match the OCI archive")
+        identity = json.loads(config)
+        if identity.get("os") != "linux" or identity.get("architecture") != architecture:
+            raise RuntimeError("Docker export architecture does not match the requested scanner CPU")
 
 
 def validate_image(layout, *, archive: Path, image: str, architectures: tuple[str, ...],
@@ -45,17 +72,21 @@ def validate_image(layout, *, archive: Path, image: str, architectures: tuple[st
         identities = {item["platform"]: item for item in smoke["platforms"]}
         cache = output / "cache/trivy"
         cache.mkdir(parents=True, exist_ok=True)
+        scratch_root = output / "tmp/image-scans"
+        if not scratch_root.resolve().is_relative_to(output):
+            raise RuntimeError("Image scanner scratch must remain below the output root")
+        scratch_root.mkdir(parents=True, exist_ok=True)
         failures = []
-        with LinuxDocker(wsl_distro) as docker:
+        with tempfile.TemporaryDirectory(prefix="platform-", dir=scratch_root) as temporary, LinuxDocker(wsl_distro) as docker:
+            scratch = Path(temporary)
+            if not scratch.resolve().is_relative_to(output):
+                raise RuntimeError("Image scanner scratch escaped the output root")
             docker.path(output)
-            endpoint = docker.run("context", "inspect", "--format", "{{.Endpoints.docker.Host}}", capture=True, timeout=30).stdout.strip()
-            if not endpoint.startswith("unix:///"):
-                raise RuntimeError("The container scanner requires a selected Unix Docker socket")
             host = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
-            mounts = ["--mount", f"type=bind,source={endpoint.removeprefix('unix://')},target=/var/run/docker.sock",
+            mounts = ["--mount", f"type=bind,source={docker.path(scratch)},target=/scan,readonly",
                       "--mount", f"type=bind,source={docker.path(cache)},target=/root/.cache/trivy",
                       "--mount", f"type=bind,source={docker.path(root)},target=/evidence",
-                      "--env", "DOCKER_HOST=unix:///var/run/docker.sock"]
+                      "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
             scanner = docker.run("run", "--rm", "--platform", f"linux/{host}", *mounts,
                                  TRIVY_IMAGE, "--version", capture=True, timeout=180).stdout
             if "Version: 0.75.0" not in scanner:
@@ -73,18 +104,28 @@ def validate_image(layout, *, archive: Path, image: str, architectures: tuple[st
                                                        "{{json .Descriptor}}", image, capture=True, timeout=30).stdout)
                     if descriptor.get("digest") != entry["imageManifestDigest"]:
                         raise RuntimeError(f"Loaded {platform} image changed after OCI lifecycle validation")
+                    exported = scratch / f"{arch}.tar"
+                    docker.run("image", "save", "--platform", platform, "--output", docker.path(scratch) + f"/{arch}.tar",
+                               image, capture=True, timeout=180)
+                    verify_platform_export(exported, architecture=arch, expected_config=identities[platform]["imageConfigDigest"])
+                    entry["scannerInputSha256"] = _sha256(exported)
                     sbom = root / f"{stem}-{arch}.sbom.spdx.json"
-                    command = ["--rm", "--platform", f"linux/{host}", *mounts, TRIVY_IMAGE, "image", "--image-src", "docker",
+                    # Trivy's Docker backend can export the host CPU even when
+                    # --platform selects ARM64. A verified single-CPU archive
+                    # removes that ambiguity and requires no Docker socket.
+                    command = ["--rm", "--platform", f"linux/{host}", *mounts, TRIVY_IMAGE, "image", "--input", f"/scan/{arch}.tar",
                                "--platform", platform, "--no-progress"]
-                    run_owned_container(docker, [*command, "--format", "spdx-json", "--output", f"/evidence/{sbom.name}", image],
+                    run_owned_container(docker, [*command, "--format", "spdx-json", "--output", f"/evidence/{sbom.name}"],
                                          root / f"{stem}-{arch}-sbom.log", timeout=900)
                     document = json.loads(sbom.read_text(encoding="utf-8"))
-                    if (document.get("spdxVersion") != "SPDX-2.3"
-                            or not any(item.get("name") == "libc6" for item in document.get("packages", []))):
-                        raise RuntimeError(f"{platform} SBOM is missing the Ubuntu OS package inventory")
+                    libc_arches = [parse_qs(urlsplit(ref.get("referenceLocator", "")).query).get("arch", [])
+                                   for item in document.get("packages", []) if item.get("name") == "libc6"
+                                   for ref in item.get("externalRefs", []) if ref.get("referenceType") == "purl"]
+                    if document.get("spdxVersion") != "SPDX-2.3" or not any(arch in values for values in libc_arches):
+                        raise RuntimeError(f"{platform} SBOM is missing the correct Ubuntu OS package architecture")
                     vulnerabilities = root / f"{stem}-{arch}.vulnerabilities.txt"
                     run_owned_container(docker, [*command, "--scanners", "vuln", "--ignore-unfixed",
-                                                 "--severity", "HIGH,CRITICAL", "--exit-code", "1", image],
+                                                 "--severity", "HIGH,CRITICAL", "--exit-code", "1"],
                                          vulnerabilities, timeout=900)
                     entry.update(status="passed", sbom=sbom.name, sbomSha256=_sha256(sbom),
                                  vulnerabilities=vulnerabilities.name, vulnerabilitiesSha256=_sha256(vulnerabilities))
