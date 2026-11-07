@@ -8,6 +8,7 @@ import subprocess
 import shutil
 import sys
 import tomllib
+from .git import git_output
 from contextlib import ExitStack
 from uuid import uuid4
 
@@ -265,7 +266,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                 "source": release._emulebb_rust_source_provenance(layout, rust),
                 "files": release._staged_package_file_hashes(stage),
                 "pathMapping": {"source": "/source", "output": "/output", "cargoTarget": target_root}}
-    manifest["sourceDirty"] = bool(release.repo_status_lines(rust))
+    manifest["sourceDirty"] = bool(git_output(rust, "status", "--porcelain"))
     manifest_path = root / f"{archive.name}.manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     release._write_sha256sums(root / "SHA256SUMS", (archive, manifest_path, sbom))
