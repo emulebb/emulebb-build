@@ -107,15 +107,14 @@ def test_rust_docs_avoid_native_build_but_source_push_gets_full_gate(tmp_path):
     repo = tmp_path / "repos" / "emulebb-rust"
     docs = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
     source = check_plan(repo, {"src/main.rs"}, "push", tmp_path, tmp_path / "out")
-    assert not any(command[-1] == "ci" for _, command in docs)
-    assert any(command[-1] == "ci" for _, command in source)
-    assert any("deny" in command for _, command in source)
-    assert any(command[-1].endswith("rust-rest-openapi-ci.py") for _, command in source)
+    assert not any(command[-1] == "pre-push" for _, command in docs)
+    assert sum(command[-1] == "pre-push" for _, command in source) == 1
+    assert not any("deny" in command or command[-1].endswith("rust-rest-openapi-ci.py") for _, command in source)
 
 
 def test_commit_never_runs_heavy_checks(tmp_path):
     plan = check_plan(tmp_path / "repos" / "emulebb-rust", {"src/main.rs"}, "commit", tmp_path, tmp_path / "out")
-    assert not any(command[-1] == "ci" or "deny" in command for _, command in plan)
+    assert not any(command[-1] == "pre-push" or "deny" in command for _, command in plan)
 
 
 def test_docs_workflow_gets_local_publication_validation(tmp_path):
