@@ -93,6 +93,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $outputRoot = [System.IO.Path]::GetFullPath((Join-Path $env:EMULEBB_WORKSPACE_ROOT '..\emulebb-output'))
           New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
           "EMULEBB_WORKSPACE_OUTPUT_ROOT=$outputRoot" | Add-Content -LiteralPath $env:GITHUB_ENV
@@ -104,14 +105,14 @@ jobs:
           }
 
       - name: Checkout build orchestration
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: emulebb/emulebb-build
           ref: ${{ inputs.build_ref }}
           path: repos/emulebb-build
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: ${{ inputs.python_version }}
 
@@ -119,6 +120,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --upgrade pip
           python -m pip install "click>=8.1" "pydantic>=2.0" "jinja2>=3" "jsonschema>=4" "PyYAML>=6" "pywin32" "pywinauto"
 
@@ -127,6 +129,7 @@ jobs:
         working-directory: repos/emulebb-build
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m emule_workspace materialize
 
       - name: Align requested source refs
@@ -136,6 +139,7 @@ jobs:
           APP_REF: ${{ inputs.app_ref }}
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
 
           function Reset-RepoRef {
             param(
@@ -164,13 +168,13 @@ jobs:
 
       - name: Set up Node
         if: ${{ inputs.node_version != '' && inputs.node_cache_dependency_path == '' }}
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ inputs.node_version }}
 
       - name: Set up Node with npm cache
         if: ${{ inputs.node_version != '' && inputs.node_cache_dependency_path != '' }}
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ inputs.node_version }}
           cache: npm
@@ -186,7 +190,7 @@ jobs:
 
       - name: Download input artifact
         if: ${{ inputs.input_artifact_name != '' }}
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ inputs.input_artifact_name }}
           path: ${{ format('{0}/{1}', steps.workspace-output.outputs.root, inputs.input_artifact_output_path) }}
@@ -218,6 +222,7 @@ jobs:
           FAILURE_ARTIFACT_PATH_INPUT: ${{ inputs.failure_artifact_path }}
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
 
           function Resolve-ArtifactPathInput {
             param([string]$RawInput)
@@ -285,7 +290,7 @@ jobs:
 
       - name: Upload failure artifacts
         if: ${{ failure() && inputs.failure_artifact_name != '' && inputs.failure_artifact_path != '' }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ inputs.failure_artifact_name }}
           path: ${{ steps.artifact_paths.outputs.failure_artifact_path }}
@@ -294,7 +299,7 @@ jobs:
 
       - name: Upload artifacts
         if: ${{ inputs.artifact_name != '' && inputs.artifact_path != '' }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ inputs.artifact_name }}
           path: ${{ steps.artifact_paths.outputs.artifact_path }}

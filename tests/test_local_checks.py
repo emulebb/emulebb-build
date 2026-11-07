@@ -1,0 +1,78 @@
+"""Verify outgoing change selection and local gate routing."""
+from pathlib import Path
+import subprocess
+
+import pytest
+
+from emule_workspace.local_checks import changed_paths, check_plan
+
+
+def git(repo, *args):
+    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+
+
+@pytest.fixture
+def repo(tmp_path):
+    git(tmp_path, "init", "-b", "main")
+    git(tmp_path, "config", "user.email", "test@example.invalid")
+    git(tmp_path, "config", "user.name", "Test")
+    (tmp_path / "base.txt").write_text("base\n")
+    git(tmp_path, "add", "base.txt")
+    git(tmp_path, "commit", "-m", "base")
+    git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(tmp_path, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    git(tmp_path, "switch", "-c", "chore/checks")
+    return tmp_path
+
+
+def test_first_push_includes_all_branch_commits_and_deletions(repo):
+    git(repo, "rm", "base.txt")
+    git(repo, "commit", "-m", "delete base")
+    (repo / "new.txt").write_text("new\n")
+    git(repo, "add", "new.txt")
+    git(repo, "commit", "-m", "add new")
+    tip = git(repo, "rev-parse", "HEAD")
+    update = f"refs/heads/chore/checks {tip} refs/heads/chore/checks {'0'*40}\n"
+    assert changed_paths(repo, "push", "origin", update) == {"base.txt", "new.txt"}
+
+
+def test_deletion_only_push_has_no_checks(repo):
+    assert changed_paths(repo, "push", "origin", f"(delete) {'0'*40} refs/heads/old {'1'*40}\n") == set()
+
+
+def test_other_ref_cannot_be_certified_by_head(repo):
+    update = f"refs/heads/other {'1'*40} refs/heads/other {'0'*40}\n"
+    with pytest.raises(RuntimeError, match="push it separately"):
+        changed_paths(repo, "push", "origin", update)
+
+
+def test_multiple_refs_are_checked_and_deletion_does_not_mask_updates(repo):
+    base = git(repo, "rev-parse", "HEAD")
+    (repo / "new.txt").write_text("new\n")
+    git(repo, "add", "new.txt")
+    git(repo, "commit", "-m", "new")
+    tip = git(repo, "rev-parse", "HEAD")
+    updates = f"(delete) {'0'*40} refs/heads/old {base}\nrefs/heads/chore/checks {tip} refs/heads/chore/checks {base}\n"
+    assert changed_paths(repo, "push", "origin", updates) == {"new.txt"}
+
+
+def test_staged_paths_exclude_unstaged_new_files(repo):
+    (repo / "selected.txt").write_text("selected\n")
+    (repo / "unselected.txt").write_text("unselected\n")
+    git(repo, "add", "selected.txt")
+    assert changed_paths(repo, "commit", "origin", None) == {"selected.txt"}
+
+
+def test_rust_docs_avoid_native_build_but_source_push_gets_full_gate(tmp_path):
+    repo = tmp_path / "repos" / "emulebb-rust"
+    docs = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
+    source = check_plan(repo, {"src/main.rs"}, "push", tmp_path, tmp_path / "out")
+    assert not any(command[-1] == "ci" for _, command in docs)
+    assert any(command[-1] == "ci" for _, command in source)
+    assert any("deny" in command for _, command in source)
+    assert any(command[-1].endswith("rust-rest-openapi-ci.py") for _, command in source)
+
+
+def test_commit_never_runs_heavy_checks(tmp_path):
+    plan = check_plan(tmp_path / "repos" / "emulebb-rust", {"src/main.rs"}, "commit", tmp_path, tmp_path / "out")
+    assert not any(command[-1] == "ci" or "deny" in command for _, command in plan)

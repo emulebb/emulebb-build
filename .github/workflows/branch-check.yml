@@ -1,0 +1,14 @@
+name: Branch checks
+on:
+  push:
+    branches: ['feature/**', 'fix/**', 'chore/**']
+permissions:
+  contents: read
+concurrency:
+  group: branch-check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    uses: emulebb/emulebb-tooling/.github/workflows/branch-check.yml@283eabd95e2a1d8176d526ea559ff05c2114f626
+    with:
+      tooling_ref: 283eabd95e2a1d8176d526ea559ff05c2114f626
