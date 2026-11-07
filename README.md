@@ -292,7 +292,8 @@ Live E2E examples:
 Headless Rust client build example:
 
 - `python -m emule_workspace build clients --client emulebb-rust --config Release --platform x64` builds `repos\emulebb-rust` through Cargo and stages `emulebb-rust.exe` under `EMULEBB_WORKSPACE_OUTPUT_ROOT\tools\emulebb-rust\bin`.
-- `python -m emule_workspace package-emulebb-rust --target-os linux --linux-format deb --release-version <version>` creates only the verified DEB when AppImage output is unnecessary; `package-emulebb-rust-image-local --release-version <version>` then builds the repository Docker context outside the checkout and loads `local/emulebb-rust:<version>` into the inherited WSL Docker daemon.
+- `python -m emule_workspace package-emulebb-rust-linux --libc gnu --architecture amd64 --smoke` builds a source-inventoried GNU archive and DEB through Linux/WSL Docker. Repeat with `--architecture arm64` for the cross build; its network lifecycle requires a native ARM64 runner because QEMU user-mode cannot translate `SO_BINDTOIFINDEX`.
+- `package-emulebb-rust-image-local --release-version <version> --assets-dir <verified-deb-directory>` exports a local OCI archive from both GNU DEBs. Use `--architecture amd64` or `--architecture arm64` for a focused build. Local and GitHub image builds share the pinned BuildKit worker, source/SBOM verification, retained diagnostics, and reusable layer cache. Builders never publish; GitHub promotion workflows own released images and artifacts.
 
 Rust eD2K index-server build example:
 

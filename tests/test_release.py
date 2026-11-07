@@ -1349,11 +1349,8 @@ def test_emulebb_rust_image_context_stages_only_verified_debs(
     (docker_root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
     assets = tmp_path / "output" / "release" / "rust-v0.1.0-beta.1"
     assets.mkdir(parents=True)
-    for arch in ("amd64", "arm64"):
-        (assets / f"emulebb-rust-v0.1.0-beta.1-linux-{arch}.deb").write_bytes(arch.encode("ascii"))
-    monkeypatch.setattr(release, "assemble_emulebb_rust_release_assets", lambda *_args: assets / "SHA256SUMS")
-    commands: list[list[str]] = []
-    monkeypatch.setattr(release.subprocess, "run", lambda command, **_kwargs: commands.append(command))
+    _write_image_inputs(assets, "0.1.0-beta.1", ("amd64", "arm64"))
+    commands = _fake_image_builder(monkeypatch)
     archive = release.build_emulebb_rust_image_ci(
         rust_root=rust_root,
         output_root=tmp_path / "output",
@@ -1363,8 +1360,9 @@ def test_emulebb_rust_image_context_stages_only_verified_debs(
     assert archive == tmp_path / "output" / "artifacts" / "emulebb-rust-v0.1.0-beta.1-multiarch.oci.tar"
     context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image"
     assert (context / "dist" / "emulebb-rust-v0.1.0-beta.1-linux-arm64.deb").read_bytes() == b"arm64"
-    assert commands[0][:3] == ["docker", "buildx", "build"]
-    assert "--push" not in commands[0]
+    command = next(command for command in commands if command[:3] == ["docker", "buildx", "build"])
+    assert "--push" not in command
+    assert "linux/amd64,linux/arm64" in command
 
 
 def test_emulebb_rust_nightly_image_is_an_archive_without_channel_promotion(
@@ -1378,11 +1376,8 @@ def test_emulebb_rust_nightly_image_is_an_archive_without_channel_promotion(
     version = "0.1.0-beta.2.nightly.20261003.g9e43ea5e"
     assets = tmp_path / "output" / "release" / f"rust-v{version}"
     assets.mkdir(parents=True)
-    for arch in ("amd64", "arm64"):
-        (assets / f"emulebb-rust-v{version}-linux-{arch}.deb").write_bytes(arch.encode("ascii"))
-    monkeypatch.setattr(release, "assemble_emulebb_rust_release_assets", lambda *_args: assets / "SHA256SUMS")
-    commands: list[list[str]] = []
-    monkeypatch.setattr(release.subprocess, "run", lambda command, **_kwargs: commands.append(command))
+    _write_image_inputs(assets, version, ("amd64", "arm64"))
+    commands = _fake_image_builder(monkeypatch)
 
     release.build_emulebb_rust_image_ci(
         rust_root=rust_root,
@@ -1391,14 +1386,16 @@ def test_emulebb_rust_nightly_image_is_an_archive_without_channel_promotion(
         version=version,
     )
 
-    assert commands[0].count("--tag") == 1
-    assert f"ghcr.io/emulebb/emulebb-rust:{version}" in commands[0]
-    assert "ghcr.io/emulebb/emulebb-rust:nightly" not in commands[0]
-    assert "--push" not in commands[0]
-    assert f"type=oci,dest={tmp_path / 'output' / 'artifacts' / f'emulebb-rust-v{version}-multiarch.oci.tar'}" in commands[0]
+    command = next(command for command in commands if command[:3] == ["docker", "buildx", "build"])
+    assert command.count("--tag") == 1
+    assert f"ghcr.io/emulebb/emulebb-rust:{version}" in command
+    assert "ghcr.io/emulebb/emulebb-rust:nightly" not in command
+    assert "--push" not in command
+    export = command[command.index("--output") + 1]
+    assert Path(export.removeprefix("type=oci,dest=")) == tmp_path / "output/artifacts" / f"emulebb-rust-v{version}-multiarch.oci.tar"
 
 
-def test_emulebb_rust_local_image_loads_verified_amd64_asset(
+def test_emulebb_rust_local_image_archives_verified_amd64_asset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1413,28 +1410,8 @@ def test_emulebb_rust_local_image_loads_verified_amd64_asset(
     assets = tmp_path / "output" / "release" / f"rust-v{version}"
     assets.mkdir(parents=True)
     asset = assets / f"emulebb-rust-v{version}-linux-amd64.deb"
-    asset.write_bytes(b"amd64")
-    (assets / f"{asset.name}.manifest.json").write_text(
-        json.dumps(
-            {
-                "asset": asset.name,
-                "sha256": release._sha256(asset),
-            }
-        ),
-        encoding="utf-8",
-    )
-    commands: list[list[str]] = []
-
-    def run(command: list[str], **_kwargs):
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(release.subprocess, "run", run)
-    monkeypatch.setattr(
-        release,
-        "wsl_path",
-        lambda _path: "/mnt/c/output/packages/build/emulebb-rust-image-local",
-    )
+    _write_image_inputs(assets, version, ("amd64",))
+    commands = _fake_image_builder(monkeypatch)
 
     image = release.build_emulebb_rust_image_local(
         rust_root=rust_root,
@@ -1443,14 +1420,56 @@ def test_emulebb_rust_local_image_loads_verified_amd64_asset(
         version=version,
         image=f"local/emulebb-rust:{version}",
         wsl_distro="Ubuntu",
+        architectures=("amd64",),
     )
 
-    assert image == f"local/emulebb-rust:{version}"
-    assert commands[0][4:6] == ["docker", "build"]
-    assert "TARGETARCH=amd64" in commands[0]
-    assert "--tag" in commands[0]
-    context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image-local"
+    assert image == tmp_path / "output/artifacts" / f"emulebb-rust-v{version}-amd64.oci.tar"
+    command = next(command for command in commands if command[:3] == ["docker", "buildx", "build"])
+    assert "linux/amd64" in command
+    assert "--tag" in command and "--push" not in command
+    context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image"
     assert (context / "dist" / asset.name).read_bytes() == b"amd64"
+
+
+def _write_image_inputs(assets: Path, version: str, architectures: tuple[str, ...]) -> None:
+    for arch in architectures:
+        asset = assets / f"emulebb-rust-v{version}-linux-{arch}.deb"
+        asset.write_bytes(arch.encode("ascii"))
+        sbom = assets / f"{arch}.spdx.json"
+        sbom.write_text("{}", encoding="utf-8")
+        (assets / (asset.name + ".manifest.json")).write_text(json.dumps({
+            "asset": asset.name, "sha256": release._sha256(asset), "sbom": sbom.name,
+            "sbomSha256": release._sha256(sbom), "source": {"emulebbRust": {"commit": "a" * 40}},
+        }), encoding="utf-8")
+
+
+def _fake_image_builder(monkeypatch):
+    from emule_workspace import rust_images
+
+    calls = []
+    class Docker:
+        prefix = []
+        def __init__(self, *args):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def path(self, path):
+            return str(path)
+        def run(self, *arguments, **kwargs):
+            calls.append(["docker", *arguments])
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[:3] == ["docker", "buildx", "build"]:
+            value = command[command.index("--output") + 1]
+            Path(value.removeprefix("type=oci,dest=")).write_bytes(b"OCI fixture")
+        return subprocess.CompletedProcess(command, 0, "", "")
+    monkeypatch.setattr(rust_images, "LinuxDocker", Docker)
+    monkeypatch.setattr(rust_images, "git_output", lambda repo, *args: "" if args[0] == "status" else "a" * 40)
+    monkeypatch.setattr(rust_images.subprocess, "run", run)
+    return calls
 
 
 def test_emulebb_rust_package_contents_reject_dead_ui_and_diagnostics(tmp_path: Path) -> None:

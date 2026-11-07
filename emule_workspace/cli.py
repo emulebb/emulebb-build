@@ -1635,16 +1635,19 @@ def linux_containers(*, wsl_distro: str, setup_arm64: bool, workspace_options: W
 @click.option("--assets-dir", type=click.Path(path_type=Path))
 @click.option("--image")
 @click.option("--wsl-distro", default="Ubuntu", show_default=True)
+@click.option("--architecture", "architectures", type=click.Choice(["amd64", "arm64"]), multiple=True,
+              default=("amd64", "arm64"), show_default=True)
 def package_emulebb_rust_image_local(
     *,
     release_version: str,
     assets_dir: Path | None,
     image: str | None,
     wsl_distro: str,
+    architectures: tuple[str, ...],
     workspace_options: WorkspaceOptions,
     layout,
 ) -> None:
-    """Build and load a verified linux/amd64 Rust image into WSL Docker."""
+    """Build a verified multiarch OCI archive using Linux/WSL Docker."""
 
     selected_assets = assets_dir or (
         layout.output_release_root / f"rust-v{release_version}"
@@ -1659,8 +1662,9 @@ def package_emulebb_rust_image_local(
             version=release_version,
             image=selected_image,
             wsl_distro=wsl_distro,
+            architectures=architectures,
         )
-        print(f"Rust image loaded: {built}")
+        print(f"Local Rust image archived: {built}")
 
     _locked("package emulebb-rust image local", build_local_image)(
         workspace_options=workspace_options,
