@@ -368,24 +368,7 @@ def _create_emulebb_rust_linux_packages(
         version=package_options.release_version,
         arch=image_arch,
     )
-    control_root = deb_root / "DEBIAN"
-    control_root.mkdir(parents=True)
-    (control_root / "control").write_text(
-        "\n".join(
-            (
-                "Package: emulebb-rust",
-                f"Version: {package_options.release_version}",
-                "Section: net",
-                "Priority: optional",
-                f"Architecture: {deb_arch}",
-                "Maintainer: eMuleBB project <noreply@github.com>",
-                "Description: Headless eMuleBB Rust daemon with embedded WebUI",
-                "",
-            )
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
+    _write_emulebb_rust_deb_control(deb_root, version=package_options.release_version, arch=deb_arch)
 
     shutil.copytree(deb_root / "usr", appdir / "usr")
     (appdir / "AppRun").write_text(
@@ -720,6 +703,18 @@ def _run_packaging_tool(command: tuple[str, ...], label: str) -> None:
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
         raise RuntimeError(f"{label} failed with exit code {completed.returncode}: {detail}")
+
+
+def _write_emulebb_rust_deb_control(root: Path, *, version: str, arch: str, dependencies: str | None = None) -> None:
+    """Stage the common DEB identity for native and container-based packaging."""
+    control = root / "DEBIAN"
+    control.mkdir(parents=True)
+    lines = ["Package: emulebb-rust", f"Version: {version}", "Section: net", "Priority: optional",
+             f"Architecture: {arch}", "Maintainer: eMuleBB project <noreply@github.com>"]
+    if dependencies:
+        lines.append(f"Depends: {dependencies}")
+    lines.extend(("Description: Headless eMuleBB Rust daemon with embedded WebUI", ""))
+    (control / "control").write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
 def _build_emulebb_rust_deb(source: Path, destination: Path) -> None:
