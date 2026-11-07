@@ -4,9 +4,6 @@ on:
     branches: ['feature/**', 'fix/**', 'chore/**']
 permissions:
   contents: read
-concurrency:
-  group: branch-check-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
   check:
     uses: emulebb/emulebb-tooling/.github/workflows/branch-check.yml@bb2d4d185836d86cf107b23b93a91312a7794410
