@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from .linux_containers import LinuxDocker, run_owned_container
 from .rust_images import smoke_image
+from .git import git_output
 
 TRIVY_IMAGE = "docker.io/aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa"
 
@@ -61,7 +62,9 @@ def validate_image(layout, *, archive: Path, image: str, architectures: tuple[st
     metadata = root / f"{stem}-{suffix}-security.json"
     report = {"schema": "emulebb.rust.image-security/1", "status": "running", "image": image,
               "version": version, "origin": manifest.get("origin"), "sourceSha": manifest.get("sourceSha"),
-              "archiveSha256": manifest.get("archiveSha256"), "scannerImage": TRIVY_IMAGE, "platforms": []}
+              "archiveSha256": manifest.get("archiveSha256"), "scannerImage": TRIVY_IMAGE, "platforms": [],
+              "validatorSha": git_output(Path(__file__).resolve().parents[1], "rev-parse", "HEAD").strip(),
+              "harnessSha": git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip()}
     print(f"Image security evidence: {root}", flush=True)
     try:
         fresh_smoke = smoke_image(layout, archive=archive, image=image, architectures=architectures, wsl_distro=wsl_distro)
@@ -70,8 +73,6 @@ def validate_image(layout, *, archive: Path, image: str, architectures: tuple[st
         shutil.copy2(fresh_smoke, smoke_copy)
         report.update(smoke=smoke_copy.name, smokeSha256=_sha256(smoke_copy))
         identities = {item["platform"]: item for item in smoke["platforms"]}
-        cache = output / "cache/trivy"
-        cache.mkdir(parents=True, exist_ok=True)
         scratch_root = output / "tmp/image-scans"
         if not scratch_root.resolve().is_relative_to(output):
             raise RuntimeError("Image scanner scratch must remain below the output root")
@@ -83,9 +84,17 @@ def validate_image(layout, *, archive: Path, image: str, architectures: tuple[st
                 raise RuntimeError("Image scanner scratch escaped the output root")
             docker.path(output)
             host = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
+            uid = subprocess.check_output([*docker.prefix, "id", "-u"], text=True).strip()
+            gid = subprocess.check_output([*docker.prefix, "id", "-g"], text=True).strip()
+            if not uid.isdigit() or not gid.isdigit():
+                raise RuntimeError("Cannot identify the Docker client's export-file owner")
+            cache = output / "cache/trivy" / f"{uid}-{gid}"
+            cache.mkdir(parents=True, exist_ok=True)
+            report["scannerUser"] = f"{uid}:{gid}"
             mounts = ["--mount", f"type=bind,source={docker.path(scratch)},target=/scan,readonly",
-                      "--mount", f"type=bind,source={docker.path(cache)},target=/root/.cache/trivy",
+                      "--mount", f"type=bind,source={docker.path(cache)},target=/cache",
                       "--mount", f"type=bind,source={docker.path(root)},target=/evidence",
+                      "--user", f"{uid}:{gid}", "--env", "HOME=/tmp", "--env", "TRIVY_CACHE_DIR=/cache",
                       "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
             scanner = docker.run("run", "--rm", "--platform", f"linux/{host}", *mounts,
                                  TRIVY_IMAGE, "--version", capture=True, timeout=180).stdout
