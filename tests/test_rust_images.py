@@ -119,7 +119,8 @@ def test_timed_out_wsl_smoke_removes_only_labeled_workloads(tmp_path, monkeypatc
             return str(value)
         def run(self, *arguments, **kwargs):
             calls.append(list(arguments))
-            return SimpleNamespace(stdout="a" * 12 + "\n" if arguments[0] == "ps" else "")
+            return SimpleNamespace(stdout="a" * 12 + "\n" if arguments[0] == "ps" else
+                                   "b" * 12 + "\n" if arguments[:2] == ("network", "ls") else "")
     def timeout(command, **kwargs):
         calls.append(command)
         kwargs["stdout"].write("retained runtime failure\n")
@@ -131,7 +132,22 @@ def test_timed_out_wsl_smoke_removes_only_labeled_workloads(tmp_path, monkeypatc
         rust_images.smoke_image(layout, archive=archive, image=image, architectures=("amd64",))
     owner = calls[0][calls[0].index("--run-id") + 1]
     assert f"label=io.emulebb.ci.image-smoke-owner={owner}" in calls[1]
-    assert calls[-1] == ["rm", "--force", "a" * 12]
+    assert ["rm", "--force", "a" * 12] in calls
+    assert calls[-1] == ["network", "rm", "b" * 12]
     report = next((output / "reports/rust-image-smoke").glob("*/inputs.json"))
     assert json.loads(report.read_text())["status"] == "failed"
     assert report.with_name("smoke.log").read_text() == "retained runtime failure\n"
+
+
+def test_local_deb_collection_requires_complete_current_source_inputs(image_inputs, tmp_path):
+    assets, _, _ = image_inputs
+    version = "0.1.0-beta.2"
+    source = tmp_path / "packages/rust-linux" / version / "gnu-amd64"
+    source.parent.mkdir(parents=True)
+    assets.rename(source)
+    layout = SimpleNamespace(output_root=tmp_path, emulebb_rust_repo_root=tmp_path / "rust")
+    destination = rust_images.collect_linux_debs(layout, version=version, architectures=("amd64",))
+    assert (destination / f"emulebb-rust-v{version}-linux-amd64.deb").read_bytes() == b"payload"
+    assert rust_images.verified_debs(layout.emulebb_rust_repo_root, destination, version, ("amd64",))
+    with pytest.raises(RuntimeError, match="missing"):
+        rust_images.collect_linux_debs(layout, version=version, architectures=("amd64", "arm64"))

@@ -1669,12 +1669,12 @@ def package_emulebb_rust_image_local(
 ) -> None:
     """Build a verified multiarch OCI archive using Linux/WSL Docker."""
 
-    selected_assets = assets_dir or (
-        layout.output_release_root / f"rust-v{release_version}"
-    )
     selected_image = image or f"local/emulebb-rust:{release_version}"
 
     def build_local_image(**kwargs: Any) -> None:
+        from .rust_images import collect_linux_debs
+
+        selected_assets = assets_dir or collect_linux_debs(kwargs["layout"], version=release_version, architectures=architectures)
         built = build_emulebb_rust_image_local(
             rust_root=kwargs["layout"].emulebb_rust_repo_root,
             output_root=kwargs["layout"].output_root,
