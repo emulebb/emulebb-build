@@ -65,6 +65,24 @@ def linux_test_plan(scope: str, *, cross: bool, rust_root: Path | None = None) -
     return plan
 
 
+def linux_quality_plan(rust_root: Path, target: str) -> list[tuple[str, list[str]]]:
+    """Compile target-specific lint and diagnostics from the candidate CI gate."""
+    definitions = runpy.run_path(str(rust_root / "tools/rust_quality_gate.py"))
+    plan = []
+    for label, factory, subcommand in (("clippy", "clippy_step", "clippy"),
+                                        ("packet-diagnostics", "diagnostics_step", "check")):
+        _description, command = definitions[factory]()
+        if command[:2] != ["cargo", subcommand] or "--locked" not in command:
+            raise RuntimeError(f"Canonical {factory} must remain a locked Cargo {subcommand} command")
+        arguments = list(command[1:])
+        # WHY: target selection belongs to Cargo, before the rustc/Clippy flags
+        # separator. Passing it after -- would change the compiler invocation.
+        index = arguments.index("--") if "--" in arguments else len(arguments)
+        arguments[index:index] = ["--target", target]
+        plan.append((label, arguments))
+    return plan
+
+
 def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int, append: bool = False) -> None:
     """@brief Retain failure output and stop only this invocation's container on interruption."""
     name = f"emulebb-linux-{uuid4().hex}"
@@ -261,6 +279,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     engine_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True).stdout.strip()
     base, build_arch, cross = build_configuration(libc, architecture, engine_arch)
     test_plan = linux_test_plan(test_scope, cross=cross, rust_root=rust)
+    quality_plan = linux_quality_plan(rust, target) if test_scope == "full" else []
     builder = f"local/emulebb-rust-builder:{libc}-{architecture}"
     context = Path(__file__).parent / "release_assets" / "rust_linux"
     docker.run("build", "--platform", f"linux/{build_arch}", "--build-arg", f"BASE_IMAGE={base}",
@@ -298,14 +317,17 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                             "--env", f"AR_{target.replace('-', '_')}={compiler}-ar"])
         if libc == "gnu":
             environment.extend(["--env", "QEMU_LD_PREFIX=/usr/aarch64-linux-gnu"])
-    command = ["run", "--rm", "--platform", f"linux/{build_arch}", *mounts, *environment,
-               "--workdir", "/source", builder, "cargo", "build", "--locked", "--release",
+    cargo = ["--rm", "--platform", f"linux/{build_arch}", *mounts, *environment,
+             "--workdir", "/source", builder, "cargo"]
+    for label, arguments in quality_plan:
+        print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
+        run_owned_container(docker, [*cargo, *arguments], log_root / f"{label}.log", timeout=3600)
+    command = ["run", *cargo, "build", "--locked", "--release",
                "--target", target, "-p", "emulebb-daemon", "--bin", "emulebb-rust"]
     log = log_root / "build.log"
     print(f"Building Linux {architecture}/{libc}; log: {log}", flush=True)
     run_owned_container(docker, command[1:], log, timeout=7200)
-    tests = ["run", "--rm", "--platform", f"linux/{build_arch}", *mounts, *environment,
-             "--workdir", "/source", builder, "cargo", "test", "--locked", "--target", target]
+    tests = ["run", *cargo, "test", "--locked", "--target", target]
     for label, arguments in test_plan:
         print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
         run_owned_container(docker, [*tests[1:], *arguments], log_root / f"{label}.log", timeout=3600)
@@ -365,7 +387,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                 "buildExecution": "cross" if cross else "native", "libraryTestExecution": "qemu" if cross else "native",
                 "testCompilation": "workspace" if test_scope == "full" else "selected-libraries",
                 "testExecution": "workspace" if test_scope == "full" and not cross else "selected-libraries",
-                "testProfile": "test", "testPlan": test_plan,
+                "testProfile": "test", "testPlan": test_plan, "qualityPlan": quality_plan,
                 "resolvedToolchain": tools,
                 "builderRecipeSha256": release._sha256(context / "Dockerfile"),
                 "cargoLockSha256": release._sha256(rust / "Cargo.lock"),

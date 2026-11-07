@@ -14,4 +14,5 @@ RUN if [ -n "$CROSS_TARGET" ]; then \
           && rm -rf /var/lib/apt/lists/*; \
       fi; \
     fi
+RUN rustup component add --toolchain 1.98.1 clippy
 ENV RUSTUP_TOOLCHAIN=1.98.1 CARGO_HOME=/usr/local/cargo PYTHONDONTWRITEBYTECODE=1
