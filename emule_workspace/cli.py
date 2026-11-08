@@ -1804,13 +1804,17 @@ def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path) 
 @main.command("package-emulebb-rust-image-ci")
 @click.option("--release-version", required=True)
 @click.option("--assets-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--control-rust-repo", type=click.Path(path_type=Path, exists=True, file_okay=False), required=True)
 def package_emulebb_rust_image_ci(
     *,
     release_version: str,
     assets_dir: Path,
+    control_rust_repo: Path,
 ) -> None:
     """Build a verified multi-architecture image from the native DEB assets."""
 
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        raise click.ClickException("CI image production requires GitHub Actions; use package-emulebb-rust-image-local for local validation.")
     output_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
     rust_value = os.environ.get("EMULEBB_RUST_REPO", "").strip()
     if not output_value or not rust_value:
@@ -1825,6 +1829,7 @@ def package_emulebb_rust_image_ci(
             output_root=output_root,
             assets_dir=assets_dir,
             version=release_version,
+            control_rust_root=control_rust_repo.resolve(),
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc

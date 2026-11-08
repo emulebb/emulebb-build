@@ -1440,6 +1440,12 @@ def test_emulebb_rust_image_context_stages_only_verified_debs(
     command = next(command for command in commands if command[:3] == ["docker", "buildx", "build"])
     assert "--push" not in command
     assert "linux/amd64,linux/arm64" in command
+    assert "--no-cache" in command
+    manifest = json.loads(archive.with_name(archive.name + ".manifest.json").read_text())
+    assert manifest["schema"] == "emulebb.rust.image/2" and manifest["workflow"] is None
+    assert manifest["ociManifestDigest"] == "sha256:" + "b" * 64
+    assert manifest["archiveSha256"] == release._sha256(archive)
+    assert manifest["inputs"][0]["manifestSha256"] == release._sha256(assets / (manifest["inputs"][0]["asset"] + ".manifest.json"))
 
 
 def test_emulebb_rust_nightly_image_is_an_archive_without_channel_promotion(
@@ -1515,6 +1521,8 @@ def _write_image_inputs(assets: Path, version: str, architectures: tuple[str, ..
         sbom = assets / f"{arch}.spdx.json"
         sbom.write_text("{}", encoding="utf-8")
         (assets / (asset.name + ".manifest.json")).write_text(json.dumps({
+            "schema": "emulebb.rust.package/2", "sourceDirty": False, "version": version,
+            "origin": "local-development", "workflow": None,
             "asset": asset.name, "sha256": release._sha256(asset), "sbom": sbom.name,
             "sbomSha256": release._sha256(sbom), "source": {"emulebbRust": {"commit": "a" * 40}},
         }), encoding="utf-8")
@@ -1524,6 +1532,7 @@ def _fake_image_builder(monkeypatch):
     from emule_workspace import rust_images
 
     calls = []
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     class Docker:
         prefix = []
         def __init__(self, *args):
@@ -1545,6 +1554,7 @@ def _fake_image_builder(monkeypatch):
         return subprocess.CompletedProcess(command, 0, "", "")
     monkeypatch.setattr(rust_images, "LinuxDocker", Docker)
     monkeypatch.setattr(rust_images, "git_output", lambda repo, *args: "" if args[0] == "status" else "a" * 40)
+    monkeypatch.setattr(rust_images, "archive_digest", lambda *args, **kwargs: "sha256:" + "b" * 64)
     monkeypatch.setattr(rust_images.subprocess, "run", run)
     return calls
 

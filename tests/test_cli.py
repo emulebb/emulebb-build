@@ -14,6 +14,13 @@ def test_image_packaging_rejects_direct_publication_options() -> None:
         assert f"No such option: {option}" in result.output
 
 
+def test_ci_image_packaging_rejects_local_artifact_production(tmp_path, monkeypatch):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    result = CliRunner().invoke(cli.main, ["package-emulebb-rust-image-ci", "--release-version", "0.1.0-beta.2",
+                                          "--assets-dir", str(tmp_path), "--control-rust-repo", str(tmp_path)])
+    assert result.exit_code != 0 and "requires GitHub Actions" in result.output
+
+
 def test_cli_requires_workspace_root() -> None:
     runner = CliRunner()
 
