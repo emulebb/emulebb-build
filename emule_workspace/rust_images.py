@@ -171,6 +171,7 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
                 raise RuntimeError(f"Could not remove owned image builder {builder}; diagnostics: {reports}")
     manifest = {"schema": "emulebb.rust.image/2", **{key: value for key, value in report.items() if key != "status"}}
     archive.with_name(archive.name + ".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    archive.with_suffix(".digest").write_text(report["ociManifestDigest"] + "\n", encoding="ascii")
     return archive
 
 
@@ -204,6 +205,28 @@ def collect_linux_debs(layout, *, version: str, architectures: tuple[str, ...]) 
             for name in (item["asset"], item["asset"] + ".manifest.json", item["sbom"]):
                 shutil.copy2(source / name, destination / name)
     return destination
+
+
+def verified_smoke_platforms(result: dict, *, manifest: dict, architectures: tuple[str, ...]) -> dict[str, dict]:
+    """Require complete fresh lifecycle proof for the exact image and CPU set."""
+    items = result.get("platforms")
+    if (result.get("schema") != "emulebb.rust.image-smoke/4" or result.get("status") != "passed"
+            or result.get("image") != manifest["image"] or result.get("archiveSha256") != manifest["archiveSha256"]
+            or not architectures or not isinstance(items, list) or not all(isinstance(item, dict) for item in items)
+            or sorted(item.get("platform", "") for item in items) != sorted(f"linux/{arch}" for arch in architectures)):
+        raise RuntimeError("Fresh image smoke evidence does not match the archive and CPU set")
+    common = {"firstRunProfile": True, "webui": True, "uid": 1234, "gid": 1235,
+              "daemonUid": 1234, "daemonGid": 1235, "configOwner": "1234:1235", "dataOwner": "1234:1235",
+              "publishedPorts": 0, "restAuthentication": True, "authenticatedStatus": 200, "unauthenticatedStatus": 401,
+              "appVersion": manifest["version"], "appBuild": "release", "gracefulShutdown": True,
+              "networkIsolation": "internal-bridge", "dns": "loopback-only"}
+    for item in items:
+        expected = {**common, "appPlatform": "x64" if item["platform"] == "linux/amd64" else "arm64"}
+        if (any(type(item.get(key)) is not type(value) or item[key] != value for key, value in expected.items())
+                or any(not isinstance(item.get(key), str) or re.fullmatch(r"sha256:[0-9a-f]{64}", item[key]) is None
+                       for key in ("imageManifestDigest", "imageConfigDigest"))):
+            raise RuntimeError("Fresh image smoke evidence is missing the running release, authentication or isolation contract")
+    return {item["platform"]: item for item in items}
 
 
 def smoke_image(layout, *, archive: Path, image: str, architectures: tuple[str, ...], wsl_distro: str = "Ubuntu") -> Path:
@@ -244,16 +267,7 @@ def smoke_image(layout, *, archive: Path, image: str, architectures: tuple[str, 
             with log.open("w", encoding="utf-8") as stream:
                 subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=600)
             result = json.loads((reports / "image-smoke.json").read_text(encoding="utf-8"))
-            if (result.get("schema") != "emulebb.rust.image-smoke/4" or result.get("status") != "passed"
-                    or result.get("archiveSha256") != manifest["archiveSha256"]
-                    or sorted(item["platform"] for item in result.get("platforms", []))
-                    != sorted(f"linux/{arch}" for arch in architectures)
-                    or any(item.get("appVersion") != manifest.get("version") or item.get("appBuild") != "release"
-                           or item.get("appPlatform") != ("x64" if item.get("platform") == "linux/amd64" else "arm64")
-                           or item.get("authenticatedStatus") != 200 or item.get("unauthenticatedStatus") != 401
-                           or item.get("daemonUid") != 1234 or item.get("daemonGid") != 1235
-                           or item.get("gracefulShutdown") is not True for item in result.get("platforms", []))):
-                raise RuntimeError("Fresh image smoke evidence is incomplete or does not match the archive")
+            verified_smoke_platforms(result, manifest=manifest, architectures=architectures)
             report["status"] = "passed"
         except BaseException as error:
             report.update(status="failed", error=str(error))
