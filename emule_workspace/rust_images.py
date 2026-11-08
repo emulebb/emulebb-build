@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import json
-import os
 import re
+import runpy
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,13 +18,14 @@ BUILDKIT_IMAGE = "docker.io/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc0
 
 def verified_debs(rust_root: Path, assets: Path, version: str, architectures: tuple[str, ...]) -> list[dict]:
     """Require exact, clean source and matching payload/SBOM bytes for every CPU."""
-    from .release import _sha256
+    from .release import _sha256, _emulebb_rust_artifact_origin, _assert_emulebb_rust_hosted_artifact
 
     if not architectures or len(set(architectures)) != len(architectures) or set(architectures) - {"amd64", "arm64"}:
         raise ValueError("Image builds require distinct AMD64/ARM64 architectures")
     if git_output(rust_root, "status", "--porcelain").strip():
         raise RuntimeError("Image builds require a clean current Rust source checkout")
     source_sha = git_output(rust_root, "rev-parse", "HEAD").strip()
+    hosted = _emulebb_rust_artifact_origin()["origin"] == "github-actions"
     inputs = []
     for arch in architectures:
         name = f"emulebb-rust-v{version}-linux-{arch}.deb"
@@ -34,30 +35,60 @@ def verified_debs(rust_root: Path, assets: Path, version: str, architectures: tu
             raise RuntimeError(f"Image input or provenance is missing: {name}")
         data = json.loads(manifest.read_text(encoding="utf-8"))
         sbom_name = data.get("sbom")
-        if (data.get("asset") != name or data.get("sha256") != _sha256(asset)
+        if (data.get("schema") != "emulebb.rust.package/2" or data.get("version") != version
+                or data.get("asset") != name or data.get("sha256") != _sha256(asset)
                 or data.get("source", {}).get("emulebbRust", {}).get("commit") != source_sha
-                or data.get("sourceDirty", False) is not False):
+                or data.get("sourceDirty") is not False):
             raise RuntimeError(f"Image input does not match the clean current Rust revision: {name}")
+        if hosted:
+            _assert_emulebb_rust_hosted_artifact(data)
+            if data.get("source", {}).get("emulebbBuild", {}).get("commit") != git_output(Path(__file__).resolve().parents[1], "rev-parse", "HEAD").strip():
+                raise RuntimeError("Hosted image inputs must use the pinned current package builder")
+        elif data.get("origin") != "local-development" or data.get("workflow") is not None:
+            raise RuntimeError("Local image inputs require explicit local-development provenance")
         if not isinstance(sbom_name, str) or Path(sbom_name).name != sbom_name:
             raise RuntimeError(f"Image SBOM path is invalid: {name}")
         sbom = assets / sbom_name
         if not sbom.is_file() or _sha256(sbom) != data.get("sbomSha256"):
             raise RuntimeError(f"Image SBOM bytes do not match provenance: {name}")
         inputs.append({"asset": name, "sha256": data["sha256"], "sbom": sbom_name,
-                       "sbomSha256": data["sbomSha256"], "source": data["source"]})
+                       "sbomSha256": data["sbomSha256"], "source": data["source"],
+                       "manifestSha256": _sha256(manifest), "origin": data.get("origin"), "workflow": data.get("workflow")})
     return inputs
 
 
+def archive_digest(rust_root: Path, archive: Path, *, control_rust_root: Path | None = None) -> str:
+    """Reuse the product's OCI verifier, with workflow-pinned control code on CI."""
+    from .release import _emulebb_rust_artifact_origin
+
+    origin = _emulebb_rust_artifact_origin()
+    control = control_rust_root or rust_root
+    if origin["origin"] == "github-actions":
+        if (control_rust_root is None or git_output(control, "status", "--porcelain").strip()
+                or git_output(control, "rev-parse", "HEAD").strip() != origin["workflow"]["workflowSha"]):
+            raise RuntimeError("Hosted OCI verification requires clean control code at the workflow SHA")
+    verifier = runpy.run_path(str(control / "tools/release_publish.py"))["oci_archive_digest"]
+    return verifier(archive)
+
+
 def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version: str, image: str,
-                architectures: tuple[str, ...] = ("amd64", "arm64"), wsl_distro: str = "Ubuntu") -> Path:
-    """Build an inventoried archive with an owned builder and reusable layer cache."""
-    from .release import _is_release_version, _sha256
+                architectures: tuple[str, ...] = ("amd64", "arm64"), wsl_distro: str = "Ubuntu",
+                control_rust_root: Path | None = None) -> Path:
+    """Build an inventoried archive with fresh OS packages and an owned builder."""
+    from .release import _is_release_version, _sha256, _emulebb_rust_artifact_origin
 
     rust_root, output_root, assets_dir = rust_root.resolve(), output_root.resolve(), assets_dir.resolve()
     if not _is_release_version(version):
         raise RuntimeError("Image version must be valid SemVer")
     if output_root.is_relative_to(rust_root) or not assets_dir.is_relative_to(output_root):
         raise RuntimeError("Image inputs and output must be below the external operator output root")
+    origin = _emulebb_rust_artifact_origin()
+    if origin["origin"] == "github-actions" and control_rust_root is None:
+        raise RuntimeError("Hosted image builds require workflow-pinned control Rust sources")
+    builder_root = Path(__file__).resolve().parents[1]
+    if git_output(builder_root, "status", "--porcelain").strip():
+        raise RuntimeError("Image builds require clean builder sources")
+    builder_sha = git_output(builder_root, "rev-parse", "HEAD").strip()
     inputs = verified_debs(rust_root, assets_dir, version, architectures)
     context = output_root / "packages/build/emulebb-rust-image"
     if not context.resolve().is_relative_to(output_root):
@@ -76,17 +107,16 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
     if not archive.resolve().is_relative_to(output_root):
         raise RuntimeError("Image archive must remain below the operator output root")
     archive.parent.mkdir(parents=True, exist_ok=True)
-    archive.unlink(missing_ok=True)
+    for previous in (archive, archive.with_name(archive.name + ".manifest.json"), archive.with_suffix(".digest")):
+        previous.unlink(missing_ok=True)
     run_id = uuid4().hex
     reports = output_root / "reports/rust-image-build" / run_id
     reports.mkdir(parents=True)
-    cache = output_root / "cache/rust-image-buildkit"
-    cache.mkdir(parents=True, exist_ok=True)
-    report = {"status": "running", "origin": "github-actions" if os.environ.get("GITHUB_ACTIONS") == "true" else "local-development",
+    report = {"status": "running", **origin, "sourceDirty": False,
               "image": image, "version": version, "architectures": architectures, "buildkitImage": BUILDKIT_IMAGE, "inputs": inputs,
               "dockerfileSha256": _sha256(source / "Dockerfile"),
               "sourceSha": inputs[0]["source"]["emulebbRust"]["commit"] if inputs else None,
-              "builderSha": git_output(Path(__file__).resolve().parents[1], "rev-parse", "HEAD").strip()}
+              "builderSha": builder_sha}
     path = reports / "inputs.json"
     log = reports / "build.log"
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -94,13 +124,12 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
         docker.path(output_root)
         builder = f"emulebb-image-{run_id}"
         command = [*docker.prefix, "docker", "buildx", "build", "--builder", builder,
+                   "--no-cache",
                    "--platform", ",".join(f"linux/{arch}" for arch in architectures),
                    "--file", docker.path(context) + "/Dockerfile", "--build-arg", f"VERSION={version}",
                    "--tag", image, "--progress", "plain", "--provenance", "mode=max",
-                   "--output", f"type=oci,dest={docker.path(archive.parent)}/{archive.name}",
-                   "--cache-to", f"type=local,dest={docker.path(cache)},mode=max"]
-        if (cache / "index.json").is_file():
-            command.extend(["--cache-from", f"type=local,src={docker.path(cache)}"])
+                   "--label", f"org.opencontainers.image.revision={report['sourceSha']}",
+                   "--output", f"type=oci,dest={docker.path(archive.parent)}/{archive.name}"]
         command.append(docker.path(context))
         print(f"Building {image}; diagnostics: {log}", flush=True)
         try:
@@ -110,7 +139,15 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
                 subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=2700)
             if not archive.is_file():
                 raise RuntimeError("Image builder returned without producing the candidate archive")
-            report.update(status="passed", archive=archive.name, archiveSha256=_sha256(archive))
+            # Recheck source and package bytes after the build; a clean HEAD move
+            # or changed payload must not inherit the initial input identity.
+            if verified_debs(rust_root, assets_dir, version, architectures) != inputs:
+                raise RuntimeError("Image package inputs changed during production")
+            if (git_output(builder_root, "status", "--porcelain").strip()
+                    or git_output(builder_root, "rev-parse", "HEAD").strip() != builder_sha):
+                raise RuntimeError("Image builder sources changed during production")
+            report.update(status="passed", archive=archive.name, archiveSha256=_sha256(archive),
+                          ociManifestDigest=archive_digest(rust_root, archive, control_rust_root=control_rust_root))
         except BaseException as error:
             report.update(status="failed", error=str(error))
             if log.is_file():
@@ -132,7 +169,7 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
             path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             if failed_cleanup_only:
                 raise RuntimeError(f"Could not remove owned image builder {builder}; diagnostics: {reports}")
-    manifest = {"schema": "emulebb.rust.image/1", **{key: value for key, value in report.items() if key != "status"}}
+    manifest = {"schema": "emulebb.rust.image/2", **{key: value for key, value in report.items() if key != "status"}}
     archive.with_name(archive.name + ".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return archive
 
@@ -181,7 +218,7 @@ def smoke_image(layout, *, archive: Path, image: str, architectures: tuple[str, 
     for repo in (layout.emulebb_rust_repo_root, layout.tests_repo_root):
         if git_output(repo, "status", "--porcelain").strip():
             raise RuntimeError("Image smoke requires clean Rust and harness sources")
-    if (manifest.get("schema") != "emulebb.rust.image/1" or manifest.get("sourceSha") != source_sha
+    if (manifest.get("schema") != "emulebb.rust.image/2" or manifest.get("sourceSha") != source_sha
             or manifest.get("archiveSha256") != _sha256(archive) or manifest.get("image") != image):
         raise RuntimeError("Image archive does not match the selected clean source, tag and bytes")
     if (not architectures or len(set(architectures)) != len(architectures)
@@ -207,9 +244,15 @@ def smoke_image(layout, *, archive: Path, image: str, architectures: tuple[str, 
             with log.open("w", encoding="utf-8") as stream:
                 subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=600)
             result = json.loads((reports / "image-smoke.json").read_text(encoding="utf-8"))
-            if (result.get("status") != "passed" or result.get("archiveSha256") != manifest["archiveSha256"]
+            if (result.get("schema") != "emulebb.rust.image-smoke/4" or result.get("status") != "passed"
+                    or result.get("archiveSha256") != manifest["archiveSha256"]
                     or sorted(item["platform"] for item in result.get("platforms", []))
-                    != sorted(f"linux/{arch}" for arch in architectures)):
+                    != sorted(f"linux/{arch}" for arch in architectures)
+                    or any(item.get("appVersion") != manifest.get("version") or item.get("appBuild") != "release"
+                           or item.get("appPlatform") != ("x64" if item.get("platform") == "linux/amd64" else "arm64")
+                           or item.get("authenticatedStatus") != 200 or item.get("unauthenticatedStatus") != 401
+                           or item.get("daemonUid") != 1234 or item.get("daemonGid") != 1235
+                           or item.get("gracefulShutdown") is not True for item in result.get("platforms", []))):
                 raise RuntimeError("Fresh image smoke evidence is incomplete or does not match the archive")
             report["status"] = "passed"
         except BaseException as error:

@@ -832,12 +832,13 @@ def build_emulebb_rust_image_ci(
     output_root: Path,
     assets_dir: Path,
     version: str,
+    control_rust_root: Path | None = None,
 ) -> Path:
     """Build the verified candidate archive; GitHub owns all publication."""
     from .rust_images import build_image
 
     return build_image(rust_root=rust_root, output_root=output_root, assets_dir=assets_dir,
-                       version=version, image=f"ghcr.io/emulebb/emulebb-rust:{version}")
+                       version=version, image=f"ghcr.io/emulebb/emulebb-rust:{version}", control_rust_root=control_rust_root)
 
 
 def build_emulebb_rust_image_local(
@@ -974,6 +975,22 @@ def _emulebb_rust_artifact_origin() -> dict[str, object]:
             or re.fullmatch(r"[0-9a-f]{40}", context["workflowSha"]) is None):
         raise RuntimeError("GitHub artifact production requires a repository, positive run ID/attempt, and full workflow SHA")
     return {"origin": "github-actions", "workflow": context}
+
+
+def _assert_emulebb_rust_hosted_artifact(data: dict) -> None:
+    """Accept earlier successful attempts only within this exact hosted run."""
+    expected = _emulebb_rust_artifact_origin()
+    actual = data.get("workflow")
+    context = expected["workflow"]
+    if expected["origin"] != "github-actions":
+        raise RuntimeError("Hosted artifact verification requires GitHub Actions")
+    if (data.get("origin") != "github-actions" or not isinstance(actual, dict)
+            or set(actual) != set(context)
+            or any(actual.get(key) != context[key] for key in ("repository", "runId", "workflowSha"))
+            or not isinstance(actual.get("runAttempt"), str)
+            or re.fullmatch(r"[1-9][0-9]*", actual["runAttempt"]) is None
+            or int(actual["runAttempt"]) > int(context["runAttempt"])):
+        raise RuntimeError("Artifact must originate from this GitHub run and workflow, at the current or an earlier attempt")
 
 
 def _emulebb_rust_package_provenance(layout: WorkspaceLayout, rust_root: Path) -> dict[str, object]:
