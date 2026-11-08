@@ -14,6 +14,19 @@ build/test orchestration. It is responsible for:
 
 `python -m emule_workspace` is the authoritative orchestration surface.
 
+After configuring the inherited workspace and output roots, run this from the
+builder checkout once:
+
+```powershell
+python -B -m emule_workspace bootstrap-python
+```
+
+This installs the pinned stable Python from `.python-version` and the locked
+development environment below `EMULEBB_WORKSPACE_OUTPUT_ROOT`. Workspace
+commands, Python subprocesses, and Git hooks use that private environment.
+System Python, global PATH, and Windows interpreter registration stay unchanged.
+Use `bootstrap-python --update-lock` only when authoring dependency changes.
+
 ## Purpose
 
 Clone this repo as `<workspace-root>\repos\emulebb-build`, then use the supported

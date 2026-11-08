@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from .cli import main
+import subprocess
+import sys
+
+from .python_runtime import main
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as error:
+        print(f"Workspace: {error}", file=sys.stderr)
+        raise SystemExit(1) from error

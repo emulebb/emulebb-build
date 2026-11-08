@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from functools import wraps
@@ -358,6 +359,19 @@ def _live_e2e_options(function: F) -> F:
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def main() -> None:
     """Build, validate, test, and package an eMuleBB workspace."""
+
+
+@main.command("bootstrap-python")
+@click.option("--update-lock", is_flag=True, help="Explicitly regenerate the reviewed dependency lock")
+@click.option("--reinstall", is_flag=True, help="Reinstall only the private managed interpreter")
+def bootstrap_python(*, update_lock: bool, reinstall: bool) -> None:
+    """Install the workspace-only Python runtime and locked development environment."""
+    from .python_runtime import bootstrap
+
+    try:
+        bootstrap(update_lock=update_lock, reinstall=reinstall)
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as error:
+        raise click.ClickException(str(error)) from error
 
 
 @main.command("local-check")
