@@ -35,13 +35,14 @@ def batch(tmp_path, monkeypatch):
     layout = SimpleNamespace(emulebb_rust_repo_root=rust, output_root=tmp_path / "output",
                              build_repo_root=tmp_path / "build", tests_repo_root=tmp_path / "harness")
     calls, failures = [], set()
+    host = SimpleNamespace(architecture="amd64")
     class Docker:
         def __enter__(self):
             return self
         def __exit__(self, *args):
             pass
         def run(self, *args, **kwargs):
-            return SimpleNamespace(stdout="amd64")
+            return SimpleNamespace(stdout=host.architecture)
         def preflight(self, output):
             calls.append(("preflight", output))
     def build(layout, **kwargs):
@@ -55,6 +56,8 @@ def batch(tmp_path, monkeypatch):
             raise RuntimeError("UI failed")
     def collect(layout, **kwargs):
         calls.append(("collect", kwargs))
+        if "inputs" in failures:
+            raise RuntimeError("missing or stale package")
         return layout.output_root / "inputs"
     def image(**kwargs):
         calls.append(("image", kwargs))
@@ -71,7 +74,7 @@ def batch(tmp_path, monkeypatch):
     monkeypatch.setattr(linux_validation, "collect_linux_debs", collect)
     monkeypatch.setattr(linux_validation, "build_emulebb_rust_image_local", image)
     monkeypatch.setattr(linux_validation, "validate_image", validate)
-    return SimpleNamespace(layout=layout, calls=calls, failures=failures)
+    return SimpleNamespace(layout=layout, calls=calls, failures=failures, host=host)
 
 
 def test_full_batch_reuses_only_its_fresh_ui_and_runs_available_checks(batch):
@@ -125,3 +128,26 @@ def test_ordinary_musl_gate_includes_runtime_and_omits_image_work(batch):
     build = next(data for kind, data in batch.calls if kind == "build")
     assert build["libc"] == "musl" and build["smoke"] and build["test_scope"] == "full"
     assert not any(kind in {"collect", "image", "security", "preflight"} for kind, _ in batch.calls)
+
+
+@pytest.mark.parametrize("host,arches", [("amd64", ("amd64", "arm64")), ("arm64", ("arm64",))])
+def test_image_gate_rebuilds_and_scans_available_cpus_without_repeating_rust_tests(batch, host, arches):
+    batch.host.architecture = host
+    report = json.loads(linux_validation.validate_linux(batch.layout, scope="image").read_text())
+    assert report["status"] == "passed" and report["coverage"] == "image-only"
+    assert report["targets"] == [] and report["githubRequired"] == []
+    assert report["image"]["architectures"] == list(arches)
+    assert not any(kind in {"webui", "build"} for kind, _ in batch.calls)
+    assert [kind for kind, _ in batch.calls if kind != "preflight"] == ["collect", "image", "security"]
+    assert all(data["architectures"] == arches for kind, data in batch.calls if kind != "preflight")
+
+
+@pytest.mark.parametrize("failure", ["inputs", "security"])
+def test_image_gate_retains_failure_and_never_accepts_a_prior_pass(batch, failure):
+    batch.failures.add(failure)
+    with pytest.raises(RuntimeError, match="--scope full" if failure == "inputs" else "CVE gate failed"):
+        linux_validation.validate_linux(batch.layout, scope="image")
+    report = json.loads(next(batch.layout.output_root.glob("reports/local-linux-ci/*/results.json")).read_text())
+    assert report["status"] == "failed" and "image" not in report
+    if failure == "inputs":
+        assert not any(kind in {"image", "security"} for kind, _ in batch.calls)

@@ -164,18 +164,30 @@ def test_ordinary_rolling_windows_do_not_trigger_platform_matrix(tmp_path):
     assert linux_push_scope({"tracker.rs"}, tmp_path) == "musl"
 
 
-@pytest.mark.parametrize("name,path", [
-    ("emulebb-build", "emule_workspace/linux_containers.py"),
-    ("emulebb-build", "emule_workspace/image_security.py"),
-    ("emulebb-build", "emule_workspace/release_assets/rust_linux/Dockerfile"),
-    ("emulebb-build-tests", "scripts/smoke-rust-release-package.py"),
-    ("emulebb-build-tests", "scripts/smoke-rust-container.py"),
+@pytest.mark.parametrize("name,path,scope", [
+    ("emulebb-build", "emule_workspace/linux_containers.py", "full"),
+    ("emulebb-build", "emule_workspace/linux_validation.py", "full"),
+    ("emulebb-build", "emule_workspace/image_security.py", "image"),
+    ("emulebb-build", "emule_workspace/rust_images.py", "image"),
+    ("emulebb-build", "emule_workspace/release_assets/rust_linux/Dockerfile", "full"),
+    ("emulebb-build-tests", "scripts/smoke-rust-release-package.py", "full"),
+    ("emulebb-build-tests", "scripts/smoke-rust-container.py", "image"),
 ])
-def test_shared_linux_pipeline_pushes_require_actual_local_integration(tmp_path, name, path):
+def test_shared_linux_pipeline_pushes_require_actual_local_integration(tmp_path, name, path, scope):
     plan = check_plan(tmp_path / "repos" / name, {path}, "push", tmp_path, tmp_path / "out")
-    assert plan[-1][1][-3:] == ["validate-emulebb-rust-linux", "--scope", "full"]
+    assert plan[-1][1][-3:] == ["validate-emulebb-rust-linux", "--scope", scope]
     commit = check_plan(tmp_path / "repos" / name, {path}, "commit", tmp_path, tmp_path / "out")
     assert not any("validate-emulebb-rust-linux" in command for _, command in commit)
+
+
+@pytest.mark.parametrize("name,paths", [
+    ("emulebb-build", {"emule_workspace/rust_images.py", "emule_workspace/linux_validation.py"}),
+    ("emulebb-build-tests", {"scripts/smoke-rust-container.py", "scripts/smoke-rust-release-package.py"}),
+])
+def test_full_linux_gate_covers_mixed_image_and_package_changes_once(tmp_path, name, paths):
+    plan = check_plan(tmp_path / "repos" / name, paths, "push", tmp_path, tmp_path / "out")
+    gates = [command for _, command in plan if "validate-emulebb-rust-linux" in command]
+    assert len(gates) == 1 and gates[0][-1] == "full"
 
 
 def test_harness_push_selects_the_changed_scripts_test_owner(tmp_path):

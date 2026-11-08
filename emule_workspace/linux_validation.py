@@ -17,8 +17,10 @@ from .rust_images import collect_linux_debs
 
 def validation_plan(scope: str, host: str) -> list[dict]:
     """Separate available builds, emulated libraries, and native runtime proof."""
-    if scope not in {"musl", "full"} or host not in {"amd64", "arm64"}:
-        raise ValueError("Expected musl/full scope and an AMD64/ARM64 Docker host")
+    if scope not in {"musl", "full", "image"} or host not in {"amd64", "arm64"}:
+        raise ValueError("Expected musl/full/image scope and an AMD64/ARM64 Docker host")
+    if scope == "image":
+        return []
     targets = [("musl", host)] if scope == "musl" else [(libc, arch) for libc in ("gnu", "musl") for arch in ("amd64", "arm64")]
     plan = []
     for libc, arch in targets:
@@ -30,6 +32,21 @@ def validation_plan(scope: str, host: str) -> list[dict]:
     return plan
 
 
+def _validate_image_targets(layout, *, version: str, architectures: tuple[str, ...]) -> dict:
+    """Verify current package bytes, then build and check a fresh image."""
+    image = f"local/emulebb-rust:{version}"
+    try:
+        assets = collect_linux_debs(layout, version=version, architectures=architectures)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise RuntimeError("Image validation requires verified GNU packages for the current clean revision; "
+                           "run validate-emulebb-rust-linux --scope full to rebuild them") from error
+    archive = build_emulebb_rust_image_local(rust_root=layout.emulebb_rust_repo_root,
+                                            output_root=layout.output_root.resolve(), assets_dir=assets,
+                                            version=version, image=image, wsl_distro="Ubuntu", architectures=architectures)
+    evidence = validate_image(layout, archive=archive, image=image, architectures=architectures)
+    return {"status": "passed", "architectures": architectures, "securityEvidence": str(evidence)}
+
+
 def validate_linux(layout, *, scope: str) -> Path:
     """Run fresh local gates once per target; do not count delegation as a pass."""
     rust, output = layout.emulebb_rust_repo_root, layout.output_root.resolve()
@@ -39,14 +56,14 @@ def validate_linux(layout, *, scope: str) -> Path:
     with LinuxDocker() as docker:
         host = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
         plan = validation_plan(scope, host)
-        if scope == "full" and host == "amd64":
+        if scope in {"full", "image"} and host == "amd64":
             docker.preflight(output)
     version = tomllib.loads((rust / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
     root = output / "reports/local-linux-ci" / uuid4().hex
     root.mkdir(parents=True)
     path = root / "results.json"
     report = {"schema": "emulebb.rust.local-linux-ci/1", "status": "running", "scope": scope,
-              "coverage": "available-local-checks", "hostArchitecture": host,
+              "coverage": "image-only" if scope == "image" else "available-local-checks", "hostArchitecture": host,
               "sourceSha": git_output(rust, "rev-parse", "HEAD").strip(), "binfmtImage": BINFMT_IMAGE,
               "builderSha": git_output(layout.build_repo_root, "rev-parse", "HEAD").strip(),
               "harnessSha": git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip(),
@@ -55,6 +72,12 @@ def validate_linux(layout, *, scope: str) -> Path:
     print(f"Local Linux CI ({scope}); evidence: {root}", flush=True)
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     try:
+        if scope == "image":
+            arches = tuple(target["architecture"] for target in validation_plan("full", host)
+                           if target["libc"] == "gnu" and target["buildAvailable"])
+            report["image"] = _validate_image_targets(layout, version=version, architectures=arches)
+            report["status"] = "passed"
+            return path
         webui = root / "webui"
         with (root / "webui-build.log").open("w", encoding="utf-8") as log:
             subprocess.run([sys.executable, "-B", str(rust / "tools/build_webui.py"), "--stage-dir", str(webui)],
@@ -89,12 +112,7 @@ def validate_linux(layout, *, scope: str) -> Path:
         gnu = [entry for entry in report["targets"] if entry["libc"] == "gnu" and entry["buildAvailable"]]
         if scope == "full" and gnu and all(entry["build"] == "passed" for entry in gnu):
             arches = tuple(entry["architecture"] for entry in gnu)
-            image = f"local/emulebb-rust:{version}"
-            assets = collect_linux_debs(layout, version=version, architectures=arches)
-            archive = build_emulebb_rust_image_local(rust_root=rust, output_root=output, assets_dir=assets,
-                                                      version=version, image=image, wsl_distro="Ubuntu", architectures=arches)
-            evidence = validate_image(layout, archive=archive, image=image, architectures=arches)
-            report["image"] = {"status": "passed", "architectures": arches, "securityEvidence": str(evidence)}
+            report["image"] = _validate_image_targets(layout, version=version, architectures=arches)
         elif scope == "full":
             # WHY: a successful subset must not look like proof of the required
             # image CPU set when another GNU package gate failed.
