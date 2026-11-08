@@ -207,6 +207,123 @@ def test_ci_linux_entrypoint_rejects_local_invocation(monkeypatch):
     assert "requires GitHub Actions" in result.output
 
 
+@pytest.fixture
+def ci_linux_producer(tmp_path, monkeypatch, hosted_context):
+    from click.testing import CliRunner
+    from emule_workspace.cli import main
+
+    output = tmp_path / "output"
+    output.mkdir()
+    for name in ("EMULEBB_RUST_REPO", "EMULEBB_TOOLING_REPO", "MINIUPNP_ROOT",
+                 "PCPNATPMP_ROOT", "EMULEBB_BUILD_TESTS_REPO"):
+        source = tmp_path / name.lower()
+        source.mkdir()
+        monkeypatch.setenv(name, str(source))
+    monkeypatch.setenv("EMULEBB_WORKSPACE_OUTPUT_ROOT", str(output))
+    archive = output / "synthetic-musl.tar.zst"
+    archive.write_bytes(b"Synthetic package")
+    receipt = output / "reports" / "package-smoke.json"
+    receipt.parent.mkdir()
+    receipt.write_bytes(b'{"schema":"emulebb.rust.package-smoke/3","status":"passed"}\n')
+    builds, smokes = [], []
+
+    def build(layout, **kwargs):
+        builds.append((layout, kwargs))
+        return archive
+
+    def smoke(layout, **kwargs):
+        smokes.append((layout, kwargs))
+        return receipt
+
+    monkeypatch.setattr(linux_containers, "build_linux_artifacts", build)
+    monkeypatch.setattr(linux_containers, "smoke_linux_archive", smoke)
+
+    def invoke(*extra):
+        return CliRunner().invoke(main, [
+            "package-emulebb-rust-linux-ci", "--libc", "musl", "--architecture", "amd64",
+            "--release-version", "0.1.0-beta.2", *map(str, extra),
+        ])
+
+    return SimpleNamespace(output=output, archive=archive, receipt=receipt,
+                           builds=builds, smokes=smokes, invoke=invoke)
+
+
+def test_ci_linux_retains_exact_receipt_from_shared_native_smoke(ci_linux_producer):
+    producer = ci_linux_producer
+    target = producer.output / "evidence" / "emulebb-rust-package-smoke-linux-x64-musl.json"
+    result = producer.invoke("--smoke", "--test-scope", "full", "--smoke-report-path", target)
+    assert result.exit_code == 0, result.output
+    assert target.read_bytes() == producer.receipt.read_bytes()
+    assert len(producer.builds) == len(producer.smokes) == 1
+    assert producer.builds[0][1]["test_scope"] == "full"
+    assert producer.builds[0][1]["smoke"] is False
+    assert producer.smokes[0][1] == {"archive": producer.archive, "libc": "musl", "architecture": "amd64"}
+
+
+def test_ci_linux_report_option_requires_runtime_smoke(ci_linux_producer):
+    producer = ci_linux_producer
+    result = producer.invoke("--smoke-report-path", producer.output / "receipt.json")
+    assert result.exit_code != 0 and "requires --smoke" in result.output
+    assert not producer.builds and not producer.smokes
+
+
+@pytest.mark.parametrize("kind", ["outside-output", "existing-file", "symlink"])
+def test_ci_linux_report_target_is_checked_before_build(ci_linux_producer, tmp_path, kind):
+    producer = ci_linux_producer
+    target = producer.output / "retained.json"
+    original = b"Synthetic existing receipt"
+    if kind == "outside-output":
+        target = tmp_path / "outside.json"
+    elif kind == "existing-file":
+        target.write_bytes(original)
+    else:
+        source = producer.output / "existing.json"
+        source.write_bytes(original)
+        try:
+            target.symlink_to(source)
+        except (NotImplementedError, OSError):
+            pytest.skip("This host does not permit creation of a test symlink")
+    result = producer.invoke("--smoke", "--smoke-report-path", target)
+    assert result.exit_code != 0 and "new regular path below" in result.output
+    assert not producer.builds and not producer.smokes
+    if target.exists():
+        assert target.read_bytes() == original
+
+
+def test_ci_linux_failed_smoke_cannot_create_a_pass_receipt(ci_linux_producer, monkeypatch):
+    producer = ci_linux_producer
+    target = producer.output / "retained.json"
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("Synthetic lifecycle failure")
+
+    monkeypatch.setattr(linux_containers, "smoke_linux_archive", fail)
+    result = producer.invoke("--smoke", "--smoke-report-path", target)
+    assert result.exit_code != 0 and "Synthetic lifecycle failure" in result.output
+    assert not target.exists()
+
+
+def test_ci_linux_retention_never_replaces_a_racing_producer(ci_linux_producer, monkeypatch):
+    producer = ci_linux_producer
+    target = producer.output / "retained.json"
+    original = b"Synthetic racing receipt"
+
+    def race(*args, **kwargs):
+        target.write_bytes(original)
+        return producer.receipt
+
+    monkeypatch.setattr(linux_containers, "smoke_linux_archive", race)
+    result = producer.invoke("--smoke", "--smoke-report-path", target)
+    assert result.exit_code != 0 and target.read_bytes() == original
+
+
+def test_ci_linux_smoke_without_retention_keeps_the_shared_owner(ci_linux_producer):
+    producer = ci_linux_producer
+    result = producer.invoke("--smoke")
+    assert result.exit_code == 0, result.output
+    assert len(producer.builds) == len(producer.smokes) == 1
+
+
 def test_full_native_suite_uses_candidate_definitions_and_cross_compiles_both(tmp_path):
     tools = tmp_path / "tools"
     tools.mkdir()
