@@ -85,7 +85,7 @@ def test_corrupt_archive_is_never_executed_or_replaced(tmp_path, monkeypatch):
     archive.write_bytes(b"damaged cache")
     monkeypatch.setattr(runtime.urllib.request, "urlopen", lambda *args, **kwargs: pytest.fail("Do not overwrite unverified cache"))
     with pytest.raises(RuntimeError, match="checksum mismatch"):
-        runtime._download("https://example.invalid/fixture", archive, "0" * 64)
+        runtime.download_verified("https://example.invalid/fixture", archive, "0" * 64)
     assert archive.read_bytes() == b"damaged cache"
 
 
@@ -93,7 +93,7 @@ def test_downloaded_checksum_mismatch_cannot_enter_the_cache(tmp_path, monkeypat
     archive = tmp_path / "uv.zip"
     monkeypatch.setattr(runtime.urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"wrong bytes"))
     with pytest.raises(RuntimeError, match="checksum mismatch"):
-        runtime._download("https://example.invalid/fixture", archive, "0" * 64)
+        runtime.download_verified("https://example.invalid/fixture", archive, "0" * 64)
     assert not archive.exists() and not list(tmp_path.iterdir())
 
 

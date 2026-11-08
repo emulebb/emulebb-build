@@ -41,8 +41,10 @@ from .config import (
 from .git import git_output, repo_branch, repo_head, repo_status_lines
 from .layout import AppVariant, WorkspaceLayout
 from .msbuild import env_override, invoke_msbuild_project
+from .python_runtime import download_verified
 
 PE_MACHINES = {"x64": 0x8664, "ARM64": 0xAA64}
+APPIMAGE_RUNTIME_CONFIG = Path(__file__).parent / "release_assets/appimage/type2-runtime.json"
 STARTUP_DIAGNOSTICS_BINARY_MARKERS = (
     b"emulebb-diagnostics-startup.trace.json",
     "emulebb-diagnostics-startup.trace.json".encode("utf-16le"),
@@ -348,9 +350,10 @@ def _create_emulebb_rust_linux_packages(
     appdir = staging_root / "AppDir"
     deb_path = release_root / f"emulebb-rust-v{package_options.release_version}-linux-{deb_arch}.deb"
     appimage_path = release_root / f"emulebb-rust-v{package_options.release_version}-linux-{image_arch}.AppImage"
-    sbom_path = release_root / f"emulebb-rust-v{package_options.release_version}-linux-{image_arch}.sbom.spdx.json"
+    sboms = {asset: asset.with_name(asset.name + ".sbom.spdx.json")
+             for selected, asset in ((want_deb, deb_path), (want_appimage, appimage_path)) if selected}
     sums_path = release_root / "SHA256SUMS"
-    for path in (release_root, staging_root, deb_root, appdir, deb_path, appimage_path, sbom_path, sums_path):
+    for path in (release_root, staging_root, deb_root, appdir, deb_path, appimage_path, *sboms.values(), sums_path):
         _assert_path_under_root(path, release_root, "emulebb-rust Linux package path")
 
     if staging_root.exists():
@@ -373,7 +376,14 @@ def _create_emulebb_rust_linux_packages(
         version=package_options.release_version,
         arch=image_arch,
     )
-    _write_emulebb_rust_deb_control(deb_root, version=package_options.release_version, arch=deb_arch)
+    dependencies = (
+        _emulebb_rust_deb_dependencies(executable, staging_root / "shlibdeps")
+        if want_deb else None
+    )
+    if want_deb:
+        _write_emulebb_rust_deb_control(
+            deb_root, version=package_options.release_version, arch=deb_arch, dependencies=dependencies
+        )
 
     shutil.copytree(deb_root / "usr", appdir / "usr")
     (appdir / "AppRun").write_text(
@@ -408,17 +418,32 @@ def _create_emulebb_rust_linux_packages(
     ):
         executable_path.chmod(0o755)
 
-    _write_emulebb_rust_linux_sbom(
-        layout=layout,
-        rust_root=rust_root,
-        package_root=appdir,
-        release_root=release_root,
-        asset_name=appimage_path.name,
-        version=package_options.release_version,
-        arch=image_arch,
-    )
-    shutil.copy2(appdir / "SBOM.spdx.json", sbom_path)
-    shutil.copy2(appdir / "SBOM.spdx.json", deb_root / "usr" / "share" / "doc" / "emulebb-rust" / "SBOM.spdx.json")
+    runtime_path, runtime_info = (None, None)
+    if want_appimage:
+        runtime_path, runtime_info = _emulebb_rust_appimage_runtime(layout.output_root, image_arch)
+        notices = appdir / "usr/share/doc/emulebb-rust/licenses"
+        notices.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(Path(__file__).parent / "release_assets/appimage/type2-runtime-LICENSE",
+                     notices / "appimage-type2-runtime-LICENSE")
+    for selected, asset, tree in ((want_deb, deb_path, deb_root), (want_appimage, appimage_path, appdir)):
+        if not selected:
+            continue
+        components = () if asset == deb_path else (_component_spdx_package(
+            name="AppImage type2-runtime", declared_license="NOASSERTION",
+            version=runtime_info["version"], download_location=runtime_info["url"],
+            checksums=[{"algorithm": "SHA256", "checksumValue": runtime_info["sha256"]}],
+            comment=f"Official runtime binary; source commit {runtime_info['sourceRevision']}. "
+                    "MIT runtime with statically linked third-party libraries; see appimage-type2-runtime-LICENSE. "
+                    "Upstream does not publish versions of all bundled libraries.",
+        ),)
+        _write_emulebb_rust_linux_sbom(
+            layout=layout, rust_root=rust_root, package_root=tree, release_root=release_root,
+            asset_name=asset.name, version=package_options.release_version, arch=image_arch,
+            extra_components=components,
+        )
+        shutil.copy2(tree / "SBOM.spdx.json", sboms[asset])
+        if asset == deb_path:
+            (tree / "SBOM.spdx.json").replace(tree / "usr/share/doc/emulebb-rust/SBOM.spdx.json")
 
     appimagetool = (
         shutil.which("appimagetool") or os.environ.get("APPIMAGETOOL", "").strip()
@@ -442,7 +467,7 @@ def _create_emulebb_rust_linux_packages(
             shutil.copytree(appdir, native_appdir)
             _normalize_emulebb_rust_linux_modes(native_appdir, is_appdir=True)
             _run_packaging_tool(
-                (appimagetool, "--no-appstream", str(native_appdir), str(appimage_path)),
+                (appimagetool, "--no-appstream", "--runtime-file", str(runtime_path), str(native_appdir), str(appimage_path)),
                 "appimagetool",
             )
 
@@ -454,6 +479,7 @@ def _create_emulebb_rust_linux_packages(
     _assert_emulebb_rust_package_provenance(layout, rust_root, provenance)
     manifests: list[Path] = []
     for asset in assets:
+        sbom_path = sboms[asset]
         manifest_path = asset.with_name(f"{asset.name}.manifest.json")
         manifest = {
             **provenance,
@@ -472,14 +498,19 @@ def _create_emulebb_rust_linux_packages(
             "sbom": sbom_path.name,
             "sbomSha256": _sha256(sbom_path),
         }
+        if asset == deb_path:
+            manifest["runtimeDependencies"] = dependencies
+        else:
+            manifest["appImageRuntime"] = runtime_info
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
         manifests.append(manifest_path)
-    _write_sha256sums(sums_path, (*assets, *manifests, sbom_path))
+    _write_sha256sums(sums_path, (*assets, *manifests, *sboms.values()))
     if want_deb:
         print(f"eMuleBB Rust DEB: {deb_path}")
     if want_appimage:
         print(f"eMuleBB Rust AppImage: {appimage_path}")
-    print(f"eMuleBB Rust SBOM: {sbom_path}")
+    for sbom_path in sboms.values():
+        print(f"eMuleBB Rust SBOM: {sbom_path}")
 
 
 def _create_emulebb_rust_macos_package(
@@ -688,6 +719,7 @@ def _write_emulebb_rust_linux_sbom(
     asset_name: str,
     version: str,
     arch: str,
+    extra_components: tuple[dict[str, object], ...] = (),
 ) -> None:
     sbom_path = package_root / "SBOM.spdx.json"
     document = _build_spdx_sbom(
@@ -699,9 +731,35 @@ def _write_emulebb_rust_linux_sbom(
         package_comment=f"Unsigned Linux {arch} beta package for the headless Rust daemon and embedded WebUI.",
         package_root=package_root,
         release_root=release_root,
-        components=_emulebb_rust_sbom_components(layout, rust_root),
+        components=[*_emulebb_rust_sbom_components(layout, rust_root), *extra_components],
     )
     sbom_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def _emulebb_rust_appimage_runtime(output: Path, arch: str) -> tuple[Path, dict[str, str]]:
+    """Select an explicit official runtime instead of appimagetool's latest download."""
+    config = json.loads(APPIMAGE_RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    version, revision = config["version"], config["sourceRevision"]
+    if arch not in {"x86_64", "aarch64"}:
+        raise RuntimeError(f"Unsupported AppImage runtime architecture: {arch}")
+    expected = config["sha256"][arch]
+    if (re.fullmatch(r"[0-9]{8}", version) is None
+            or re.fullmatch(r"[0-9a-f]{40}", revision) is None
+            or re.fullmatch(r"[0-9a-f]{64}", expected) is None):
+        raise RuntimeError("AppImage runtime requires reviewed release, source and SHA-256 pins")
+    destination = output / "tools/appimage/type2-runtime" / version / f"runtime-{arch}"
+    _assert_path_under_root(destination, output, "AppImage runtime")
+    if destination.is_symlink():
+        raise RuntimeError("AppImage runtime must be a regular owned tool file")
+    url = f"https://github.com/AppImage/type2-runtime/releases/download/{version}/runtime-{arch}"
+    download_verified(url, destination, expected)
+    with destination.open("rb") as stream:
+        header = stream.read(20)
+    machine = 62 if arch == "x86_64" else 183
+    if len(header) != 20 or header[:6] != b"\x7fELF\x02\x01" or int.from_bytes(header[18:20], "little") != machine:
+        raise RuntimeError("AppImage runtime must be a 64-bit ELF for the selected architecture")
+    return destination, {"version": version, "sourceRevision": revision, "architecture": arch,
+                         "sha256": expected, "url": url}
 
 
 def _run_packaging_tool(command: tuple[str, ...], label: str) -> None:
@@ -711,14 +769,45 @@ def _run_packaging_tool(command: tuple[str, ...], label: str) -> None:
         raise RuntimeError(f"{label} failed with exit code {completed.returncode}: {detail}")
 
 
-def _write_emulebb_rust_deb_control(root: Path, *, version: str, arch: str, dependencies: str | None = None) -> None:
+def _emulebb_rust_deb_dependencies(executable: Path, scratch: Path) -> str:
+    """Read actual ELF dependencies from Debian's symbol database, failing closed."""
+    control = scratch / "debian/control"
+    control.parent.mkdir(parents=True, exist_ok=True)
+    control.write_text(
+        "Source: emulebb-rust\nSection: net\nPriority: optional\n"
+        "Maintainer: eMuleBB project <noreply@github.com>\n\n"
+        "Package: emulebb-rust\nArchitecture: any\nDescription: Headless eMuleBB Rust daemon\n",
+        encoding="ascii", newline="\n",
+    )
+    if os.name == "nt":
+        command = ("wsl.exe", "--cd", wsl_path(scratch), "--", "dpkg-shlibdeps",
+                   "-O", f"-e{wsl_path(executable)}")
+    else:
+        command = ("dpkg-shlibdeps", "-O", f"-e{executable.resolve()}")
+    completed = subprocess.run(command, cwd=scratch, check=False, capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(f"dpkg-shlibdeps failed with exit code {completed.returncode}: {detail}")
+    lines = completed.stdout.splitlines()
+    if len(lines) != 1 or not lines[0].startswith("shlibs:Depends="):
+        raise RuntimeError("dpkg-shlibdeps must emit exactly one shlibs:Depends field")
+    dependencies = lines[0].removeprefix("shlibs:Depends=")
+    # WHY: Debian owns dependency resolution; only validate the single control field
+    # here so unexpected tool output cannot introduce additional control fields.
+    if not dependencies or re.fullmatch(r"[a-zA-Z0-9.+:()<> =,|~\-]+", dependencies) is None:
+        raise RuntimeError("dpkg-shlibdeps emitted an invalid dependency control field")
+    return f"{dependencies}, ca-certificates"
+
+
+def _write_emulebb_rust_deb_control(root: Path, *, version: str, arch: str, dependencies: str) -> None:
     """Stage the common DEB identity for native and container-based packaging."""
+    if not isinstance(dependencies, str) or not dependencies or "\n" in dependencies or "\r" in dependencies:
+        raise RuntimeError("DEB packaging requires a nonempty runtime dependency control field")
     control = root / "DEBIAN"
     control.mkdir(parents=True)
     lines = ["Package: emulebb-rust", f"Version: {version}", "Section: net", "Priority: optional",
              f"Architecture: {arch}", "Maintainer: eMuleBB project <noreply@github.com>"]
-    if dependencies:
-        lines.append(f"Depends: {dependencies}")
+    lines.append(f"Depends: {dependencies}")
     lines.extend(("Description: Headless eMuleBB Rust daemon with embedded WebUI", ""))
     (control / "control").write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
