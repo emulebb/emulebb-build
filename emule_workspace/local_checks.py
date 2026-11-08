@@ -166,7 +166,8 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
         "emulebb-build-tests": ("scripts/smoke-rust-release-package.py",),
     }
     image_owners = {
-        "emulebb-build": ("emule_workspace/rust_images.py", "emule_workspace/image_security.py"),
+        "emulebb-build": ("emule_workspace/rust_images.py", "emule_workspace/image_security.py",
+                          "emule_workspace/release_assets/rust_images/"),
         "emulebb-build-tests": ("scripts/smoke-rust-container.py",),
     }
     full_linux = any(path.startswith(linux_owners.get(repo.name, ())) for path in paths)
