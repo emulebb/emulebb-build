@@ -1200,12 +1200,14 @@ def test_emulebb_rust_package_does_not_emit_provenance_after_source_moves_during
     ("platform", "deb_arch", "image_arch"),
     (("x64", "amd64", "x86_64"), ("ARM64", "arm64", "aarch64")),
 )
+@pytest.mark.parametrize("formats", [("deb", "appimage"), ("appimage",)])
 def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     platform: str,
     deb_arch: str,
     image_arch: str,
+    formats: tuple[str, ...],
 ) -> None:
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     layout = _make_rust_package_layout(tmp_path)
@@ -1219,8 +1221,21 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
         lambda repo: {"commit": "a" * 40, "branch": "main", "remote": ""},
     )
     monkeypatch.setattr(release.shutil, "which", lambda name: "/tools/appimagetool" if name == "appimagetool" else None)
+    dependencies = "libc6 (>= 2.39), libgcc-s1 (>= 3.0), ca-certificates"
+    def resolve_dependencies(executable, scratch):
+        assert "deb" in formats
+        assert executable == staged_bin / "emulebb-rust"
+        assert scratch.name == "shlibdeps"
+        return dependencies
+    monkeypatch.setattr(release, "_emulebb_rust_deb_dependencies", resolve_dependencies)
+    runtime = tmp_path / "runtime"
+    runtime.write_bytes(b"verified runtime input")
+    runtime_info = {"version": "20251108", "sourceRevision": "b" * 40, "architecture": image_arch,
+                    "sha256": release._sha256(runtime), "url": "https://example.invalid/runtime"}
+    monkeypatch.setattr(release, "_emulebb_rust_appimage_runtime", lambda *_args: (runtime, runtime_info))
 
     def fake_packaging_tool(command: tuple[str, ...], _label: str) -> None:
+        assert command[command.index("--runtime-file") + 1] == str(runtime)
         Path(command[-1]).write_bytes(b"package")
 
     monkeypatch.setattr(release, "_run_packaging_tool", fake_packaging_tool)
@@ -1243,20 +1258,34 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
             release_version="0.1.0-beta.1",
             skip_build=True,
             target_os="linux",
+            linux_formats=formats,
         ),
     )
 
     release_root = layout.output_release_root / "rust-v0.1.0-beta.1"
     deb = release_root / f"emulebb-rust-v0.1.0-beta.1-linux-{deb_arch}.deb"
     appimage = release_root / f"emulebb-rust-v0.1.0-beta.1-linux-{image_arch}.AppImage"
-    sbom = release_root / f"emulebb-rust-v0.1.0-beta.1-linux-{image_arch}.sbom.spdx.json"
-    assert deb.is_file()
+    assert deb.is_file() == ("deb" in formats)
     assert appimage.is_file()
-    assert sbom.is_file()
-    assert deb.with_name(f"{deb.name}.manifest.json").is_file()
-    assert appimage.with_name(f"{appimage.name}.manifest.json").is_file()
+    for asset in (deb, appimage) if "deb" in formats else (appimage,):
+        sbom = asset.with_name(asset.name + ".sbom.spdx.json")
+        manifest = json.loads(asset.with_name(asset.name + ".manifest.json").read_text())
+        assert manifest["sbom"] == sbom.name and manifest["sbomSha256"] == release._sha256(sbom)
+        document = json.loads(sbom.read_text())
+        runtime_components = [package for package in document["packages"] if package["name"] == "AppImage type2-runtime"]
+        if asset == deb:
+            assert not runtime_components and "appImageRuntime" not in manifest
+            assert manifest["runtimeDependencies"] == dependencies
+            control = release_root / "staging" / f"linux-{image_arch}" / "deb/DEBIAN/control"
+            assert f"Depends: {dependencies}\n" in control.read_text()
+            assert "debian" not in {path.name for path in control.parent.parent.iterdir()}
+        else:
+            assert len(runtime_components) == 1
+            assert runtime_components[0]["checksums"] == [{"algorithm": "SHA256", "checksumValue": runtime_info["sha256"]}]
+            assert manifest["appImageRuntime"] == runtime_info
+            assert any(entry["fileName"].endswith("/appimage-type2-runtime-LICENSE") for entry in document["files"])
     sums = (release_root / "SHA256SUMS").read_text(encoding="ascii")
-    assert deb.name in sums
+    assert (deb.name in sums) == ("deb" in formats)
     assert appimage.name in sums
 
 
@@ -1276,6 +1305,8 @@ def test_emulebb_rust_linux_deb_only_does_not_require_appimagetool(
         lambda repo: {"commit": "a" * 40, "branch": "main", "remote": ""},
     )
     monkeypatch.setattr(release.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(release, "_emulebb_rust_deb_dependencies", lambda *_args: "libc6 (>= 2.39), ca-certificates")
+    monkeypatch.setattr(release, "_emulebb_rust_appimage_runtime", lambda *_args: pytest.fail("DEB must not download an AppImage runtime"))
 
     def fake_packaging_tool(command: tuple[str, ...], _label: str) -> None:
         Path(command[-1]).write_bytes(b"package")
@@ -1310,6 +1341,112 @@ def test_emulebb_rust_linux_deb_only_does_not_require_appimagetool(
     assert deb.is_file()
     assert deb.with_name(f"{deb.name}.manifest.json").is_file()
     assert not appimage.exists()
+
+
+@pytest.mark.parametrize("dependencies", [
+    "libc6 (>= 2.39), libgcc-s1 (>= 3.0)",
+    "libc6:arm64 (>= 2.34), libstdc++6 (>= 14.1)",
+])
+def test_native_deb_dependencies_use_debian_symbol_resolution(tmp_path, monkeypatch, dependencies):
+    executable = tmp_path / "staged daemon"
+    executable.write_bytes(b"ELF fixture")
+    scratch = tmp_path / "shlibdeps"
+    calls = []
+    monkeypatch.setattr(release, "wsl_path", lambda path: "/mapped/" + path.name)
+    def resolve(command, **kwargs):
+        calls.append((command, kwargs))
+        assert (scratch / "debian/control").is_file()
+        assert "DEBIAN" not in {path.name for path in scratch.iterdir()}
+        return SimpleNamespace(returncode=0, stdout=f"shlibs:Depends={dependencies}\n", stderr="warning: fixture")
+    monkeypatch.setattr(release.subprocess, "run", resolve)
+    assert release._emulebb_rust_deb_dependencies(executable, scratch) == dependencies + ", ca-certificates"
+    command, arguments = calls[0]
+    assert "dpkg-shlibdeps" in command and "-O" in command
+    assert "--ignore-missing-info" not in command
+    assert arguments["cwd"] == scratch and arguments["capture_output"]
+    assert command[-1].startswith("-e")
+    assert executable.name in command[-1]
+
+
+@pytest.mark.parametrize("output", [
+    "", "shlibs:Depends=\n", "shlibs:Depends=libc6\nInjected: value\n",
+    "shlibs:Depends=libc6\nshlibs:Depends=libgcc-s1\n",
+    "shlibs:Recommends=libc6\n", "shlibs:Depends=libc6\x00\n",
+])
+def test_native_deb_rejects_missing_or_ambiguous_dependency_fields(tmp_path, monkeypatch, output):
+    monkeypatch.setattr(release, "wsl_path", lambda path: "/fixture")
+    monkeypatch.setattr(release.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=0, stdout=output, stderr=""))
+    with pytest.raises(RuntimeError, match="dpkg-shlibdeps"):
+        release._emulebb_rust_deb_dependencies(tmp_path / "daemon", tmp_path / "scratch")
+
+
+def test_native_deb_rejects_unresolved_library_instead_of_omitting_dependency(tmp_path, monkeypatch):
+    monkeypatch.setattr(release, "wsl_path", lambda path: "/fixture")
+    monkeypatch.setattr(release.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=2, stdout="", stderr="cannot find library libmissing.so"))
+    with pytest.raises(RuntimeError, match="cannot find library libmissing.so"):
+        release._emulebb_rust_deb_dependencies(tmp_path / "daemon", tmp_path / "scratch")
+
+@pytest.mark.parametrize("dependencies", ["", None, "libc6\nInjected: field", "libc6\rInjected: field"])
+def test_deb_control_requires_one_runtime_dependency_field(tmp_path, dependencies):
+    with pytest.raises(RuntimeError, match="runtime dependency control field"):
+        release._write_emulebb_rust_deb_control(
+            tmp_path / "deb", version="0.1.0-beta.1", arch="amd64", dependencies=dependencies)
+    assert not (tmp_path / "deb/DEBIAN/control").exists()
+
+@pytest.mark.parametrize("arch,machine", [("x86_64", 62), ("aarch64", 183)])
+def test_appimage_runtime_is_selected_by_pin_and_architecture(tmp_path, monkeypatch, arch, machine):
+    data = bytearray(64)
+    data[:6] = b"\x7fELF\x02\x01"
+    data[18:20] = machine.to_bytes(2, "little")
+    digest = hashlib.sha256(data).hexdigest()
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps({"version": "20251108", "sourceRevision": "a" * 40,
+                                 "sha256": {arch: digest}}))
+    monkeypatch.setattr(release, "APPIMAGE_RUNTIME_CONFIG", config)
+    calls = []
+    def download(url, path, expected):
+        calls.append((url, path, expected))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    monkeypatch.setattr(release, "download_verified", download)
+    runtime, info = release._emulebb_rust_appimage_runtime(tmp_path / "out", arch)
+    assert runtime.name == "runtime-" + arch
+    assert calls == [(info["url"], runtime, digest)]
+    assert "/releases/download/20251108/" in info["url"]
+    assert info["architecture"] == arch and info["sourceRevision"] == "a" * 40
+    assert info["sha256"] == hashlib.sha256(runtime.read_bytes()).hexdigest()
+
+
+def test_appimage_runtime_with_wrong_cpu_is_rejected_even_if_digest_matches_pin(tmp_path, monkeypatch):
+    data = bytearray(64)
+    data[:6] = b"\x7fELF\x02\x01"
+    data[18:20] = (183).to_bytes(2, "little")
+    digest = hashlib.sha256(data).hexdigest()
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps({"version": "20251108", "sourceRevision": "a" * 40,
+                                 "sha256": {"x86_64": digest}}))
+    monkeypatch.setattr(release, "APPIMAGE_RUNTIME_CONFIG", config)
+    def download(_url, path, _expected):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    monkeypatch.setattr(release, "download_verified", download)
+    with pytest.raises(RuntimeError, match="64-bit ELF"):
+        release._emulebb_rust_appimage_runtime(tmp_path / "out", "x86_64")
+
+
+def test_appimage_runtime_rejects_corrupt_cached_download_without_using_it(tmp_path, monkeypatch):
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps({"version": "20251108", "sourceRevision": "a" * 40,
+                                 "sha256": {"x86_64": "b" * 64}}))
+    monkeypatch.setattr(release, "APPIMAGE_RUNTIME_CONFIG", config)
+    runtime = tmp_path / "out/tools/appimage/type2-runtime/20251108/runtime-x86_64"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"corrupt cache")
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        release._emulebb_rust_appimage_runtime(tmp_path / "out", "x86_64")
+    assert runtime.read_bytes() == b"corrupt cache"
 
 
 def test_emulebb_rust_deb_normalizes_modes_in_wsl(

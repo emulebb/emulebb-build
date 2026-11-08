@@ -102,7 +102,7 @@ def selected_python() -> Path:
     return executable
 
 
-def _download(url: str, destination: Path, expected: str) -> None:
+def download_verified(url: str, destination: Path, expected: str) -> None:
     """Publish an official tool archive only after validating its pinned digest."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_file():
@@ -159,7 +159,7 @@ def ensure_uv(output: Path) -> Path:
     executable = "uv.exe" if os.name == "nt" else "uv"
     filename = f"uv-{target}." + ("zip" if os.name == "nt" else "tar.gz")
     archive = output / "cache/workspace-python" / version / filename
-    _download(f"https://github.com/astral-sh/uv/releases/download/{version}/{filename}", archive, expected)
+    download_verified(f"https://github.com/astral-sh/uv/releases/download/{version}/{filename}", archive, expected)
     binary = _uv_binary(archive, executable)
     installed = output / "tools/uv" / version / target / executable
     installed.parent.mkdir(parents=True, exist_ok=True)
