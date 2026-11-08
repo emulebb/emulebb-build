@@ -1088,7 +1088,7 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
 
     release_root = layout.output_release_root / "rust-v0.1.0-beta.1"
     zip_path = release_root / f"emulebb-rust-v0.1.0-beta.1-windows-{platform.lower()}.zip"
-    manifest_path = release_root / f"emulebb-rust-v0.1.0-beta.1-windows-{platform.lower()}.manifest.json"
+    manifest_path = zip_path.with_name(f"{zip_path.name}.manifest.json")
     sbom_path = release_root / f"emulebb-rust-v0.1.0-beta.1-windows-{platform.lower()}.sbom.spdx.json"
     sums_path = release_root / "SHA256SUMS"
     assert zip_path.is_file()

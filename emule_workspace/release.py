@@ -249,7 +249,7 @@ def create_emulebb_rust_package(
     staging_root = release_root / "staging" / f"windows-{arch}"
     package_root = staging_root / EMULEBB_RUST_PACKAGE_ROOT_NAME
     zip_path = release_root / f"emulebb-rust-v{package_options.release_version}-windows-{arch}.zip"
-    manifest_path = release_root / f"emulebb-rust-v{package_options.release_version}-windows-{arch}.manifest.json"
+    manifest_path = zip_path.with_name(f"{zip_path.name}.manifest.json")
     sbom_path = release_root / f"emulebb-rust-v{package_options.release_version}-windows-{arch}.sbom.spdx.json"
     sums_path = release_root / "SHA256SUMS"
     for path_to_check in (release_root, staging_root, package_root, zip_path, manifest_path, sbom_path, sums_path):
