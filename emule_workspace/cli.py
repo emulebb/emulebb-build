@@ -1692,6 +1692,7 @@ def smoke_emulebb_rust_image(*, archive: Path, image: str, architectures: tuple[
 
 @main.command("package-emulebb-rust-image-local")
 @_common_options
+@click.option("--variant", type=click.Choice(["ubuntu", "alpine"]), default="ubuntu", show_default=True)
 @click.option("--release-version", required=True)
 @click.option("--assets-dir", type=click.Path(path_type=Path))
 @click.option("--image")
@@ -1700,6 +1701,7 @@ def smoke_emulebb_rust_image(*, archive: Path, image: str, architectures: tuple[
               default=("amd64", "arm64"), show_default=True)
 def package_emulebb_rust_image_local(
     *,
+    variant: str,
     release_version: str,
     assets_dir: Path | None,
     image: str | None,
@@ -1710,12 +1712,13 @@ def package_emulebb_rust_image_local(
 ) -> None:
     """Build a verified multiarch OCI archive using Linux/WSL Docker."""
 
-    selected_image = image or f"local/emulebb-rust:{release_version}"
+    selected_image = image or f"local/emulebb-rust:{release_version}-{variant}"
 
     def build_local_image(**kwargs: Any) -> None:
-        from .rust_images import collect_linux_debs
+        from .rust_images import collect_linux_packages
 
-        selected_assets = assets_dir or collect_linux_debs(kwargs["layout"], version=release_version, architectures=architectures)
+        selected_assets = assets_dir or collect_linux_packages(kwargs["layout"], version=release_version,
+                                                               architectures=architectures, variant=variant)
         built = build_emulebb_rust_image_local(
             rust_root=kwargs["layout"].emulebb_rust_repo_root,
             output_root=kwargs["layout"].output_root,
@@ -1724,6 +1727,7 @@ def package_emulebb_rust_image_local(
             image=selected_image,
             wsl_distro=wsl_distro,
             architectures=architectures,
+            variant=variant,
         )
         print(f"Local Rust image archived: {built}")
 
@@ -1805,16 +1809,18 @@ def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path) 
 
 
 @main.command("package-emulebb-rust-image-ci")
+@click.option("--variant", type=click.Choice(["ubuntu", "alpine"]), default="ubuntu", show_default=True)
 @click.option("--release-version", required=True)
 @click.option("--assets-dir", type=click.Path(path_type=Path), required=True)
 @click.option("--control-rust-repo", type=click.Path(path_type=Path, exists=True, file_okay=False), required=True)
 def package_emulebb_rust_image_ci(
     *,
+    variant: str,
     release_version: str,
     assets_dir: Path,
     control_rust_repo: Path,
 ) -> None:
-    """Build a verified multi-architecture image from the native DEB assets."""
+    """Build a verified multi-architecture Ubuntu or Alpine image."""
 
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise click.ClickException("CI image production requires GitHub Actions; use package-emulebb-rust-image-local for local validation.")
@@ -1833,6 +1839,7 @@ def package_emulebb_rust_image_ci(
             assets_dir=assets_dir,
             version=release_version,
             control_rust_root=control_rust_repo.resolve(),
+            variant=variant,
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc

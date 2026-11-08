@@ -843,12 +843,14 @@ def build_emulebb_rust_image_ci(
     assets_dir: Path,
     version: str,
     control_rust_root: Path | None = None,
+    variant: str = "ubuntu",
 ) -> Path:
     """Build the verified candidate archive; GitHub owns all publication."""
     from .rust_images import build_image
 
     return build_image(rust_root=rust_root, output_root=output_root, assets_dir=assets_dir,
-                       version=version, image=f"ghcr.io/emulebb/emulebb-rust:{version}", control_rust_root=control_rust_root)
+                       version=version, image=f"ghcr.io/emulebb/emulebb-rust:{version}-{variant}",
+                       control_rust_root=control_rust_root, variant=variant)
 
 
 def build_emulebb_rust_image_local(
@@ -860,6 +862,7 @@ def build_emulebb_rust_image_local(
     image: str,
     wsl_distro: str,
     architectures: tuple[str, ...] = ("amd64", "arm64"),
+    variant: str = "ubuntu",
 ) -> Path:
     """Build an inventoried local OCI archive through Linux or WSL Docker."""
     from .rust_images import build_image
@@ -870,7 +873,7 @@ def build_emulebb_rust_image_local(
     if not wsl_distro.strip():
         raise RuntimeError("WSL distribution must be non-empty")
     return build_image(rust_root=rust_root, output_root=output_root, assets_dir=assets_dir,
-                       version=version, image=image, architectures=architectures, wsl_distro=wsl_distro)
+                       version=version, image=image, architectures=architectures, wsl_distro=wsl_distro, variant=variant)
 
 
 def _assert_emulebb_rust_version_matches(rust_root: Path, release_version: str) -> None:

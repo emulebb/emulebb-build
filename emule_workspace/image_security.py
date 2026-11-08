@@ -15,24 +15,29 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from .linux_containers import LinuxDocker, run_owned_container
-from .rust_images import archive_digest, smoke_image, verified_smoke_platforms
+from .rust_images import archive_digest, smoke_image, verified_smoke_platforms, image_prefix, image_recipe, image_package_name
 from .git import git_output
 
 TRIVY_IMAGE = "docker.io/aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa"
 
 
-def _verify_spdx_architecture(path: Path, architecture: str) -> None:
-    """Reject host-CPU inventories masquerading as another Ubuntu platform."""
+def _verify_spdx_architecture(path: Path, architecture: str, variant: str = "ubuntu") -> None:
+    """Require the selected libc, package ecosystem and CPU in the OS inventory."""
+    image_recipe(variant)
     document = json.loads(path.read_text(encoding="utf-8"))
-    libc_arches = [parse_qs(urlsplit(ref.get("referenceLocator", "")).query).get("arch", [])
-                   for item in document.get("packages", []) if item.get("name") == "libc6"
-                   for ref in item.get("externalRefs", []) if ref.get("referenceType") == "purl"]
-    if document.get("spdxVersion") != "SPDX-2.3" or not any(architecture in values for values in libc_arches):
-        raise RuntimeError("SBOM is missing the correct Ubuntu OS package architecture")
+    libc, ecosystem, cpu = ("libc6", "deb", architecture) if variant == "ubuntu" else (
+        "musl", "apk", {"amd64": "x86_64", "arm64": "aarch64"}[architecture])
+    refs = [urlsplit(ref.get("referenceLocator", ""))
+            for item in document.get("packages", []) if item.get("name") == libc
+            for ref in item.get("externalRefs", []) if ref.get("referenceType") == "purl"]
+    if document.get("spdxVersion") != "SPDX-2.3" or not any(
+            ref.scheme == "pkg" and ref.path.startswith(ecosystem + "/")
+            and cpu in parse_qs(ref.query).get("arch", []) for ref in refs):
+        raise RuntimeError(f"SBOM is missing the correct {variant} OS package architecture")
 
 
 def verify_platform_export(path: Path, *, architecture: str, expected_config: str,
-                           expected_source: str, expected_version: str) -> None:
+                           expected_source: str, expected_version: str, expected_variant: str = "ubuntu") -> None:
     """Bind a single-platform Docker export to the verified OCI image config."""
     with tarfile.open(path, "r:*") as archive:
         members = archive.getmembers()
@@ -55,8 +60,9 @@ def verify_platform_export(path: Path, *, architecture: str, expected_config: st
             raise RuntimeError("Docker export architecture does not match the requested scanner CPU")
         labels = identity.get("config", {}).get("Labels", {})
         if (labels.get("org.opencontainers.image.revision") != expected_source
-                or labels.get("org.opencontainers.image.version") != expected_version):
-            raise RuntimeError("Docker export revision or version labels do not match the candidate")
+                or labels.get("org.opencontainers.image.version") != expected_version
+                or labels.get("io.emulebb.image.variant") != expected_variant):
+            raise RuntimeError("Docker export revision, version or variant labels do not match the candidate")
 
 
 def validate_image(layout, *, archive: Path, image: str, architectures: tuple[str, ...],
@@ -73,13 +79,15 @@ def validate_image(layout, *, archive: Path, image: str, architectures: tuple[st
     manifest_bytes = manifest_path.read_bytes()
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
     manifest = json.loads(manifest_bytes)
+    variant = manifest.get("variant")
+    recipe = image_recipe(variant)
     origin = _emulebb_rust_artifact_origin()
     source_sha = git_output(layout.emulebb_rust_repo_root, "rev-parse", "HEAD").strip()
     builder_sha = git_output(Path(__file__).resolve().parents[1], "rev-parse", "HEAD").strip()
     if (manifest.get("schema") != "emulebb.rust.image/2" or manifest.get("sourceDirty") is not False
             or manifest.get("sourceSha") != source_sha or manifest.get("image") != image
             or manifest.get("archiveSha256") != _sha256(archive)
-            or manifest.get("dockerfileSha256") != _sha256(layout.emulebb_rust_repo_root / "packaging/docker/Dockerfile")):
+            or manifest.get("dockerfileSha256") != _sha256(layout.emulebb_rust_repo_root / "packaging/docker" / recipe)):
         raise RuntimeError("Image validation requires exact archive bytes and the current clean source recipe")
     if (not architectures or len(set(architectures)) != len(architectures)
             or set(architectures) - {"amd64", "arm64"}
@@ -97,12 +105,12 @@ def validate_image(layout, *, archive: Path, image: str, architectures: tuple[st
     if not isinstance(version, str) or not _is_release_version(version):
         raise RuntimeError("Image validation requires an explicitly versioned archive manifest")
     inputs = manifest.get("inputs")
-    expected_inputs = {f"emulebb-rust-v{version}-linux-{arch}.deb" for arch in manifest.get("architectures", [])}
+    expected_inputs = {image_package_name(version, arch, variant) for arch in manifest.get("architectures", [])}
     if (not isinstance(inputs, list) or not all(isinstance(item, dict) for item in inputs)
             or len(inputs) != len(expected_inputs) or {item.get("asset") for item in inputs} != expected_inputs
             or any(not isinstance(item.get(key), str) or re.fullmatch(r"[0-9a-f]{64}", item[key]) is None
                    for item in inputs for key in ("sha256", "sbomSha256", "manifestSha256"))):
-        raise RuntimeError("Image validation requires a complete hashed GNU package input inventory")
+        raise RuntimeError("Image validation requires a complete hashed package input inventory for its variant")
     if origin["origin"] == "github-actions":
         for item in inputs:
             _assert_emulebb_rust_hosted_artifact(item)
@@ -111,10 +119,10 @@ def validate_image(layout, *, archive: Path, image: str, architectures: tuple[st
         raise RuntimeError("Image security evidence requires a fresh empty directory below the output root")
     root.mkdir(parents=True, exist_ok=True)
     suffix = architectures[0] if len(architectures) == 1 else "multiarch"
-    stem = f"emulebb-rust-v{version}-image"
+    stem = image_prefix(version, variant) + "-image"
     metadata = root / f"{stem}-{suffix}-security.json"
     report = {"schema": "emulebb.rust.image-security/2", "status": "running", "image": image,
-              "version": version, **origin, "producerWorkflow": manifest.get("workflow"),
+              "version": version, "variant": variant, **origin, "producerWorkflow": manifest.get("workflow"),
               "sourceSha": source_sha, "sourceDirty": False, "inputs": inputs,
               "ociManifestDigest": root_digest, "imageManifestSha256": manifest_sha256,
               "dockerfileSha256": manifest["dockerfileSha256"], "builderSha": manifest["builderSha"],
@@ -174,7 +182,7 @@ def validate_image(layout, *, archive: Path, image: str, architectures: tuple[st
                     docker.run("image", "save", "--platform", platform, "--output", docker.path(scratch) + f"/{arch}.tar",
                                image, capture=True, timeout=180)
                     verify_platform_export(exported, architecture=arch, expected_config=identities[platform]["imageConfigDigest"],
-                                           expected_source=source_sha, expected_version=version)
+                                           expected_source=source_sha, expected_version=version, expected_variant=variant)
                     entry["scannerInputSha256"] = _sha256(exported)
                     sbom = root / f"{stem}-{arch}.sbom.spdx.json"
                     # Trivy's Docker backend can export the host CPU even when
@@ -184,7 +192,7 @@ def validate_image(layout, *, archive: Path, image: str, architectures: tuple[st
                                "--platform", platform, "--no-progress"]
                     run_owned_container(docker, [*command, "--format", "spdx-json", "--output", f"/evidence/{sbom.name}"],
                                          root / f"{stem}-{arch}-sbom.log", timeout=900)
-                    _verify_spdx_architecture(sbom, arch)
+                    _verify_spdx_architecture(sbom, arch, variant)
                     vulnerabilities = root / f"{stem}-{arch}.vulnerabilities.txt"
                     run_owned_container(docker, [*command, "--scanners", "vuln", "--ignore-unfixed",
                                                  "--severity", "HIGH,CRITICAL", "--exit-code", "1"],
@@ -259,13 +267,14 @@ def assemble_image_security_ci(*, output_root: Path, archive: Path, evidence_dir
         raise RuntimeError("Image proof inputs and release outputs require separate directories below the output root")
     if not release_dir.is_dir():
         raise RuntimeError("Image evidence assembly requires the native release assets first")
-    stem = f"emulebb-rust-v{version}"
-    image = f"ghcr.io/emulebb/emulebb-rust:{version}"
-    if archive.name != f"{stem}-multiarch.oci.tar":
-        raise RuntimeError("Image evidence assembly requires the canonical multiarch archive")
     image_manifest = archive.with_name(archive.name + ".manifest.json")
     manifest_bytes = image_manifest.read_bytes()
     metadata = json.loads(manifest_bytes)
+    variant = metadata.get("variant")
+    stem = image_prefix(version, variant)
+    image = f"ghcr.io/emulebb/emulebb-rust:{version}-{variant}"
+    if archive.name != f"{stem}-multiarch.oci.tar":
+        raise RuntimeError("Image evidence assembly requires the canonical multiarch archive")
     _assert_emulebb_rust_hosted_artifact(metadata)
     builder_root = Path(__file__).resolve().parents[1]
     if git_output(builder_root, "status", "--porcelain").strip():
@@ -287,21 +296,21 @@ def assemble_image_security_ci(*, output_root: Path, archive: Path, evidence_dir
         raise RuntimeError("Candidate archive must contain exactly the two required image CPUs")
     inputs = metadata.get("inputs")
     if (not isinstance(inputs, list) or len(inputs) != 2 or not all(isinstance(item, dict) for item in inputs)
-            or {item.get("asset") for item in inputs} != {f"{stem}-linux-{arch}.deb" for arch in ("amd64", "arm64")}):
-        raise RuntimeError("Image build must identify both GNU package inputs")
+            or {item.get("asset") for item in inputs} != {image_package_name(version, arch, variant) for arch in ("amd64", "arm64")}):
+        raise RuntimeError("Image build must identify both package inputs for its variant")
     for item in inputs:
         _assert_emulebb_rust_hosted_artifact(item)
         if int(item["workflow"]["runAttempt"]) > int(metadata["workflow"]["runAttempt"]):
             raise RuntimeError("Image package producer cannot follow the image build attempt")
         material = _material_commits(item.get("source"))
         if material["emulebbRust"] != source_sha or material["emulebbBuild"] != builder_sha:
-            raise RuntimeError("Image GNU inputs use different source or builder revisions")
+            raise RuntimeError("Image inputs use different source or builder revisions")
         asset = release_dir / item["asset"]
         native = json.loads(asset.with_name(asset.name + ".manifest.json").read_text(encoding="utf-8"))
         _assert_emulebb_rust_hosted_artifact(native)
         sbom_name = item.get("sbom")
         if not isinstance(sbom_name, str) or Path(sbom_name).name != sbom_name:
-            raise RuntimeError("Image GNU SBOM must be a direct release asset")
+            raise RuntimeError("Image SBOM must be a direct release asset")
         sbom = release_dir / sbom_name
         # WHY: rerunning a package job can change its manifest metadata while
         # reproducing identical payloads. Image proof binds payload/SBOM bytes
@@ -312,7 +321,7 @@ def assemble_image_security_ci(*, output_root: Path, archive: Path, evidence_dir
                 or native.get("sha256") != item.get("sha256") or _sha256(asset) != item.get("sha256")
                 or native.get("sbom") != sbom_name or native.get("sbomSha256") != item.get("sbomSha256")
                 or _sha256(sbom) != item.get("sbomSha256")):
-            raise RuntimeError("Image GNU inputs do not match the currently assembled package and SBOM bytes")
+            raise RuntimeError("Image inputs do not match the currently assembled package and SBOM bytes")
 
     proof_names = {f"{stem}-image-{arch}{suffix}" for arch in ("amd64", "arm64")
                    for suffix in ("-security.json", "-security-SHA256SUMS", "-smoke.json", "-scanner.txt",
@@ -332,7 +341,7 @@ def assemble_image_security_ci(*, output_root: Path, archive: Path, evidence_dir
             raise RuntimeError("Native image proof checksum inventory does not match its exact public files")
         data = json.loads(report_path.read_text(encoding="utf-8"))
         _assert_emulebb_rust_hosted_artifact(data)
-        expected = {"schema": "emulebb.rust.image-security/2", "status": "passed", "image": image, "version": version,
+        expected = {"schema": "emulebb.rust.image-security/2", "status": "passed", "image": image, "version": version, "variant": variant,
                     "sourceSha": source_sha, "sourceDirty": False, "archiveSha256": archive_sha256,
                     "ociManifestDigest": root_digest, "imageManifestSha256": manifest_sha256,
                     "dockerfileSha256": metadata["dockerfileSha256"], "builderSha": builder_sha,
@@ -362,7 +371,7 @@ def assemble_image_security_ci(*, output_root: Path, archive: Path, evidence_dir
         if (smoke_cpu["imageManifestDigest"] != identity["manifestDigest"]
                 or smoke_cpu["imageConfigDigest"] != identity["configDigest"]):
             raise RuntimeError("Native image smoke identity does not match the archive")
-        _verify_spdx_architecture(evidence_dir / expected_files["sbom"], arch)
+        _verify_spdx_architecture(evidence_dir / expected_files["sbom"], arch, variant)
         if "Version: 0.75.0" not in (evidence_dir / f"{prefix}-scanner.txt").read_text(encoding="utf-8"):
             raise RuntimeError("Native image proof requires the pinned scanner version")
         proofs.append({"platform": f"linux/{arch}", "report": report_path.name, "sha256": _sha256(report_path),
@@ -387,7 +396,7 @@ def assemble_image_security_ci(*, output_root: Path, archive: Path, evidence_dir
     if _sha256(archive) != archive_sha256 or _sha256(image_manifest) != manifest_sha256:
         raise RuntimeError("Image build bytes changed during evidence assembly")
     result = {"schema": "emulebb.rust.image-security-set/1", "status": "passed", **origin,
-              "image": image, "version": version, "sourceSha": source_sha, "sourceDirty": False,
+              "image": image, "version": version, "variant": variant, "sourceSha": source_sha, "sourceDirty": False,
               "archive": archive.name, "archiveSha256": archive_sha256, "ociManifestDigest": root_digest,
               "builderSha": builder_sha, "validatorSha": builder_sha, "harnessSha": harness_sha,
               "inputs": inputs, "nativeEvidence": proofs, "artifacts": sorted(records, key=lambda item: item["name"])}

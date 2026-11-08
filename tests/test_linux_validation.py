@@ -71,7 +71,7 @@ def batch(tmp_path, monkeypatch):
     monkeypatch.setattr(linux_validation, "git_output", lambda repo, *args: "" if args[0] == "status" else "a" * 40)
     monkeypatch.setattr(linux_validation.subprocess, "run", webui)
     monkeypatch.setattr(linux_validation, "build_linux_artifacts", build)
-    monkeypatch.setattr(linux_validation, "collect_linux_debs", collect)
+    monkeypatch.setattr(linux_validation, "collect_linux_packages", collect)
     monkeypatch.setattr(linux_validation, "build_emulebb_rust_image_local", image)
     monkeypatch.setattr(linux_validation, "validate_image", validate)
     return SimpleNamespace(layout=layout, calls=calls, failures=failures, host=host)
@@ -91,7 +91,7 @@ def test_full_batch_reuses_only_its_fresh_ui_and_runs_available_checks(batch):
     assert [item["runtimeResult"] for item in report["targets"]] == ["passed", "delegated"] * 2
     assert len(report["githubRequired"]) == 2
     assert all(item["architecture"] == "arm64" for item in report["githubRequired"])
-    assert report["image"]["status"] == "passed"
+    assert all(item["status"] == "passed" for item in report["images"].values())
 
 
 @pytest.mark.parametrize("failed_cpus", [("amd64",), ("arm64",), ("amd64", "arm64")])
@@ -104,7 +104,7 @@ def test_failed_targets_do_not_reuse_old_image_inputs_or_hide_other_failures(bat
     assert [item["build"] for item in report["targets"]] == [
         "failed" if cpu in failed_cpus else "passed" for cpu in ("amd64", "arm64")
     ] + ["passed", "passed"]
-    assert report["image"]["status"] == "not-run"
+    assert all(item["status"] == "not-run" for item in report["images"].values())
     assert not any(kind in {"collect", "image", "security"} for kind, _ in batch.calls)
     output = capsys.readouterr().out
     assert all(f"FAILED Linux gnu/{cpu}: target failed" in output for cpu in failed_cpus)
@@ -136,9 +136,9 @@ def test_image_gate_rebuilds_and_scans_available_cpus_without_repeating_rust_tes
     report = json.loads(linux_validation.validate_linux(batch.layout, scope="image").read_text())
     assert report["status"] == "passed" and report["coverage"] == "image-only"
     assert report["targets"] == [] and report["githubRequired"] == []
-    assert report["image"]["architectures"] == list(arches)
+    assert all(item["architectures"] == list(arches) for item in report["images"].values())
     assert not any(kind in {"webui", "build"} for kind, _ in batch.calls)
-    assert [kind for kind, _ in batch.calls if kind != "preflight"] == ["collect", "image", "security"]
+    assert [kind for kind, _ in batch.calls if kind != "preflight"] == ["collect", "image", "security"] * 2
     assert all(data["architectures"] == arches for kind, data in batch.calls if kind != "preflight")
 
 
@@ -148,6 +148,6 @@ def test_image_gate_retains_failure_and_never_accepts_a_prior_pass(batch, failur
     with pytest.raises(RuntimeError, match="--scope full" if failure == "inputs" else "CVE gate failed"):
         linux_validation.validate_linux(batch.layout, scope="image")
     report = json.loads(next(batch.layout.output_root.glob("reports/local-linux-ci/*/results.json")).read_text())
-    assert report["status"] == "failed" and "image" not in report
+    assert report["status"] == "failed" and "images" not in report
     if failure == "inputs":
         assert not any(kind in {"image", "security"} for kind, _ in batch.calls)
