@@ -10,11 +10,13 @@ import tarfile
 import pytest
 
 from emule_workspace import image_security
+from emule_workspace.rust_images import image_prefix, image_recipe, image_package_name
 
 
-def write_platform_export(path, architecture, *, source="a" * 40, version="0.1.0-beta.2"):
+def write_platform_export(path, architecture, *, source="a" * 40, version="0.1.0-beta.2", variant="ubuntu"):
     config = json.dumps({"os": "linux", "architecture": architecture, "config": {"Labels": {
-        "org.opencontainers.image.revision": source, "org.opencontainers.image.version": version}}}).encode()
+        "org.opencontainers.image.revision": source, "org.opencontainers.image.version": version,
+        "io.emulebb.image.variant": variant}}}).encode()
     with tarfile.open(path, "w") as archive:
         for name, data in (("manifest.json", json.dumps([{"Config": "config.json"}]).encode()), ("config.json", config)):
             member = tarfile.TarInfo(name)
@@ -23,8 +25,9 @@ def write_platform_export(path, architecture, *, source="a" * 40, version="0.1.0
     return "sha256:" + hashlib.sha256(config).hexdigest()
 
 
-@pytest.fixture
-def scanner(tmp_path, monkeypatch):
+@pytest.fixture(params=["ubuntu", "alpine"])
+def scanner(tmp_path, monkeypatch, request):
+    variant = request.param
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     output = tmp_path / "output"
     output.mkdir()
@@ -32,13 +35,14 @@ def scanner(tmp_path, monkeypatch):
     archive.write_bytes(b"OCI fixture")
     rust = tmp_path / "rust"
     (rust / "packaging/docker").mkdir(parents=True)
-    (rust / "packaging/docker/Dockerfile").write_text("FROM pinned\n")
+    recipe = rust / "packaging/docker" / image_recipe(variant)
+    recipe.write_text("FROM pinned\n")
     manifest = {"schema": "emulebb.rust.image/2", "version": "0.1.0-beta.2", "sourceSha": "a" * 40,
-                "sourceDirty": False, "image": "local/test:beta", "builderSha": "a" * 40,
+                "sourceDirty": False, "image": "local/test:beta", "builderSha": "a" * 40, "variant": variant,
                 "architectures": ["amd64", "arm64"], "workflow": None,
-                "dockerfileSha256": hashlib.sha256((rust / "packaging/docker/Dockerfile").read_bytes()).hexdigest(),
+                "dockerfileSha256": hashlib.sha256(recipe.read_bytes()).hexdigest(),
                 "ociManifestDigest": "sha256:" + "c" * 64,
-                "inputs": [{"asset": f"emulebb-rust-v0.1.0-beta.2-linux-{arch}.deb", "sha256": "d" * 64,
+                "inputs": [{"asset": image_package_name("0.1.0-beta.2", arch, variant), "sha256": "d" * 64,
                             "sbomSha256": "e" * 64, "manifestSha256": "f" * 64,
                             "origin": "local-development", "workflow": None} for arch in ("amd64", "arm64")],
                 "origin": "local-development", "archiveSha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
@@ -49,7 +53,7 @@ def scanner(tmp_path, monkeypatch):
     for arch, digest in (("amd64", "a"), ("arm64", "b")):
         fixture = output / f"{arch}.tar"
         identities[f"linux/{arch}"] = {"imageManifestDigest": "sha256:" + digest * 64,
-                                       "imageConfigDigest": write_platform_export(fixture, arch)}
+                                       "imageConfigDigest": write_platform_export(fixture, arch, variant=variant)}
     smoke.write_text(json.dumps({"schema": "emulebb.rust.image-smoke/4", "status": "passed", "image": manifest["image"],
                                  "archiveSha256": manifest["archiveSha256"],
                                  "platforms": [{"platform": cpu, **identity, "firstRunProfile": True, "webui": True,
@@ -83,7 +87,7 @@ def scanner(tmp_path, monkeypatch):
                 return SimpleNamespace(stdout="Version: 0.75.0\n")
             platform = arguments[arguments.index("--platform") + 1]
             if arguments[:2] == ("image", "save"):
-                write_platform_export(Path(arguments[arguments.index("--output") + 1]), platform.split("/")[1])
+                write_platform_export(Path(arguments[arguments.index("--output") + 1]), platform.split("/")[1], variant=variant)
                 return SimpleNamespace(stdout="")
             return SimpleNamespace(stdout=json.dumps({"digest": "sha256:" + "c" * 64 if faults["stale_tag"] else identities[platform]["imageManifestDigest"]}))
     def run(docker, command, log, **kwargs):
@@ -94,8 +98,10 @@ def scanner(tmp_path, monkeypatch):
             arch = command[command.index("--platform", command.index("image")) + 1].split("/")[1]
             if faults["wrong_sbom_arch"]:
                 arch = "amd64"
+            libc, purl = ("libc6", f"pkg:deb/ubuntu/libc6@2.43?arch={arch}") if variant == "ubuntu" else (
+                "musl", "pkg:apk/alpine/musl@1.2.6?arch=" + {"amd64": "x86_64", "arm64": "aarch64"}[arch])
             (log.parent / name).write_text(json.dumps({"spdxVersion": "SPDX-2.3", "packages": [
-                {"name": "libc6", "externalRefs": [{"referenceType": "purl", "referenceLocator": f"pkg:deb/ubuntu/libc6@2.43?arch={arch}"}]}]}))
+                {"name": libc, "externalRefs": [{"referenceType": "purl", "referenceLocator": purl}]}]}))
         elif faults["vulnerability"] and command[command.index("--platform", command.index("image")) + 1] == "linux/amd64":
             raise RuntimeError("fixable HIGH CVE")
     monkeypatch.setattr(image_security, "LinuxDocker", Docker)
@@ -146,7 +152,7 @@ def test_cve_failure_blocks_validation_and_still_collects_other_cpu(scanner):
     data = json.loads(report.read_text())
     assert data["status"] == "failed"
     assert [item["status"] for item in data["platforms"]] == ["failed", "passed"]
-    assert (scanner.evidence / "emulebb-rust-v0.1.0-beta.2-image-amd64.vulnerabilities.txt").exists()
+    assert (scanner.evidence / (image_prefix("0.1.0-beta.2", scanner.manifest["variant"]) + "-image-amd64.vulnerabilities.txt")).exists()
 
 
 def test_changed_loaded_tag_is_rejected_before_scanning(scanner):
@@ -166,7 +172,7 @@ def test_duplicate_host_cpu_inventory_cannot_satisfy_arm64_gate(scanner):
     report = json.loads(next(scanner.evidence.glob("*-security.json")).read_text())
     assert report["status"] == "failed"
     assert [item["status"] for item in report["platforms"]] == ["passed", "failed"]
-    assert "correct Ubuntu OS package architecture" in report["platforms"][1]["error"]
+    assert "OS package architecture" in report["platforms"][1]["error"]
 
 
 def test_export_must_match_exact_config_and_cpu(tmp_path):
@@ -181,11 +187,13 @@ def test_export_must_match_exact_config_and_cpu(tmp_path):
         image_security.verify_platform_export(archive, architecture="arm64", expected_config=expected, **kwargs)
 
 
-@pytest.mark.parametrize("source,version", [("b" * 40, "0.1.0-beta.2"), ("a" * 40, "0.1.0-beta.1")])
-def test_correct_cpu_and_digest_cannot_hide_wrong_revision_or_version_labels(tmp_path, source, version):
+@pytest.mark.parametrize("source,version,variant", [("b" * 40, "0.1.0-beta.2", "ubuntu"),
+                                                   ("a" * 40, "0.1.0-beta.1", "ubuntu"),
+                                                   ("a" * 40, "0.1.0-beta.2", "alpine")])
+def test_correct_cpu_and_digest_cannot_hide_wrong_revision_or_version_labels(tmp_path, source, version, variant):
     archive = tmp_path / "platform.tar"
-    expected = write_platform_export(archive, "amd64", source=source, version=version)
-    with pytest.raises(RuntimeError, match="revision or version labels"):
+    expected = write_platform_export(archive, "amd64", source=source, version=version, variant=variant)
+    with pytest.raises(RuntimeError, match="revision, version or variant labels"):
         image_security.verify_platform_export(archive, architecture="amd64", expected_config=expected,
                                                expected_source="a" * 40, expected_version="0.1.0-beta.2")
 
@@ -274,18 +282,18 @@ def candidate_image(native_scanner):
 
     case = native_scanner
     version = case.manifest["version"]
-    stem = f"emulebb-rust-v{version}"
+    stem = image_prefix(version, case.manifest["variant"])
     canonical = case.layout.output_root / f"{stem}-multiarch.oci.tar"
     canonical.write_bytes(case.archive.read_bytes())
     case.archive = canonical
-    case.manifest.update(archive=canonical.name, image=f"ghcr.io/emulebb/emulebb-rust:{version}")
+    case.manifest.update(archive=canonical.name, image=f'ghcr.io/emulebb/emulebb-rust:{version}-{case.manifest["variant"]}')
     case.release_dir = case.layout.output_root / "release"
     case.release_dir.mkdir()
     source = {name: {"commit": "a" * 40} for name in
               ("emulebbRust", "emulebbBuild", "emulebbTooling", "emulebbMiniupnp", "emulebbLibpcpnatpmp")}
     inputs = []
     for arch in ("amd64", "arm64"):
-        asset = case.release_dir / f"{stem}-linux-{arch}.deb"
+        asset = case.release_dir / image_package_name(version, arch, case.manifest["variant"])
         asset.write_bytes(f"{arch} GNU payload".encode())
         sbom = asset.with_name(asset.name + ".sbom.spdx.json")
         sbom.write_text('{"spdxVersion":"SPDX-2.3","packages":[]}')
@@ -389,7 +397,7 @@ def test_candidate_blocks_incomplete_foreign_or_misbound_native_evidence(candida
     from emule_workspace import release
 
     case = candidate_image
-    prefix = f'emulebb-rust-v{case.manifest["version"]}-image-arm64'
+    prefix = image_prefix(case.manifest["version"], case.manifest["variant"]) + "-image-arm64"
     report_path = case.evidence_dir / f"{prefix}-security.json"
     report = json.loads(report_path.read_text())
     cpu = report["platforms"][0]

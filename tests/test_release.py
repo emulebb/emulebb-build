@@ -1477,7 +1477,7 @@ def test_rust_release_assembly_requires_this_hosted_run(monkeypatch, tmp_path, p
         assert not (tmp_path / "SHA256SUMS").exists()
 
 
-def test_emulebb_rust_image_context_stages_only_verified_debs(
+def test_emulebb_rust_image_context_stages_only_verified_packages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1495,8 +1495,8 @@ def test_emulebb_rust_image_context_stages_only_verified_debs(
         assets_dir=assets,
         version="0.1.0-beta.1",
     )
-    assert archive == tmp_path / "output" / "artifacts" / "emulebb-rust-v0.1.0-beta.1-multiarch.oci.tar"
-    context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image"
+    assert archive == tmp_path / "output" / "artifacts" / "emulebb-rust-v0.1.0-beta.1-ubuntu-multiarch.oci.tar"
+    context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image-ubuntu"
     assert (context / "dist" / "emulebb-rust-v0.1.0-beta.1-linux-arm64.deb").read_bytes() == b"arm64"
     command = next(command for command in commands if command[:3] == ["docker", "buildx", "build"])
     assert "--push" not in command
@@ -1532,11 +1532,11 @@ def test_emulebb_rust_nightly_image_is_an_archive_without_channel_promotion(
 
     command = next(command for command in commands if command[:3] == ["docker", "buildx", "build"])
     assert command.count("--tag") == 1
-    assert f"ghcr.io/emulebb/emulebb-rust:{version}" in command
+    assert f"ghcr.io/emulebb/emulebb-rust:{version}-ubuntu" in command
     assert "ghcr.io/emulebb/emulebb-rust:nightly" not in command
     assert "--push" not in command
     export = command[command.index("--output") + 1]
-    assert Path(export.removeprefix("type=oci,dest=")) == tmp_path / "output/artifacts" / f"emulebb-rust-v{version}-multiarch.oci.tar"
+    assert Path(export.removeprefix("type=oci,dest=")) == tmp_path / "output/artifacts" / f"emulebb-rust-v{version}-ubuntu-multiarch.oci.tar"
 
 
 def test_emulebb_rust_local_image_archives_verified_amd64_asset(
@@ -1567,11 +1567,11 @@ def test_emulebb_rust_local_image_archives_verified_amd64_asset(
         architectures=("amd64",),
     )
 
-    assert image == tmp_path / "output/artifacts" / f"emulebb-rust-v{version}-amd64.oci.tar"
+    assert image == tmp_path / "output/artifacts" / f"emulebb-rust-v{version}-ubuntu-amd64.oci.tar"
     command = next(command for command in commands if command[:3] == ["docker", "buildx", "build"])
     assert "linux/amd64" in command
     assert "--tag" in command and "--push" not in command
-    context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image"
+    context = tmp_path / "output" / "packages" / "build" / "emulebb-rust-image-ubuntu"
     assert (context / "dist" / asset.name).read_bytes() == b"amd64"
 
 

@@ -12,7 +12,7 @@ from .git import git_output
 from .image_security import validate_image
 from .linux_containers import BINFMT_IMAGE, LinuxDocker, build_linux_artifacts
 from .release import build_emulebb_rust_image_local
-from .rust_images import collect_linux_debs
+from .rust_images import collect_linux_packages, IMAGE_VARIANTS
 
 
 def validation_plan(scope: str, host: str) -> list[dict]:
@@ -32,17 +32,18 @@ def validation_plan(scope: str, host: str) -> list[dict]:
     return plan
 
 
-def _validate_image_targets(layout, *, version: str, architectures: tuple[str, ...]) -> dict:
+def _validate_image_targets(layout, *, version: str, architectures: tuple[str, ...], variant: str) -> dict:
     """Verify current package bytes, then build and check a fresh image."""
-    image = f"local/emulebb-rust:{version}"
+    image = f"local/emulebb-rust:{version}-{variant}"
     try:
-        assets = collect_linux_debs(layout, version=version, architectures=architectures)
+        assets = collect_linux_packages(layout, version=version, architectures=architectures, variant=variant)
     except (OSError, ValueError, RuntimeError) as error:
-        raise RuntimeError("Image validation requires verified GNU packages for the current clean revision; "
+        raise RuntimeError(f"{variant} image validation requires verified packages for the current clean revision; "
                            "run validate-emulebb-rust-linux --scope full to rebuild them") from error
     archive = build_emulebb_rust_image_local(rust_root=layout.emulebb_rust_repo_root,
                                             output_root=layout.output_root.resolve(), assets_dir=assets,
-                                            version=version, image=image, wsl_distro="Ubuntu", architectures=architectures)
+                                            version=version, image=image, wsl_distro="Ubuntu", architectures=architectures,
+                                            variant=variant)
     evidence = validate_image(layout, archive=archive, image=image, architectures=architectures)
     return {"status": "passed", "architectures": architectures, "securityEvidence": str(evidence)}
 
@@ -75,7 +76,8 @@ def validate_linux(layout, *, scope: str) -> Path:
         if scope == "image":
             arches = tuple(target["architecture"] for target in validation_plan("full", host)
                            if target["libc"] == "gnu" and target["buildAvailable"])
-            report["image"] = _validate_image_targets(layout, version=version, architectures=arches)
+            report["images"] = {variant: _validate_image_targets(layout, version=version, architectures=arches,
+                                                                variant=variant) for variant in IMAGE_VARIANTS}
             report["status"] = "passed"
             return path
         webui = root / "webui"
@@ -109,14 +111,16 @@ def validate_linux(layout, *, scope: str) -> Path:
                 print(f"FAILED Linux {failures[-1]}", flush=True)
             finally:
                 path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-        gnu = [entry for entry in report["targets"] if entry["libc"] == "gnu" and entry["buildAvailable"]]
-        if scope == "full" and gnu and all(entry["build"] == "passed" for entry in gnu):
-            arches = tuple(entry["architecture"] for entry in gnu)
-            report["image"] = _validate_image_targets(layout, version=version, architectures=arches)
+        available = [entry for entry in report["targets"] if entry["buildAvailable"]]
+        if scope == "full" and available and all(entry["build"] == "passed" for entry in available):
+            arches = tuple(entry["architecture"] for entry in available if entry["libc"] == "gnu")
+            report["images"] = {variant: _validate_image_targets(layout, version=version, architectures=arches,
+                                                                variant=variant) for variant in IMAGE_VARIANTS}
         elif scope == "full":
             # WHY: a successful subset must not look like proof of the required
-            # image CPU set when another GNU package gate failed.
-            report["image"] = {"status": "not-run", "reason": "Required available GNU package gates did not all pass"}
+            # image CPU/libc set when another package gate failed.
+            report["images"] = {variant: {"status": "not-run", "reason": "Required available package gates did not all pass"}
+                                for variant in IMAGE_VARIANTS}
         if failures:
             raise RuntimeError("Local Linux gates failed: " + ", ".join(failures))
         report["status"] = "passed"

@@ -14,9 +14,31 @@ from .git import git_output
 from .linux_containers import LinuxDocker
 
 BUILDKIT_IMAGE = "docker.io/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe"
+IMAGE_VARIANTS = ("ubuntu", "alpine")
 
 
-def verified_debs(rust_root: Path, assets: Path, version: str, architectures: tuple[str, ...]) -> list[dict]:
+def image_recipe(variant: str) -> str:
+    """Return the fixed recipe for a supported runtime/libc variant."""
+    if variant not in IMAGE_VARIANTS:
+        raise ValueError("Expected ubuntu or alpine image variant")
+    return "Dockerfile" if variant == "ubuntu" else "Dockerfile.alpine"
+
+
+def image_prefix(version: str, variant: str) -> str:
+    """Keep all archives and proof inventories distinct between variants."""
+    image_recipe(variant)
+    return f"emulebb-rust-v{version}-{variant}"
+
+
+def image_package_name(version: str, architecture: str, variant: str) -> str:
+    """Select GNU DEBs or static musl archives for the requested runtime."""
+    image_recipe(variant)
+    suffix = ".deb" if variant == "ubuntu" else "-musl.tar.zst"
+    return f"emulebb-rust-v{version}-linux-{architecture}{suffix}"
+
+
+def verified_packages(rust_root: Path, assets: Path, version: str, architectures: tuple[str, ...],
+                      variant: str = "ubuntu") -> list[dict]:
     """Require exact, clean source and matching payload/SBOM bytes for every CPU."""
     from .release import _sha256, _emulebb_rust_artifact_origin, _assert_emulebb_rust_hosted_artifact
 
@@ -28,7 +50,7 @@ def verified_debs(rust_root: Path, assets: Path, version: str, architectures: tu
     hosted = _emulebb_rust_artifact_origin()["origin"] == "github-actions"
     inputs = []
     for arch in architectures:
-        name = f"emulebb-rust-v{version}-linux-{arch}.deb"
+        name = image_package_name(version, arch, variant)
         asset = assets / name
         manifest = assets / (name + ".manifest.json")
         if not asset.is_file() or not manifest.is_file():
@@ -40,6 +62,9 @@ def verified_debs(rust_root: Path, assets: Path, version: str, architectures: tu
                 or data.get("source", {}).get("emulebbRust", {}).get("commit") != source_sha
                 or data.get("sourceDirty") is not False):
             raise RuntimeError(f"Image input does not match the clean current Rust revision: {name}")
+        if variant == "alpine" and (data.get("libc") != "musl"
+                or data.get("target") != f"{'x86_64' if arch == 'amd64' else 'aarch64'}-unknown-linux-musl"):
+            raise RuntimeError("Alpine image inputs require the matching static musl target")
         if hosted:
             _assert_emulebb_rust_hosted_artifact(data)
             if data.get("source", {}).get("emulebbBuild", {}).get("commit") != git_output(Path(__file__).resolve().parents[1], "rev-parse", "HEAD").strip():
@@ -73,7 +98,7 @@ def archive_digest(rust_root: Path, archive: Path, *, control_rust_root: Path | 
 
 def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version: str, image: str,
                 architectures: tuple[str, ...] = ("amd64", "arm64"), wsl_distro: str = "Ubuntu",
-                control_rust_root: Path | None = None) -> Path:
+                control_rust_root: Path | None = None, variant: str = "ubuntu") -> Path:
     """Build an inventoried archive with fresh OS packages and an owned builder."""
     from .release import _is_release_version, _sha256, _emulebb_rust_artifact_origin
 
@@ -89,12 +114,13 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
     if git_output(builder_root, "status", "--porcelain").strip():
         raise RuntimeError("Image builds require clean builder sources")
     builder_sha = git_output(builder_root, "rev-parse", "HEAD").strip()
-    inputs = verified_debs(rust_root, assets_dir, version, architectures)
-    context = output_root / "packages/build/emulebb-rust-image"
+    recipe = image_recipe(variant)
+    inputs = verified_packages(rust_root, assets_dir, version, architectures, variant)
+    context = output_root / "packages/build" / f"emulebb-rust-image-{variant}"
     if not context.resolve().is_relative_to(output_root):
         raise RuntimeError("Image context must remain below the operator output root")
     source = rust_root / "packaging/docker"
-    if not (source / "Dockerfile").is_file():
+    if not (source / recipe).is_file():
         raise RuntimeError(f"Image Dockerfile is missing: {source}")
     if context.exists():
         shutil.rmtree(context)
@@ -103,7 +129,7 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
     for item in inputs:
         shutil.copy2(assets_dir / item["asset"], context / "dist" / item["asset"])
     suffix = "multiarch" if len(architectures) > 1 else architectures[0]
-    archive = output_root / "artifacts" / f"emulebb-rust-v{version}-{suffix}.oci.tar"
+    archive = output_root / "artifacts" / f"{image_prefix(version, variant)}-{suffix}.oci.tar"
     if not archive.resolve().is_relative_to(output_root):
         raise RuntimeError("Image archive must remain below the operator output root")
     archive.parent.mkdir(parents=True, exist_ok=True)
@@ -113,8 +139,8 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
     reports = output_root / "reports/rust-image-build" / run_id
     reports.mkdir(parents=True)
     report = {"status": "running", **origin, "sourceDirty": False,
-              "image": image, "version": version, "architectures": architectures, "buildkitImage": BUILDKIT_IMAGE, "inputs": inputs,
-              "dockerfileSha256": _sha256(source / "Dockerfile"),
+              "image": image, "version": version, "variant": variant, "architectures": architectures, "buildkitImage": BUILDKIT_IMAGE, "inputs": inputs,
+              "dockerfileSha256": _sha256(source / recipe),
               "sourceSha": inputs[0]["source"]["emulebbRust"]["commit"] if inputs else None,
               "builderSha": builder_sha}
     path = reports / "inputs.json"
@@ -126,7 +152,7 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
         command = [*docker.prefix, "docker", "buildx", "build", "--builder", builder,
                    "--no-cache",
                    "--platform", ",".join(f"linux/{arch}" for arch in architectures),
-                   "--file", docker.path(context) + "/Dockerfile", "--build-arg", f"VERSION={version}",
+                   "--file", docker.path(context) + "/" + recipe, "--build-arg", f"VERSION={version}",
                    "--tag", image, "--progress", "plain", "--provenance", "mode=max",
                    "--label", f"org.opencontainers.image.revision={report['sourceSha']}",
                    "--output", f"type=oci,dest={docker.path(archive.parent)}/{archive.name}"]
@@ -141,7 +167,7 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
                 raise RuntimeError("Image builder returned without producing the candidate archive")
             # Recheck source and package bytes after the build; a clean HEAD move
             # or changed payload must not inherit the initial input identity.
-            if verified_debs(rust_root, assets_dir, version, architectures) != inputs:
+            if verified_packages(rust_root, assets_dir, version, architectures, variant) != inputs:
                 raise RuntimeError("Image package inputs changed during production")
             if (git_output(builder_root, "status", "--porcelain").strip()
                     or git_output(builder_root, "rev-parse", "HEAD").strip() != builder_sha):
@@ -187,17 +213,21 @@ def remove_smoke_resources(docker: LinuxDocker, owner: str) -> None:
             docker.run(*remove, *listing, capture=True, timeout=60)
 
 
-def collect_linux_debs(layout, *, version: str, architectures: tuple[str, ...]) -> Path:
-    """Collect only verified local GNU inputs for the selected image CPUs."""
+def collect_linux_packages(layout, *, version: str, architectures: tuple[str, ...], variant: str = "ubuntu") -> Path:
+    """Collect verified local GNU or musl inputs for the selected image CPUs."""
     from .release import _is_release_version
 
     if not _is_release_version(version):
-        raise RuntimeError("GNU image input version must be valid SemVer")
+        raise RuntimeError("Image input version must be valid SemVer")
+    image_recipe(variant)
+    if not architectures or len(set(architectures)) != len(architectures) or set(architectures) - {"amd64", "arm64"}:
+        raise ValueError("Image inputs require distinct AMD64/ARM64 architectures")
     root = layout.output_root.resolve() / "packages/rust-linux" / version
-    destination = root / "image-inputs"
+    destination = root / f"image-inputs-{variant}"
     if not destination.resolve().is_relative_to(layout.output_root.resolve()):
-        raise RuntimeError("GNU image inputs must remain below the operator output root")
-    verified = [(root / f"gnu-{arch}", verified_debs(layout.emulebb_rust_repo_root, root / f"gnu-{arch}", version, (arch,)))
+        raise RuntimeError("Image inputs must remain below the operator output root")
+    libc = "gnu" if variant == "ubuntu" else "musl"
+    verified = [(root / f"{libc}-{arch}", verified_packages(layout.emulebb_rust_repo_root, root / f"{libc}-{arch}", version, (arch,), variant))
                 for arch in architectures]
     destination.mkdir(parents=True, exist_ok=True)
     for source, items in verified:
@@ -237,6 +267,8 @@ def smoke_image(layout, *, archive: Path, image: str, architectures: tuple[str, 
     if not archive.is_relative_to(output) or not archive.is_file():
         raise RuntimeError("Image smoke requires an archive below the operator output root")
     manifest = json.loads(archive.with_name(archive.name + ".manifest.json").read_text(encoding="utf-8"))
+    variant = manifest.get("variant")
+    image_recipe(variant)
     source_sha = git_output(layout.emulebb_rust_repo_root, "rev-parse", "HEAD").strip()
     for repo in (layout.emulebb_rust_repo_root, layout.tests_repo_root):
         if git_output(repo, "status", "--porcelain").strip():
@@ -250,7 +282,7 @@ def smoke_image(layout, *, archive: Path, image: str, architectures: tuple[str, 
     owner = uuid4().hex
     reports = output / "reports/rust-image-smoke" / owner
     reports.mkdir(parents=True)
-    report = {"status": "running", "image": image, "archiveSha256": manifest["archiveSha256"],
+    report = {"status": "running", "image": image, "variant": variant, "archiveSha256": manifest["archiveSha256"],
               "sourceSha": source_sha, "architectures": architectures,
               "harnessSha": git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip()}
     log = reports / "smoke.log"

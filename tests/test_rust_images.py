@@ -32,7 +32,7 @@ def image_inputs(tmp_path, monkeypatch):
 @pytest.mark.parametrize("mutation", ["payload", "revision", "dirty", "sbom", "sbom-path", "old-schema", "missing-clean", "version"])
 def test_image_rejects_changed_bytes_or_provenance(image_inputs, tmp_path, mutation):
     assets, path, manifest = image_inputs
-    assert rust_images.verified_debs(tmp_path, assets, "0.1.0-beta.2", ("amd64",))
+    assert rust_images.verified_packages(tmp_path, assets, "0.1.0-beta.2", ("amd64",))
     if mutation == "payload":
         (assets / manifest["asset"]).write_bytes(b"changed payload")
     elif mutation == "revision":
@@ -51,16 +51,35 @@ def test_image_rejects_changed_bytes_or_provenance(image_inputs, tmp_path, mutat
         manifest["sbom"] = "../outside.spdx.json"
     path.write_text(json.dumps(manifest))
     with pytest.raises(RuntimeError):
-        rust_images.verified_debs(tmp_path, assets, "0.1.0-beta.2", ("amd64",))
+        rust_images.verified_packages(tmp_path, assets, "0.1.0-beta.2", ("amd64",))
 
 
 def test_image_rejects_dirty_checkout_and_missing_architecture(image_inputs, tmp_path, monkeypatch):
     assets, _, _ = image_inputs
     with pytest.raises(RuntimeError, match="missing"):
-        rust_images.verified_debs(tmp_path, assets, "0.1.0-beta.2", ("amd64", "arm64"))
+        rust_images.verified_packages(tmp_path, assets, "0.1.0-beta.2", ("amd64", "arm64"))
     monkeypatch.setattr(rust_images, "git_output", lambda *args: " M source.rs")
     with pytest.raises(RuntimeError, match="clean current"):
-        rust_images.verified_debs(tmp_path, assets, "0.1.0-beta.2", ("amd64",))
+        rust_images.verified_packages(tmp_path, assets, "0.1.0-beta.2", ("amd64",))
+
+
+@pytest.mark.parametrize("architecture,target", [("amd64", "x86_64"), ("arm64", "aarch64")])
+def test_alpine_requires_matching_musl_package_provenance(image_inputs, tmp_path, architecture, target):
+    assets, old_path, manifest = image_inputs
+    name = rust_images.image_package_name("0.1.0-beta.2", architecture, "alpine")
+    (assets / manifest["asset"]).rename(assets / name)
+    old_path.unlink()
+    manifest.update(asset=name, libc="musl", target=f"{target}-unknown-linux-musl")
+    path = assets / (name + ".manifest.json")
+    path.write_text(json.dumps(manifest))
+    assert rust_images.verified_packages(tmp_path, assets, "0.1.0-beta.2", (architecture,), "alpine")
+    for field, value in (("libc", "gnu"), ("target", "x86_64-unknown-linux-gnu")):
+        invalid = {**manifest, field: value}
+        path.write_text(json.dumps(invalid))
+        with pytest.raises(RuntimeError, match="matching static musl target"):
+            rust_images.verified_packages(tmp_path, assets, "0.1.0-beta.2", (architecture,), "alpine")
+    with pytest.raises(RuntimeError, match="missing"):
+        rust_images.verified_packages(tmp_path, assets, "0.1.0-beta.2", (architecture,), "ubuntu")
 
 
 @pytest.fixture
@@ -79,7 +98,7 @@ def hosted_image_inputs(image_inputs, monkeypatch):
 
 def test_hosted_image_accepts_an_earlier_attempt_from_the_same_exact_run(hosted_image_inputs, tmp_path):
     assets, path, manifest, _ = hosted_image_inputs
-    result = rust_images.verified_debs(tmp_path, assets, "0.1.0-beta.2", ("amd64",))
+    result = rust_images.verified_packages(tmp_path, assets, "0.1.0-beta.2", ("amd64",))
     assert result[0]["workflow"]["runAttempt"] == "2"
     assert result[0]["manifestSha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -101,7 +120,7 @@ def test_hosted_image_rejects_foreign_or_stale_production(hosted_image_inputs, t
         manifest["workflow"][key] = value
     path.write_text(json.dumps(manifest))
     with pytest.raises(RuntimeError, match="Artifact must originate|pinned current package builder"):
-        rust_images.verified_debs(tmp_path, assets, "0.1.0-beta.2", ("amd64",))
+        rust_images.verified_packages(tmp_path, assets, "0.1.0-beta.2", ("amd64",))
 
 
 def test_hosted_oci_digest_uses_only_the_clean_workflow_pinned_control_code(hosted_image_inputs, tmp_path, monkeypatch):
@@ -130,7 +149,7 @@ def test_failed_image_build_invalidates_old_sidecars_and_removes_only_its_worker
     output = tmp_path / "output"
     assets = output / "assets"
     assets.mkdir(parents=True)
-    archive = output / "artifacts/emulebb-rust-v0.1.0-beta.2-multiarch.oci.tar"
+    archive = output / "artifacts/emulebb-rust-v0.1.0-beta.2-ubuntu-multiarch.oci.tar"
     archive.parent.mkdir()
     previous = (archive, archive.with_name(archive.name + ".manifest.json"), archive.with_suffix(".digest"))
     for path in previous:
@@ -160,7 +179,7 @@ def test_failed_image_build_invalidates_old_sidecars_and_removes_only_its_worker
             revision = "b" * 40
         return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr(rust_images, "LinuxDocker", Docker)
-    monkeypatch.setattr(rust_images, "verified_debs", lambda *args: [])
+    monkeypatch.setattr(rust_images, "verified_packages", lambda *args: [])
     monkeypatch.setattr(rust_images, "git_output", lambda repo, *args: "" if args[0] == "status" else revision)
     monkeypatch.setattr(rust_images.subprocess, "run", run)
     with pytest.raises(RuntimeError, match="diagnostics"):
@@ -185,7 +204,7 @@ def test_fresh_wsl_smoke_requires_current_release_proof_and_removes_only_labeled
     archive = output / "image.oci.tar"
     archive.write_bytes(b"archive")
     image = "local/test:beta"
-    manifest = {"schema": "emulebb.rust.image/2", "image": image, "sourceSha": "a" * 40, "version": "0.1.0-beta.2",
+    manifest = {"schema": "emulebb.rust.image/2", "image": image, "variant": "ubuntu", "sourceSha": "a" * 40, "version": "0.1.0-beta.2",
                 "architectures": ["amd64"], "archiveSha256": hashlib.sha256(b"archive").hexdigest()}
     archive.with_name(archive.name + ".manifest.json").write_text(json.dumps(manifest))
     layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=tmp_path / "rust", tests_repo_root=tmp_path / "harness")
@@ -249,8 +268,8 @@ def test_local_deb_collection_requires_complete_current_source_inputs(image_inpu
     source.parent.mkdir(parents=True)
     assets.rename(source)
     layout = SimpleNamespace(output_root=tmp_path, emulebb_rust_repo_root=tmp_path / "rust")
-    destination = rust_images.collect_linux_debs(layout, version=version, architectures=("amd64",))
+    destination = rust_images.collect_linux_packages(layout, version=version, architectures=("amd64",))
     assert (destination / f"emulebb-rust-v{version}-linux-amd64.deb").read_bytes() == b"payload"
-    assert rust_images.verified_debs(layout.emulebb_rust_repo_root, destination, version, ("amd64",))
+    assert rust_images.verified_packages(layout.emulebb_rust_repo_root, destination, version, ("amd64",))
     with pytest.raises(RuntimeError, match="missing"):
-        rust_images.collect_linux_debs(layout, version=version, architectures=("amd64", "arm64"))
+        rust_images.collect_linux_packages(layout, version=version, architectures=("amd64", "arm64"))
