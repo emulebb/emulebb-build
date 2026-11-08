@@ -1382,7 +1382,8 @@ def test_emulebb_rust_macos_package_emits_app_dmg_and_metadata(
     assert dmg.name in (release_root / "SHA256SUMS").read_text(encoding="ascii")
 
 
-def test_emulebb_rust_release_assembly_requires_all_native_assets(tmp_path: Path) -> None:
+def _write_rust_release_assembly_inputs(tmp_path: Path):
+    """Create the native and musl payload/manifest/SBOM boundaries for assembly."""
     version = "0.1.0-beta.1"
     stem = f"emulebb-rust-v{version}"
     names = (
@@ -1394,6 +1395,8 @@ def test_emulebb_rust_release_assembly_requires_all_native_assets(tmp_path: Path
         f"{stem}-linux-aarch64.AppImage",
         f"{stem}-macos-x64.dmg",
         f"{stem}-macos-arm64.dmg",
+        f"{stem}-linux-amd64-musl.tar.zst",
+        f"{stem}-linux-arm64-musl.tar.zst",
     )
     for name in names:
         payload = tmp_path / name
@@ -1402,6 +1405,7 @@ def test_emulebb_rust_release_assembly_requires_all_native_assets(tmp_path: Path
         sbom.write_text("{}\n", encoding="utf-8")
         (tmp_path / f"{name}.manifest.json").write_text(
             json.dumps({
+                "schema": "emulebb.rust.package/2", "sourceDirty": False, "version": version,
                 "asset": name,
                 "sha256": release._sha256(payload),
                 "sbom": sbom.name,
@@ -1409,11 +1413,68 @@ def test_emulebb_rust_release_assembly_requires_all_native_assets(tmp_path: Path
             }),
             encoding="utf-8",
         )
+    return version, names
+
+
+def test_emulebb_rust_release_assembly_requires_native_and_both_musl_assets(tmp_path: Path) -> None:
+    version, names = _write_rust_release_assembly_inputs(tmp_path)
+    evidence = tmp_path / "package-smoke.json"
+    evidence.write_text('{"status":"passed"}\n')
     sums = release.assemble_emulebb_rust_release_assets(tmp_path, version)
-    assert len(sums.read_text(encoding="ascii").splitlines()) == 24
+    inventory = sums.read_text(encoding="ascii")
+    assert f"{release._sha256(evidence)}  {evidence.name}\n" in inventory
+    assert "  SHA256SUMS\n" not in inventory
+    assert len(inventory.splitlines()) == 31
+    assert inventory == release._sha256sums_text(tmp_path, tuple(sorted(
+        (path for path in tmp_path.iterdir() if path != sums), key=lambda path: path.name)))
     (tmp_path / names[-1]).unlink()
     with pytest.raises(RuntimeError, match="missing"):
         release.assemble_emulebb_rust_release_assets(tmp_path, version)
+
+
+@pytest.mark.parametrize("fault", ["stem-manifest", "old-schema", "dirty", "wrong-version", "payload", "sbom", "nested", "candidate"])
+def test_rust_release_assembly_rejects_ambiguous_or_changed_inputs(tmp_path, fault):
+    version, names = _write_rust_release_assembly_inputs(tmp_path)
+    asset = tmp_path / names[0]
+    manifest_path = asset.with_name(asset.name + ".manifest.json")
+    document = json.loads(manifest_path.read_text())
+    if fault == "stem-manifest":
+        manifest_path.rename(asset.with_suffix(".manifest.json"))
+    elif fault == "payload":
+        asset.write_bytes(b"replaced payload")
+    elif fault == "sbom":
+        (tmp_path / document["sbom"]).write_text('{"changed":true}')
+    elif fault == "nested":
+        (tmp_path / "unexpected-directory").mkdir()
+    elif fault == "candidate":
+        (tmp_path / f"emulebb-rust-v{version}-candidate-manifest.json").write_text("{}")
+    else:
+        document.update({"old-schema": {"schema": "emulebb.rust.package/1"}, "dirty": {"sourceDirty": True},
+                         "wrong-version": {"version": "0.2.0-beta.1"}}[fault])
+        manifest_path.write_text(json.dumps(document))
+    with pytest.raises(RuntimeError, match="missing|provenance|regular files|fresh evidence|SBOM"):
+        release.assemble_emulebb_rust_release_assets(tmp_path, version)
+    assert not (tmp_path / "SHA256SUMS").exists()
+
+
+@pytest.mark.parametrize("producer_run", ["123", "999"])
+def test_rust_release_assembly_requires_this_hosted_run(monkeypatch, tmp_path, producer_run):
+    version, names = _write_rust_release_assembly_inputs(tmp_path)
+    for name, value in {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "example/project",
+                        "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_WORKFLOW_SHA": "c" * 40}.items():
+        monkeypatch.setenv(name, value)
+    for name in names:
+        manifest = tmp_path / (name + ".manifest.json")
+        document = json.loads(manifest.read_text())
+        document.update(origin="github-actions", workflow={"repository": "example/project", "runId": producer_run,
+                                                          "runAttempt": "1", "workflowSha": "c" * 40})
+        manifest.write_text(json.dumps(document))
+    if producer_run == "123":
+        assert release.assemble_emulebb_rust_release_assets(tmp_path, version).is_file()
+    else:
+        with pytest.raises(RuntimeError, match="this GitHub run and workflow"):
+            release.assemble_emulebb_rust_release_assets(tmp_path, version)
+        assert not (tmp_path / "SHA256SUMS").exists()
 
 
 def test_emulebb_rust_image_context_stages_only_verified_debs(
