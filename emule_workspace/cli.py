@@ -1614,6 +1614,9 @@ def package_emulebb_rust_linux(*, libc: str, architecture: str, webui_dist: Path
 def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: Path | None, release_version: str, smoke: bool, test_scope: str) -> None:
     """Use the local Linux container recipe on a minimal native CI checkout."""
     from .linux_containers import build_linux_artifacts
+    from .release import _emulebb_rust_artifact_origin
+    if _emulebb_rust_artifact_origin()["origin"] != "github-actions":
+        raise click.ClickException("CI Linux packaging requires GitHub Actions; use package-emulebb-rust-linux locally")
     required = [WORKSPACE_OUTPUT_ROOT_ENV, "EMULEBB_RUST_REPO", "EMULEBB_TOOLING_REPO", "MINIUPNP_ROOT", "PCPNATPMP_ROOT"]
     if smoke:
         required.append("EMULEBB_BUILD_TESTS_REPO")

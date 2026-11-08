@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import runpy
 from pathlib import Path
 import subprocess
@@ -23,6 +24,25 @@ RUST_IMAGES = {
 }
 MUSL_CROSS_IMAGE = "ghcr.io/rust-cross/rust-musl-cross:aarch64-musl@sha256:02e790506c5f15a533bc05b3af8719b16a8a2314480f6f0fdc0166432035d9b4"
 RUNTIME_IMAGES = {"musl": ALPINE_IMAGE, "gnu": "docker.io/library/ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c"}
+
+
+def _hosted_linux_environment(architecture: str, engine_arch: str) -> list[str]:
+    """Require native hosted execution and forward only public run identity."""
+    from .release import _emulebb_rust_artifact_origin
+
+    origin = _emulebb_rust_artifact_origin()
+    if origin["origin"] != "github-actions":
+        return []
+    native = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine().lower())
+    if platform.system() != "Linux" or native is None or not architecture == engine_arch == native:
+        raise RuntimeError("Hosted Linux builds and runtime checks require matching native runner, Docker, and target CPUs")
+    context = origin["workflow"]
+    values = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": context["repository"],
+              "GITHUB_RUN_ID": context["runId"], "GITHUB_RUN_ATTEMPT": context["runAttempt"],
+              "GITHUB_WORKFLOW_SHA": context["workflowSha"]}
+    # WHY: copying the host environment would expose credentials to containers.
+    # Runtime receipts need only the validated public identity of this run.
+    return [argument for name, value in values.items() for argument in ("--env", f"{name}={value}")]
 
 
 def build_configuration(libc: str, architecture: str, host: str) -> tuple[str, str, bool]:
@@ -194,6 +214,8 @@ def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: P
 
 def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) -> Path:
     """@brief Run the shared two-peer lifecycle harness as a non-root container user."""
+    from .release import _emulebb_rust_artifact_origin, _assert_emulebb_rust_hosted_artifact
+
     if libc not in RUNTIME_IMAGES or architecture not in {"amd64", "arm64"}:
         raise ValueError("Expected GNU/musl and AMD64/ARM64")
     output = layout.output_root.resolve()
@@ -212,12 +234,16 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) 
         raise RuntimeError("Runtime validation requires clean Rust and harness sources")
     if manifest.get("sourceDirty") is not False or manifest.get("source", {}).get("emulebbRust", {}).get("commit") != source_sha:
         raise RuntimeError("Runtime archive must match the clean current Rust revision")
+    if _emulebb_rust_artifact_origin()["origin"] == "github-actions":
+        _assert_emulebb_rust_hosted_artifact(manifest)
     context = Path(__file__).parent / "release_assets/rust_linux"
     runtime = f"local/emulebb-rust-runtime:{libc}-{architecture}"
     reports = output / "reports/rust-linux" / f"{libc}-{architecture}" / uuid4().hex
     reports.mkdir(parents=True)
     (reports / "tmp").mkdir()
     with LinuxDocker() as docker:
+        host_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
+        hosted_environment = _hosted_linux_environment(architecture, host_arch)
         docker.run("build", "--platform", f"linux/{architecture}", "--build-arg", f"BASE_IMAGE={RUNTIME_IMAGES[libc]}",
                    "--file", docker.path(context) + "/Dockerfile.runtime", "--tag", runtime, docker.path(context))
         mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
@@ -238,14 +264,13 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) 
                    "--tmpfs", scratch_mount,
                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "bridge", *mounts,
                    "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
-                   "--env", f"TMPDIR=/output/{relative}/tmp", runtime,
+                   "--env", f"TMPDIR=/output/{relative}/tmp", *hosted_environment, runtime,
                    "python3", "-B", "/workspace/repos/emulebb-build-tests/scripts/smoke-rust-release-package.py",
                    "--release-dir", "/output/" + archive.parent.relative_to(output).as_posix(),
                    "--release-version", version, "--target-os", "linux", "--platform", "x64" if architecture == "amd64" else "ARM64",
                    "--linux-libc", libc, "--expected-source-sha", source_sha,
                    "--rust-repo", "/workspace/repos/emulebb-rust", "--report-path", f"/output/{relative}/package-smoke.json"]
         run_owned_container(docker, command, reports / "runtime.log", timeout=600)
-        host_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True).stdout.strip()
         (reports / "runtime-inputs.json").write_text(json.dumps({
             "runtimeBase": RUNTIME_IMAGES[libc], "filesystem": "tmpfs", "user": user,
             "execution": "native" if host_arch == architecture else "qemu",
@@ -278,6 +303,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
             raise RuntimeError("Update the pinned Linux builder images with the Rust toolchain")
     target = f"{'x86_64' if architecture == 'amd64' else 'aarch64'}-unknown-linux-{libc}"
     engine_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True).stdout.strip()
+    hosted_environment = _hosted_linux_environment(architecture, engine_arch)
     base, build_arch, cross = build_configuration(libc, architecture, engine_arch)
     test_plan = linux_test_plan(test_scope, cross=cross, rust_root=rust)
     quality_plan = linux_quality_plan(rust, target) if test_scope == "full" else []
@@ -301,7 +327,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         "--mount", f"type=bind,source={docker.path(cache)},target=/usr/local/cargo/registry",
     ]
     target_root = f"/output/builds/rust/target-linux-{libc}-{architecture}"
-    environment = ["--env", f"CARGO_TARGET_DIR={target_root}", "--env", "MINIUPNP_ROOT=/native/miniupnp",
+    environment = [*hosted_environment, "--env", f"CARGO_TARGET_DIR={target_root}", "--env", "MINIUPNP_ROOT=/native/miniupnp",
                    "--env", "PCPNATPMP_ROOT=/native/pcpnatpmp", "--env", "CARGO_BUILD_JOBS=4"]
     source_revision = provenance["source"]["emulebbRust"]["commit"]
     hosted = os.environ.get("GITHUB_ACTIONS") == "true"
