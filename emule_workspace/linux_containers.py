@@ -272,6 +272,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         version = release_version
     if not release._is_release_version(version):
         raise RuntimeError("Linux packaging requires a valid release version")
+    provenance = release._emulebb_rust_package_provenance(layout, rust)
     with (rust / "rust-toolchain.toml").open("rb") as stream:
         if tomllib.load(stream)["toolchain"]["channel"] != "1.98.1":
             raise RuntimeError("Update the pinned Linux builder images with the Rust toolchain")
@@ -302,10 +303,8 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     target_root = f"/output/builds/rust/target-linux-{libc}-{architecture}"
     environment = ["--env", f"CARGO_TARGET_DIR={target_root}", "--env", "MINIUPNP_ROOT=/native/miniupnp",
                    "--env", "PCPNATPMP_ROOT=/native/pcpnatpmp", "--env", "CARGO_BUILD_JOBS=4"]
-    source_revision = release._git_value(rust, "rev-parse", "HEAD")
+    source_revision = provenance["source"]["emulebbRust"]["commit"]
     hosted = os.environ.get("GITHUB_ACTIONS") == "true"
-    if hosted:
-        release._assert_clean_emulebb_rust_package_inputs(layout, rust)
     channel = os.environ.get("RELEASE_CHANNEL", "candidate") if hosted else "development"
     environment.extend(["--env", f"EMULEBB_RELEASE_VERSION={version}",
                         "--env", f"EMULEBB_SOURCE_REVISION={source_revision}",
@@ -379,11 +378,14 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                "-C", f"/output/{relative}/staging", "emulebb-rust")
     sbom = root / f"{stem}.sbom.spdx.json"
     shutil.copy2(stage / "SBOM.spdx.json", sbom)
-    manifest = {"asset": archive.name, "sha256": release._sha256(archive), "sbom": sbom.name,
+    release._assert_emulebb_rust_package_provenance(layout, rust, provenance)
+    manifest = {**provenance, "package": "emulebb-rust", "version": version,
+                "baseVersion": release._emulebb_rust_workspace_version(rust),
+                "platform": f"linux-{architecture}-{libc}",
+                "asset": archive.name, "sha256": release._sha256(archive), "sbom": sbom.name,
                 "sbomSha256": release._sha256(sbom), "target": target, "libc": libc,
                 "builderBase": base, "elfAudit": audit,
-                "origin": "github-actions" if hosted else "local-development", "channel": channel,
-                "workflow": {key: os.environ.get(key) for key in ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")} if hosted else None,
+                "channel": channel,
                 "buildExecution": "cross" if cross else "native", "libraryTestExecution": "qemu" if cross else "native",
                 "testCompilation": "workspace" if test_scope == "full" else "selected-libraries",
                 "testExecution": "workspace" if test_scope == "full" and not cross else "selected-libraries",
@@ -391,10 +393,8 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                 "resolvedToolchain": tools,
                 "builderRecipeSha256": release._sha256(context / "Dockerfile"),
                 "cargoLockSha256": release._sha256(rust / "Cargo.lock"),
-                "source": release._emulebb_rust_source_provenance(layout, rust),
                 "files": release._staged_package_file_hashes(stage),
                 "pathMapping": {"source": "/source", "output": "/output", "cargoTarget": target_root}}
-    manifest["sourceDirty"] = bool(git_output(rust, "status", "--porcelain"))
     manifest_path = root / f"{archive.name}.manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     deb_files = ()
@@ -402,6 +402,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         deb_files = _package_gnu_deb(layout, docker, root=root, stage=stage, version=version,
                                      architecture=architecture, build_arch=build_arch,
                                      builder=builder, mounts=mounts, manifest=manifest, log_root=log_root)
+    release._assert_emulebb_rust_package_provenance(layout, rust, provenance)
     release._write_sha256sums(root / "SHA256SUMS", (archive, manifest_path, sbom, *deb_files))
     print(f"Linux {architecture}/{libc} package: {archive}")
     return archive

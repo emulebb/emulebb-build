@@ -1063,6 +1063,7 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
     platform: str,
     machine: int,
 ) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     layout = _make_rust_package_layout(tmp_path)
     _stage_rust_package_inputs(layout)
     staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
@@ -1071,7 +1072,7 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
     monkeypatch.setattr(
         release,
         "_package_repo_provenance",
-        lambda repo: {"commit": f"{repo.name}-commit", "branch": "main", "remote": ""},
+        lambda repo: {"commit": "a" * 40, "branch": "main", "remote": ""},
     )
     options = WorkspaceOptions(
         workspace_root=layout.emule_workspace_root,
@@ -1104,7 +1105,9 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
     assert "emulebb-rust/emulebb-rust-ui.exe" not in names
     assert "emulebb-rust/emulebb-rust-diagnostics.exe" not in names
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["schema"] == "emulebb.rust.package/1"
+    assert manifest["schema"] == "emulebb.rust.package/2"
+    assert manifest["sourceDirty"] is False and manifest["origin"] == "local-development"
+    assert manifest["workflow"] is None
     assert manifest["version"] == "0.1.0-beta.1"
     assert manifest["baseVersion"] == "0.1.0-beta.1"
     assert manifest["tag"] == "rust-v0.1.0-beta.1"
@@ -1122,6 +1125,77 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
     assert [line.split("  ", 1)[1] for line in sums] == [zip_path.name, manifest_path.name, sbom_path.name]
 
 
+def test_emulebb_rust_hosted_provenance_records_the_exact_workflow(monkeypatch, tmp_path):
+    layout = _make_rust_package_layout(tmp_path)
+    monkeypatch.setattr(release, "repo_status_lines", lambda repo: [])
+    monkeypatch.setattr(release, "_package_repo_provenance", lambda repo: {"commit": "a" * 40})
+    for name, value in {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "emulebb/emulebb-rust",
+                        "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_WORKFLOW_SHA": "b" * 40}.items():
+        monkeypatch.setenv(name, value)
+    provenance = release._emulebb_rust_package_provenance(layout, layout.emulebb_rust_repo_root)
+    assert provenance["origin"] == "github-actions" and provenance["sourceDirty"] is False
+    assert provenance["workflow"] == {"repository": "emulebb/emulebb-rust", "runId": "123",
+                                      "runAttempt": "2", "workflowSha": "b" * 40}
+
+
+def test_emulebb_rust_hosted_package_cannot_promote_a_staged_binary(monkeypatch, tmp_path):
+    layout = _make_rust_package_layout(tmp_path)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    with pytest.raises(RuntimeError, match="require a fresh build"):
+        release.create_emulebb_rust_package(
+            layout, WorkspaceOptions(workspace_root=layout.emule_workspace_root, configuration="Release"),
+            EmulebbRustPackageOptions(release_version="0.1.0-beta.1", skip_build=True))
+
+
+@pytest.mark.parametrize("name,value", [("GITHUB_REPOSITORY", ""), ("GITHUB_RUN_ID", "0"),
+                                        ("GITHUB_RUN_ATTEMPT", "-1"), ("GITHUB_WORKFLOW_SHA", "short")])
+def test_emulebb_rust_hosted_origin_rejects_incomplete_workflow_identity(monkeypatch, name, value):
+    for variable, setting in {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "emulebb/emulebb-rust",
+                             "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_SHA": "b" * 40}.items():
+        monkeypatch.setenv(variable, setting)
+    monkeypatch.setenv(name, value)
+    with pytest.raises(RuntimeError, match="GitHub artifact production requires"):
+        release._emulebb_rust_artifact_origin()
+
+
+@pytest.mark.parametrize("material", ["emulebb-rust", "emulebb-build", "emulebb-tooling",
+                                      "emulebb-miniupnp", "emulebb-libpcpnatpmp"])
+@pytest.mark.parametrize("fault", ["dirty", "clean-head-move"])
+def test_emulebb_rust_package_fence_rejects_changes_to_every_material(monkeypatch, tmp_path, material, fault):
+    layout = _make_rust_package_layout(tmp_path)
+    changed = False
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setattr(release, "repo_status_lines", lambda repo:
+                        [" M changed-source"] if changed and repo.name == material and fault == "dirty" else [])
+    monkeypatch.setattr(release, "_package_repo_provenance", lambda repo:
+                        {"commit": ("b" if changed and repo.name == material and fault == "clean-head-move" else "a") * 40})
+    before = release._emulebb_rust_package_provenance(layout, layout.emulebb_rust_repo_root)
+    changed = True
+    with pytest.raises(RuntimeError, match="clean provenance|identity changed"):
+        release._assert_emulebb_rust_package_provenance(layout, layout.emulebb_rust_repo_root, before)
+
+
+def test_emulebb_rust_package_does_not_emit_provenance_after_source_moves_during_packaging(monkeypatch, tmp_path):
+    layout = _make_rust_package_layout(tmp_path)
+    _stage_rust_package_inputs(layout)
+    (layout.output_tools_root / "emulebb-rust/bin/emulebb-rust.exe").write_bytes(_pe_payload(0x8664))
+    revision = "a" * 40
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setattr(release, "repo_status_lines", lambda repo: [])
+    monkeypatch.setattr(release, "_package_repo_provenance", lambda repo: {"commit": revision})
+    write_zip = release._write_zip
+    def moved_source(*args):
+        nonlocal revision
+        write_zip(*args)
+        revision = "b" * 40
+    monkeypatch.setattr(release, "_write_zip", moved_source)
+    with pytest.raises(RuntimeError, match="identity changed"):
+        release.create_emulebb_rust_package(
+            layout, WorkspaceOptions(workspace_root=layout.emule_workspace_root, configuration="Release"),
+            EmulebbRustPackageOptions(release_version="0.1.0-beta.1", skip_build=True))
+    assert not list((layout.output_release_root / "rust-v0.1.0-beta.1").glob("*.manifest.json"))
+
+
 @pytest.mark.parametrize(
     ("platform", "deb_arch", "image_arch"),
     (("x64", "amd64", "x86_64"), ("ARM64", "arm64", "aarch64")),
@@ -1133,6 +1207,7 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     deb_arch: str,
     image_arch: str,
 ) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     layout = _make_rust_package_layout(tmp_path)
     _stage_rust_package_inputs(layout)
     staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
@@ -1141,7 +1216,7 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     monkeypatch.setattr(
         release,
         "_package_repo_provenance",
-        lambda repo: {"commit": f"{repo.name}-commit", "branch": "main", "remote": ""},
+        lambda repo: {"commit": "a" * 40, "branch": "main", "remote": ""},
     )
     monkeypatch.setattr(release.shutil, "which", lambda name: "/tools/appimagetool" if name == "appimagetool" else None)
 
@@ -1189,6 +1264,7 @@ def test_emulebb_rust_linux_deb_only_does_not_require_appimagetool(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     layout = _make_rust_package_layout(tmp_path)
     _stage_rust_package_inputs(layout)
     staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
@@ -1197,7 +1273,7 @@ def test_emulebb_rust_linux_deb_only_does_not_require_appimagetool(
     monkeypatch.setattr(
         release,
         "_package_repo_provenance",
-        lambda repo: {"commit": f"{repo.name}-commit", "branch": "main", "remote": ""},
+        lambda repo: {"commit": "a" * 40, "branch": "main", "remote": ""},
     )
     monkeypatch.setattr(release.shutil, "which", lambda _name: None)
 
@@ -1267,6 +1343,7 @@ def test_emulebb_rust_macos_package_emits_app_dmg_and_metadata(
     monkeypatch: pytest.MonkeyPatch,
     platform: str,
 ) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     layout = _make_rust_package_layout(tmp_path)
     _stage_rust_package_inputs(layout)
     staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
@@ -1276,7 +1353,7 @@ def test_emulebb_rust_macos_package_emits_app_dmg_and_metadata(
     monkeypatch.setattr(
         release,
         "_package_repo_provenance",
-        lambda repo: {"commit": f"{repo.name}-commit", "branch": "main", "remote": ""},
+        lambda repo: {"commit": "a" * 40, "branch": "main", "remote": ""},
     )
 
     def fake_packaging_tool(command: tuple[str, ...], _label: str) -> None:

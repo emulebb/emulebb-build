@@ -214,6 +214,7 @@ def test_build_emulebb_rust_client_runs_cargo_and_stages_runtime(
     assert command == [
         "cargo.exe",
         "build",
+        "--locked",
         "-p",
         "emulebb-daemon",
         "--bin",
@@ -446,7 +447,7 @@ def test_build_emulebb_rust_linux_client_uses_native_wsl_cargo(
     assert "cargo.exe" not in command
     assert "export CARGO_TARGET_DIR=/mnt/c/target-wsl" in command[-1]
     assert command[-1].endswith(
-        "exec cargo build -p emulebb-daemon --bin emulebb-rust --release --target x86_64-unknown-linux-gnu"
+        "exec cargo build --locked -p emulebb-daemon --bin emulebb-rust --release --target x86_64-unknown-linux-gnu"
     )
     assert (build.staged_emulebb_rust_root(layout) / "bin" / "emulebb-rust").read_bytes() == b"linux"
 

@@ -209,6 +209,8 @@ def create_emulebb_rust_package(
         raise RuntimeError("package emulebb-rust requires --config Release.")
     if workspace_options.platform not in ("x64", "ARM64"):
         raise RuntimeError("package emulebb-rust supports --platform x64 or ARM64.")
+    if os.environ.get("GITHUB_ACTIONS") == "true" and package_options.skip_build:
+        raise RuntimeError("GitHub Rust packages require a fresh build; staged local binaries cannot be promoted")
     if not _is_release_version(package_options.release_version):
         raise RuntimeError(
             f"Rust release version must use {RELEASE_VERSION_FORMAT} format: {package_options.release_version}"
@@ -217,7 +219,7 @@ def create_emulebb_rust_package(
     if rust_root is None or not rust_root.is_dir():
         raise RuntimeError("package emulebb-rust requires repos/emulebb-rust in the workspace manifest.")
     _assert_emulebb_rust_version_matches(rust_root, package_options.release_version)
-    _assert_clean_emulebb_rust_package_inputs(layout, rust_root)
+    provenance = _emulebb_rust_package_provenance(layout, rust_root)
 
     if not package_options.skip_build:
         session = BuildSession(
@@ -238,10 +240,10 @@ def create_emulebb_rust_package(
             session.write_recap()
 
     if package_options.target_os == "linux":
-        _create_emulebb_rust_linux_packages(layout, workspace_options, package_options, rust_root)
+        _create_emulebb_rust_linux_packages(layout, workspace_options, package_options, rust_root, provenance)
         return
     if package_options.target_os == "macos":
-        _create_emulebb_rust_macos_package(layout, workspace_options, package_options, rust_root)
+        _create_emulebb_rust_macos_package(layout, workspace_options, package_options, rust_root, provenance)
         return
 
     release_root = _emulebb_rust_release_root(layout, package_options.release_version)
@@ -301,6 +303,7 @@ def create_emulebb_rust_package(
     package_file_hashes = _zip_entry_hashes(zip_path)
     shutil.copy2(package_root / "SBOM.spdx.json", sbom_path)
     sbom_hash = _sha256(sbom_path)
+    _assert_emulebb_rust_package_provenance(layout, rust_root, provenance)
     manifest = _build_emulebb_rust_manifest(
         layout=layout,
         rust_root=rust_root,
@@ -313,6 +316,7 @@ def create_emulebb_rust_package(
         sbom_hash=sbom_hash,
         exe_hash=exe_hash,
         package_file_hashes=package_file_hashes,
+        provenance=provenance,
     )
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
     _write_sha256sums(sums_path, (zip_path, manifest_path, sbom_path))
@@ -327,6 +331,7 @@ def _create_emulebb_rust_linux_packages(
     workspace_options: WorkspaceOptions,
     package_options: EmulebbRustPackageOptions,
     rust_root: Path,
+    provenance: dict[str, object],
 ) -> None:
     """Creates selected unsigned native-architecture Linux beta assets."""
 
@@ -446,11 +451,12 @@ def _create_emulebb_rust_linux_packages(
         for selected, path in ((want_deb, deb_path), (want_appimage, appimage_path))
         if selected
     )
+    _assert_emulebb_rust_package_provenance(layout, rust_root, provenance)
     manifests: list[Path] = []
     for asset in assets:
         manifest_path = asset.with_name(f"{asset.name}.manifest.json")
         manifest = {
-            "schema": "emulebb.rust.package/1",
+            **provenance,
             "package": "emulebb-rust",
             "version": package_options.release_version,
             "baseVersion": _emulebb_rust_workspace_version(rust_root),
@@ -465,7 +471,6 @@ def _create_emulebb_rust_linux_packages(
             "webuiRoot": "/usr/lib/emulebb-rust/webui",
             "sbom": sbom_path.name,
             "sbomSha256": _sha256(sbom_path),
-            "source": _emulebb_rust_source_provenance(layout, rust_root),
         }
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
         manifests.append(manifest_path)
@@ -482,6 +487,7 @@ def _create_emulebb_rust_macos_package(
     workspace_options: WorkspaceOptions,
     package_options: EmulebbRustPackageOptions,
     rust_root: Path,
+    provenance: dict[str, object],
 ) -> None:
     """Creates an unsigned app-in-DMG from the staged native macOS runtime."""
 
@@ -566,8 +572,9 @@ def _create_emulebb_rust_macos_package(
     )
     sbom_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
     _run_packaging_tool(("hdiutil", "create", "-volname", "eMuleBB Rust", "-srcfolder", str(app_root), "-ov", "-format", "UDZO", str(dmg)), "hdiutil")
+    _assert_emulebb_rust_package_provenance(layout, rust_root, provenance)
     manifest_path.write_text(json.dumps({
-        "schema": "emulebb.rust.package/1",
+        **provenance,
         "package": "emulebb-rust",
         "version": version,
         "baseVersion": _emulebb_rust_workspace_version(rust_root),
@@ -579,7 +586,6 @@ def _create_emulebb_rust_macos_package(
         "sha256": _sha256(dmg),
         "sbom": sbom_path.name,
         "sbomSha256": _sha256(sbom_path),
-        "source": _emulebb_rust_source_provenance(layout, rust_root),
     }, indent=2) + "\n", encoding="utf-8", newline="\n")
     _write_sha256sums(sums_path, (dmg, manifest_path, sbom_path))
     print(f"eMuleBB Rust DMG: {dmg}")
@@ -956,6 +962,38 @@ def _assert_clean_emulebb_rust_package_inputs(layout: WorkspaceLayout, rust_root
         )
 
 
+def _emulebb_rust_artifact_origin() -> dict[str, object]:
+    """Identify local evidence separately from the exact hosted producer run."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return {"origin": "local-development", "workflow": None}
+    names = {"repository": "GITHUB_REPOSITORY", "runId": "GITHUB_RUN_ID",
+             "runAttempt": "GITHUB_RUN_ATTEMPT", "workflowSha": "GITHUB_WORKFLOW_SHA"}
+    context = {key: os.environ.get(name, "") for key, name in names.items()}
+    if (re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", context["repository"]) is None
+            or any(re.fullmatch(r"[1-9][0-9]*", context[key]) is None for key in ("runId", "runAttempt"))
+            or re.fullmatch(r"[0-9a-f]{40}", context["workflowSha"]) is None):
+        raise RuntimeError("GitHub artifact production requires a repository, positive run ID/attempt, and full workflow SHA")
+    return {"origin": "github-actions", "workflow": context}
+
+
+def _emulebb_rust_package_provenance(layout: WorkspaceLayout, rust_root: Path) -> dict[str, object]:
+    """Capture the clean repositories that actually contribute package bytes."""
+    _assert_clean_emulebb_rust_package_inputs(layout, rust_root)
+    source = _emulebb_rust_source_provenance(layout, rust_root)
+    if any(re.fullmatch(r"[0-9a-f]{40}", item.get("commit", "")) is None for item in source.values()):
+        raise RuntimeError("Rust package provenance requires full source and support commit SHAs")
+    return {"schema": "emulebb.rust.package/2", "sourceDirty": False, "source": source,
+            **_emulebb_rust_artifact_origin()}
+
+
+def _assert_emulebb_rust_package_provenance(layout: WorkspaceLayout, rust_root: Path,
+                                          expected: dict[str, object]) -> None:
+    # WHY: a checkout can move to another clean HEAD while a build is running;
+    # cleanliness alone must not attribute old bytes to the new revision.
+    if _emulebb_rust_package_provenance(layout, rust_root) != expected:
+        raise RuntimeError("Rust package source or workflow identity changed during production")
+
+
 def _write_emulebb_rust_readme(package_root: Path, version: str, arch: str) -> None:
     """Writes the package-facing README for emulebb-rust."""
 
@@ -1020,11 +1058,12 @@ def _build_emulebb_rust_manifest(
     sbom_hash: str,
     exe_hash: str,
     package_file_hashes: dict[str, str],
+    provenance: dict[str, object],
 ) -> dict[str, object]:
     """Builds the machine-readable manifest for the Rust package ZIP."""
 
     return {
-        "schema": "emulebb.rust.package/1",
+        **provenance,
         "package": "emulebb-rust",
         "version": package_options.release_version,
         "baseVersion": _emulebb_rust_workspace_version(rust_root),
@@ -1043,7 +1082,6 @@ def _build_emulebb_rust_manifest(
         "sbom": sbom_path.relative_to(release_root).as_posix(),
         "sbomSha256": sbom_hash,
         "perFileSha256": package_file_hashes,
-        "source": _emulebb_rust_source_provenance(layout, rust_root),
     }
 
 
