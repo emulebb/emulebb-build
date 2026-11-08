@@ -165,6 +165,7 @@ def test_failed_image_build_invalidates_old_sidecars_and_removes_only_its_worker
         def __exit__(self, *args):
             pass
         def path(self, value):
+            assert not value.is_file(), "The WSL directory mapper requires a parent directory"
             return str(value)
         def run(self, *arguments, **kwargs):
             calls.append(list(arguments))
