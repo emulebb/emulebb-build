@@ -190,6 +190,11 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
 
 def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root: Path, output: Path) -> None:
     """Execute applicable checks; a missing tool or failed check blocks Git."""
+    # WHY: a UTF-8 subprocess log can contain characters the Windows console
+    # cannot encode. Preserve that log and report the original failing check.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(errors="backslashreplace")
     repo = repo.resolve()
     if not any(repo.is_relative_to(root / boundary) for boundary in ("repos", "workspaces")):
         raise RuntimeError("Local checks require a repository inside repos or workspaces")

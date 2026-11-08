@@ -248,6 +248,31 @@ def test_failure_blocks_later_checks_and_writes_evidence(tmp_path, monkeypatch):
     assert list((tmp_path / "output" / "reports").rglob("results.json"))
 
 
+def test_unicode_failure_log_does_not_hide_check_failure_on_windows_console(tmp_path, monkeypatch):
+    import io
+
+    repo = tmp_path / "repos/emulebb-build"
+    repo.mkdir(parents=True)
+    monkeypatch.setattr(local_checks, "changed_paths", lambda *args: {"sample.py"})
+    monkeypatch.setattr(local_checks, "git", lambda repo, *args: str(repo) if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(local_checks, "check_plan", lambda *args: [(repo, ["check"])])
+    diagnostic = "registry returned 429: retry-after 637.054\ufffds"
+    def failed(command, **kwargs):
+        kwargs["stdout"].write(diagnostic)
+        return subprocess.CompletedProcess(command, 7)
+    monkeypatch.setattr(local_checks.subprocess, "run", failed)
+    buffer = io.BytesIO()
+    console = io.TextIOWrapper(buffer, encoding="cp1252")
+    monkeypatch.setattr(local_checks.sys, "stdout", console)
+    with pytest.raises(RuntimeError, match="Local check failed \\(7\\)"):
+        local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None,
+                               root=tmp_path, output=tmp_path / "output")
+    console.flush()
+    assert b"registry returned 429" in buffer.getvalue() and b"\\ufffd" in buffer.getvalue()
+    log = next((tmp_path / "output/reports").rglob("00.log"))
+    assert log.read_text(encoding="utf-8") == diagnostic
+
+
 def test_missing_tool_retains_failed_start_evidence(tmp_path, monkeypatch):
     import json
     repo = tmp_path / "repos" / "emulebb-build"
