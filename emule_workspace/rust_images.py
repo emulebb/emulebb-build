@@ -114,6 +114,7 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
     if git_output(builder_root, "status", "--porcelain").strip():
         raise RuntimeError("Image builds require clean builder sources")
     builder_sha = git_output(builder_root, "rev-parse", "HEAD").strip()
+    builder_config = Path(__file__).parent / "release_assets/rust_images/buildkitd.toml"
     recipe = image_recipe(variant)
     inputs = verified_packages(rust_root, assets_dir, version, architectures, variant)
     context = output_root / "packages/build" / f"emulebb-rust-image-{variant}"
@@ -143,6 +144,7 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
               "dockerfileSha256": _sha256(source / recipe),
               "sourceSha": inputs[0]["source"]["emulebbRust"]["commit"] if inputs else None,
               "builderSha": builder_sha}
+    report["buildkitConfigSha256"] = _sha256(builder_config)
     path = reports / "inputs.json"
     log = reports / "build.log"
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -160,6 +162,7 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
         print(f"Building {image}; diagnostics: {log}", flush=True)
         try:
             docker.run("buildx", "create", "--name", builder, "--driver", "docker-container",
+                       "--buildkitd-config", docker.path(builder_config),
                        "--driver-opt", f"image={BUILDKIT_IMAGE}", capture=True, timeout=60)
             with log.open("w", encoding="utf-8") as stream:
                 subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=2700)

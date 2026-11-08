@@ -169,6 +169,7 @@ def test_ordinary_rolling_windows_do_not_trigger_platform_matrix(tmp_path):
     ("emulebb-build", "emule_workspace/linux_validation.py", "full"),
     ("emulebb-build", "emule_workspace/image_security.py", "image"),
     ("emulebb-build", "emule_workspace/rust_images.py", "image"),
+    ("emulebb-build", "emule_workspace/release_assets/rust_images/buildkitd.toml", "image"),
     ("emulebb-build", "emule_workspace/release_assets/rust_linux/Dockerfile", "full"),
     ("emulebb-build-tests", "scripts/smoke-rust-release-package.py", "full"),
     ("emulebb-build-tests", "scripts/smoke-rust-container.py", "image"),

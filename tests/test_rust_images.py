@@ -188,6 +188,9 @@ def test_failed_image_build_invalidates_old_sidecars_and_removes_only_its_worker
     name = calls[0][calls[0].index("--name") + 1]
     assert name.startswith("emulebb-image-")
     assert f"image={rust_images.BUILDKIT_IMAGE}" in calls[0]
+    config = Path(calls[0][calls[0].index("--buildkitd-config") + 1])
+    import tomllib
+    assert tomllib.loads(config.read_text())["registry"]["ghcr.io"]["mirrors"] == ["lscr.io"]
     assert calls[-1][-3:] == ["rm", "--force", name]
     report_path = next((output / "reports/rust-image-build").glob("*/inputs.json"))
     assert json.loads(report_path.read_text())["status"] == "failed"

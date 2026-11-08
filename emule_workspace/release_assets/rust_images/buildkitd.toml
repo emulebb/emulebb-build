@@ -1,0 +1,4 @@
+# LinuxServer publishes the same digest-addressed images through both registries.
+# BuildKit tries the mirror and falls back to the canonical GHCR host.
+[registry."ghcr.io"]
+  mirrors = ["lscr.io"]
