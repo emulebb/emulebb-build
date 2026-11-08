@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import replace
@@ -1624,13 +1625,19 @@ def package_emulebb_rust_linux(*, libc: str, architecture: str, webui_dist: Path
 @click.option("--webui-dist", type=click.Path(path_type=Path))
 @click.option("--release-version", required=True)
 @click.option("--smoke", is_flag=True)
+@click.option("--smoke-report-path", type=click.Path(path_type=Path),
+              help="Retain the passed lifecycle receipt at this new path below the output root.")
 @click.option("--test-scope", type=click.Choice(["portable", "full"]), default="portable", show_default=True)
-def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: Path | None, release_version: str, smoke: bool, test_scope: str) -> None:
+def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: Path | None,
+                                 release_version: str, smoke: bool, smoke_report_path: Path | None,
+                                 test_scope: str) -> None:
     """Use the local Linux container recipe on a minimal native CI checkout."""
-    from .linux_containers import build_linux_artifacts
+    from .linux_containers import build_linux_artifacts, smoke_linux_archive
     from .release import _emulebb_rust_artifact_origin
     if _emulebb_rust_artifact_origin()["origin"] != "github-actions":
         raise click.ClickException("CI Linux packaging requires GitHub Actions; use package-emulebb-rust-linux locally")
+    if smoke_report_path is not None and not smoke:
+        raise click.ClickException("--smoke-report-path requires --smoke")
     required = [WORKSPACE_OUTPUT_ROOT_ENV, "EMULEBB_RUST_REPO", "EMULEBB_TOOLING_REPO", "MINIUPNP_ROOT", "PCPNATPMP_ROOT"]
     if smoke:
         required.append("EMULEBB_BUILD_TESTS_REPO")
@@ -1642,9 +1649,27 @@ def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: P
                      tooling_repo_root=Path(os.environ["EMULEBB_TOOLING_REPO"]).resolve())
     if smoke:
         layout = replace(layout, tests_repo_root=Path(os.environ["EMULEBB_BUILD_TESTS_REPO"]).resolve())
+    report_target = None
+    if smoke_report_path is not None:
+        report_target = smoke_report_path.resolve()
+        if (smoke_report_path.is_symlink() or report_target.exists()
+                or not report_target.is_relative_to(layout.output_root)):
+            raise click.ClickException("Smoke report requires a new regular path below the inherited output root")
     try:
-        build_linux_artifacts(layout, libc=libc, architecture=architecture,
-                              webui_dist=webui_dist, release_version=release_version, smoke=smoke, test_scope=test_scope)
+        archive = build_linux_artifacts(layout, libc=libc, architecture=architecture,
+                                        webui_dist=webui_dist, release_version=release_version,
+                                        smoke=False, test_scope=test_scope)
+        if smoke:
+            receipt = smoke_linux_archive(layout, archive=archive, libc=libc, architecture=architecture)
+            if report_target is not None:
+                if receipt.is_symlink() or not receipt.is_file() or not receipt.resolve().is_relative_to(layout.output_root):
+                    raise click.ClickException("Lifecycle receipt must be a regular file below the output root")
+                report_target.parent.mkdir(parents=True, exist_ok=True)
+                # WHY: CI needs one explicit artifact path, not a guess at a
+                # UUID report directory. Exclusive creation preserves an older
+                # receipt if another producer races this retention step.
+                with receipt.open("rb") as source, report_target.open("xb") as destination:
+                    shutil.copyfileobj(source, destination)
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 
