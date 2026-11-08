@@ -37,15 +37,9 @@ def find_tool(names: Sequence[str]) -> Path | None:
 
 
 def get_python_invocation() -> PythonInvocation:
-    """Resolves a Python 3 invocation matching the legacy workspace behavior."""
+    """Keep subprocesses in the selected environment, including Unix venv links."""
 
-    python = find_tool(("python.exe", "python"))
-    if python is not None:
-        return PythonInvocation(executable=python)
-    py = find_tool(("py.exe", "py"))
-    if py is not None:
-        return PythonInvocation(executable=py, prefix=("-3",))
-    raise RuntimeError("Python 3 was not found on PATH.")
+    return PythonInvocation(executable=Path(sys.executable))
 
 
 def _validate_cargo_target_dir(

@@ -4,13 +4,21 @@ version = "0.0.0"
 description = "Python workspace orchestration for the canonical eMuleBB workspace."
 requires-python = ">=3.11"
 dependencies = [
-    "click>=8.1",
-    "pydantic>=2.0",
+    "click==8.4.1",
+    "pydantic==2.14.3",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "editorconfig>=0.17",
+    "charset-normalizer>=3.4",
+    "PyYAML==6.0.3",
+    "jsonschema==4.26.0",
+    "mkdocs>=1.6,<2.0",
+    "mkdocs-material>=9.5,<10.0",
+    "mkdocs-redirects>=1.2,<2.0",
+    "pymdown-extensions>=10.0,<11.0",
 ]
 
 [project.scripts]
@@ -18,6 +26,12 @@ emule-workspace = "emule_workspace.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["emule_workspace*"]
+
+[tool.uv]
+package = false
+
+[tool.uv.extra-build-variables]
+pyyaml = { PYYAML_FORCE_LIBYAML = "0" }
 
 [tool.pytest.ini_options]
 addopts = "-ra"

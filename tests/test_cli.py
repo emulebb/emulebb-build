@@ -7,11 +7,21 @@ from click.testing import CliRunner
 from emule_workspace import cli
 
 
+def test_python_bootstrap_reports_failures_as_cli_errors(monkeypatch):
+    from emule_workspace import python_runtime
+
+    def failed(**kwargs):
+        raise RuntimeError("synthetic bootstrap failure")
+    monkeypatch.setattr(python_runtime, "bootstrap", failed)
+    result = CliRunner().invoke(cli.main, ["bootstrap-python"])
+    assert result.exit_code == 1 and "synthetic bootstrap failure" in result.output
+
+
 def test_image_packaging_rejects_direct_publication_options() -> None:
     for option in ("--push", "--channel-tag"):
         result = CliRunner().invoke(cli.main, ["package-emulebb-rust-image-ci", option])
         assert result.exit_code != 0
-        assert f"No such option: {option}" in result.output
+        assert "No such option" in result.output and option in result.output
 
 
 def test_ci_image_packaging_rejects_local_artifact_production(tmp_path, monkeypatch):
