@@ -1836,6 +1836,32 @@ def package_emulebb_rust_image_ci(
     print(f"Rust image archived: {archive}")
 
 
+@main.command("validate-emulebb-rust-image-ci")
+@click.option("--archive", type=click.Path(path_type=Path, exists=True, dir_okay=False), required=True)
+@click.option("--image", required=True)
+@click.option("--architecture", type=click.Choice(["amd64", "arm64"]), required=True)
+@click.option("--security-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--control-rust-repo", type=click.Path(path_type=Path, exists=True, file_okay=False), required=True)
+def validate_emulebb_rust_image_ci(*, archive: Path, image: str, architecture: str,
+                                  security_dir: Path, control_rust_repo: Path) -> None:
+    """Run fresh image proof on the requested native GitHub Linux runner."""
+    from .image_security import validate_image_ci
+
+    required = (WORKSPACE_OUTPUT_ROOT_ENV, "EMULEBB_RUST_REPO", "EMULEBB_BUILD_TESTS_REPO")
+    missing = [name for name in required if not os.environ.get(name)]
+    if missing:
+        raise click.ClickException("CI image validation requires inherited values: " + ", ".join(missing))
+    layout = replace(build_ci_layout(output_root=Path(os.environ[WORKSPACE_OUTPUT_ROOT_ENV])),
+                     emulebb_rust_repo_root=Path(os.environ["EMULEBB_RUST_REPO"]).resolve(),
+                     tests_repo_root=Path(os.environ["EMULEBB_BUILD_TESTS_REPO"]).resolve())
+    try:
+        evidence = validate_image_ci(layout, archive=archive, image=image, architecture=architecture,
+                                     security_dir=security_dir, control_rust_root=control_rust_repo.resolve())
+    except Exception as error:
+        raise click.ClickException(str(error)) from error
+    print(f"Native GitHub image validation passed: {evidence}")
+
+
 @main.group("vm-lab")
 def vm_lab() -> None:
     """Prepare local Hyper-V Windows VM test images."""
