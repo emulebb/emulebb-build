@@ -786,13 +786,18 @@ def _emulebb_rust_release_root(layout: WorkspaceLayout, release_version: str) ->
 
 
 def assemble_emulebb_rust_release_assets(assets_dir: Path, version: str) -> Path:
-    """Verifies the complete six-target beta asset set and writes one checksum file."""
+    """Verify native/musl assets and checksum the final flat public evidence set."""
 
     if not _is_release_version(version):
         raise RuntimeError(f"Invalid Rust release version: {version}")
     assets_dir = assets_dir.resolve()
     if not assets_dir.is_dir():
         raise RuntimeError(f"Rust release assets directory does not exist: {assets_dir}")
+    entries = tuple(assets_dir.iterdir())
+    if any(path.is_symlink() or not path.is_file() for path in entries):
+        raise RuntimeError("Rust release assembly requires only regular files in a flat evidence directory")
+    if any(path.name.endswith("-candidate-manifest.json") for path in entries):
+        raise RuntimeError("Rust release assembly requires a fresh evidence directory without candidate manifests")
     stem = f"emulebb-rust-v{version}"
     payloads = (
         f"{stem}-windows-x64.zip",
@@ -803,26 +808,31 @@ def assemble_emulebb_rust_release_assets(assets_dir: Path, version: str) -> Path
         f"{stem}-linux-aarch64.AppImage",
         f"{stem}-macos-x64.dmg",
         f"{stem}-macos-arm64.dmg",
+        f"{stem}-linux-amd64-musl.tar.zst",
+        f"{stem}-linux-arm64-musl.tar.zst",
     )
-    files: set[Path] = set()
+    hosted = _emulebb_rust_artifact_origin()["origin"] == "github-actions"
     for name in payloads:
         payload = assets_dir / name
-        manifest_candidates = (assets_dir / f"{name}.manifest.json", assets_dir / f"{Path(name).stem}.manifest.json")
-        manifest = next((path for path in manifest_candidates if path.is_file()), None)
-        if not payload.is_file() or manifest is None:
+        manifest = assets_dir / f"{name}.manifest.json"
+        if not payload.is_file() or not manifest.is_file():
             raise RuntimeError(f"Rust release asset or manifest is missing: {name}")
         data = json.loads(manifest.read_text(encoding="utf-8"))
-        if data.get("asset") != name or data.get("sha256") != _sha256(payload):
+        if (data.get("schema") != "emulebb.rust.package/2" or data.get("sourceDirty") is not False
+                or data.get("version") != version or data.get("asset") != name or data.get("sha256") != _sha256(payload)):
             raise RuntimeError(f"Rust release asset provenance mismatch: {name}")
+        if hosted:
+            _assert_emulebb_rust_hosted_artifact(data)
         sbom_name = data.get("sbom")
         if not isinstance(sbom_name, str) or Path(sbom_name).name != sbom_name:
             raise RuntimeError(f"Rust release SBOM path is invalid: {name}")
         sbom = assets_dir / sbom_name
         if not sbom.is_file() or data.get("sbomSha256") != _sha256(sbom):
             raise RuntimeError(f"Rust release SBOM mismatch: {name}")
-        files.update((payload, manifest, sbom))
     sums = assets_dir / "SHA256SUMS"
-    _write_sha256sums(sums, tuple(sorted(files, key=lambda path: path.name)))
+    # WHY: computing this before smoke/image evidence arrives leaves publication
+    # inputs outside the inventory. Call only after assembling all public files.
+    _write_sha256sums(sums, tuple(sorted((path for path in entries if path != sums), key=lambda path: path.name)))
     return sums
 
 

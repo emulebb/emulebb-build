@@ -1788,7 +1788,7 @@ def package_emulebb_rust_ci(*, release_version: str, clean: bool, target_os: str
 @click.option("--release-version", required=True)
 @click.option("--assets-dir", type=click.Path(path_type=Path), required=True)
 def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path) -> None:
-    """Verify all native beta assets and write the combined SHA256SUMS."""
+    """Verify native/musl packages and checksum all assembled public evidence."""
 
     output_root_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
     if not output_root_value:
