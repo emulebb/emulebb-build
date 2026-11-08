@@ -209,9 +209,13 @@ def test_fresh_wsl_smoke_requires_current_release_proof_and_removes_only_labeled
         kwargs["stdout"].write("retained runtime diagnostics\n")
         if fault == "timeout":
             raise subprocess.TimeoutExpired(command, 1)
-        result = {"schema": "emulebb.rust.image-smoke/4", "status": "passed", "archiveSha256": manifest["archiveSha256"],
+        result = {"schema": "emulebb.rust.image-smoke/4", "status": "passed", "image": image, "archiveSha256": manifest["archiveSha256"],
                   "platforms": [{"platform": "linux/amd64", "appVersion": manifest["version"], "appBuild": "release",
                                  "appPlatform": "x64", "authenticatedStatus": 200, "unauthenticatedStatus": 401,
+                                 "firstRunProfile": True, "webui": True, "uid": 1234, "gid": 1235,
+                                 "configOwner": "1234:1235", "dataOwner": "1234:1235", "publishedPorts": 0,
+                                 "restAuthentication": True, "networkIsolation": "internal-bridge", "dns": "loopback-only",
+                                 "imageManifestDigest": "sha256:" + "b" * 64, "imageConfigDigest": "sha256:" + "c" * 64,
                                  "daemonUid": 1234, "daemonGid": 1235, "gracefulShutdown": True}]}
         if fault == "old-schema":
             result["schema"] = "emulebb.rust.image-smoke/3"

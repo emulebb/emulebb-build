@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 import tarfile
@@ -49,8 +50,16 @@ def scanner(tmp_path, monkeypatch):
         fixture = output / f"{arch}.tar"
         identities[f"linux/{arch}"] = {"imageManifestDigest": "sha256:" + digest * 64,
                                        "imageConfigDigest": write_platform_export(fixture, arch)}
-    smoke.write_text(json.dumps({"schema": "emulebb.rust.image-smoke/4", "status": "passed", "archiveSha256": manifest["archiveSha256"],
-                                 "platforms": [{"platform": cpu, **identity} for cpu, identity in identities.items()]}))
+    smoke.write_text(json.dumps({"schema": "emulebb.rust.image-smoke/4", "status": "passed", "image": manifest["image"],
+                                 "archiveSha256": manifest["archiveSha256"],
+                                 "platforms": [{"platform": cpu, **identity, "firstRunProfile": True, "webui": True,
+                                                "uid": 1234, "gid": 1235, "daemonUid": 1234, "daemonGid": 1235,
+                                                "configOwner": "1234:1235", "dataOwner": "1234:1235", "publishedPorts": 0,
+                                                "restAuthentication": True, "authenticatedStatus": 200, "unauthenticatedStatus": 401,
+                                                "appVersion": manifest["version"], "appBuild": "release",
+                                                "appPlatform": "x64" if cpu == "linux/amd64" else "arm64", "gracefulShutdown": True,
+                                                "networkIsolation": "internal-bridge", "dns": "loopback-only"}
+                                               for cpu, identity in identities.items()]}))
     calls = []
     smoke_calls = []
     faults = {"vulnerability": False, "stale_tag": False, "wrong_sbom_arch": False}
@@ -85,12 +94,12 @@ def scanner(tmp_path, monkeypatch):
             arch = command[command.index("--platform", command.index("image")) + 1].split("/")[1]
             if faults["wrong_sbom_arch"]:
                 arch = "amd64"
-            (evidence / name).write_text(json.dumps({"spdxVersion": "SPDX-2.3", "packages": [
+            (log.parent / name).write_text(json.dumps({"spdxVersion": "SPDX-2.3", "packages": [
                 {"name": "libc6", "externalRefs": [{"referenceType": "purl", "referenceLocator": f"pkg:deb/ubuntu/libc6@2.43?arch={arch}"}]}]}))
         elif faults["vulnerability"] and command[command.index("--platform", command.index("image")) + 1] == "linux/amd64":
             raise RuntimeError("fixable HIGH CVE")
     monkeypatch.setattr(image_security, "LinuxDocker", Docker)
-    monkeypatch.setattr(image_security, "git_output", lambda *args: "a" * 40)
+    monkeypatch.setattr(image_security, "git_output", lambda repo, *args: "" if args[0] == "status" else "a" * 40)
     monkeypatch.setattr(image_security, "archive_digest", lambda *args, **kwargs: "sha256:" + "c" * 64)
     monkeypatch.setattr(image_security.platform, "system", lambda: host.system)
     monkeypatch.setattr(image_security.platform, "machine", lambda: host.machine)
@@ -257,3 +266,167 @@ def test_archive_changed_during_scanning_cannot_receive_passing_evidence(scanner
                                       architectures=("amd64", "arm64"), security_dir=scanner.evidence)
     report = json.loads(next(scanner.evidence.glob("*-security.json")).read_text())
     assert report["status"] == "failed" and "changed during validation" in report["error"]
+
+
+@pytest.fixture
+def candidate_image(native_scanner):
+    from emule_workspace import release
+
+    case = native_scanner
+    version = case.manifest["version"]
+    stem = f"emulebb-rust-v{version}"
+    canonical = case.layout.output_root / f"{stem}-multiarch.oci.tar"
+    canonical.write_bytes(case.archive.read_bytes())
+    case.archive = canonical
+    case.manifest.update(archive=canonical.name, image=f"ghcr.io/emulebb/emulebb-rust:{version}")
+    case.release_dir = case.layout.output_root / "release"
+    case.release_dir.mkdir()
+    source = {name: {"commit": "a" * 40} for name in
+              ("emulebbRust", "emulebbBuild", "emulebbTooling", "emulebbMiniupnp", "emulebbLibpcpnatpmp")}
+    inputs = []
+    for arch in ("amd64", "arm64"):
+        asset = case.release_dir / f"{stem}-linux-{arch}.deb"
+        asset.write_bytes(f"{arch} GNU payload".encode())
+        sbom = asset.with_name(asset.name + ".sbom.spdx.json")
+        sbom.write_text('{"spdxVersion":"SPDX-2.3","packages":[]}')
+        native = {"schema": "emulebb.rust.package/2", "version": version, "sourceDirty": False,
+                  "origin": "github-actions", "workflow": case.manifest["workflow"], "source": source,
+                  "asset": asset.name, "sha256": release._sha256(asset), "sbom": sbom.name,
+                  "sbomSha256": release._sha256(sbom)}
+        native_path = asset.with_name(asset.name + ".manifest.json")
+        native_path.write_text(json.dumps(native))
+        inputs.append({key: native[key] for key in ("asset", "sha256", "sbom", "sbomSha256", "source", "origin", "workflow")})
+        inputs[-1]["manifestSha256"] = release._sha256(native_path)
+    case.manifest["inputs"] = inputs
+    case.archive.with_name(case.archive.name + ".manifest.json").write_text(json.dumps(case.manifest))
+    smoke_path = case.layout.output_root / "fresh-smoke.json"
+    smoke = json.loads(smoke_path.read_text())
+    smoke["image"] = case.manifest["image"]
+    identities = {item["platform"]: {"manifestDigest": item["imageManifestDigest"], "configDigest": item["imageConfigDigest"]}
+                  for item in smoke["platforms"]}
+    case.harness_root = case.layout.tests_repo_root
+    (case.harness_root / "scripts").mkdir(parents=True)
+    (case.harness_root / "scripts/smoke-rust-container.py").write_text(
+        "def oci_platform_identities(path):\n    return " + repr(identities) + "\n")
+    case.evidence_dir = case.layout.output_root / "native-proof"
+    case.evidence_dir.mkdir()
+    for arch, machine in (("amd64", "x86_64"), ("arm64", "aarch64")):
+        case.host.architecture, case.host.machine = arch, machine
+        selected = {**smoke, "platforms": [item for item in smoke["platforms"] if item["platform"] == "linux/" + arch]}
+        smoke_path.write_text(json.dumps(selected))
+        cpu_dir = case.layout.output_root / "native-validation" / arch
+        image_security.validate_image_ci(case.layout, archive=case.archive, image=case.manifest["image"],
+                                         architecture=arch, security_dir=cpu_dir, control_rust_root=case.layout.emulebb_rust_repo_root)
+        for path in cpu_dir.iterdir():
+            if path.suffix in {".json", ".txt"} or path.name.endswith("-SHA256SUMS"):
+                shutil.copy2(path, case.evidence_dir / path.name)
+    return case
+
+
+def assemble_candidate_image(case):
+    return image_security.assemble_image_security_ci(
+        output_root=case.layout.output_root, archive=case.archive, evidence_dir=case.evidence_dir,
+        release_dir=case.release_dir, version=case.manifest["version"], source_sha="a" * 40,
+        harness_root=case.harness_root, harness_sha="a" * 40, control_rust_root=case.layout.emulebb_rust_repo_root)
+
+
+def test_candidate_requires_and_retains_both_native_cpu_proofs(candidate_image):
+    from emule_workspace import release
+
+    case = candidate_image
+    summary = assemble_candidate_image(case)
+    result = json.loads(summary.read_text())
+    assert result["schema"] == "emulebb.rust.image-security-set/1" and result["status"] == "passed"
+    assert [item["platform"] for item in result["nativeEvidence"]] == ["linux/amd64", "linux/arm64"]
+    assert result["workflow"]["runAttempt"] == "3" and result["origin"] == "github-actions"
+    assert len(result["artifacts"]) == 14
+    assert not any(path.suffix == ".log" for path in case.release_dir.iterdir())
+    assert not (case.release_dir / case.archive.name).exists()
+    for item in result["artifacts"]:
+        assert release._sha256(case.release_dir / item["name"]) == item["sha256"]
+    sums = summary.with_name(summary.name.removesuffix(".json") + "-SHA256SUMS")
+    public = tuple(sorted((case.release_dir / item["name"] for item in result["artifacts"]), key=lambda path: path.name))
+    public = tuple(sorted((*public, summary), key=lambda path: path.name))
+    assert sums.read_bytes() == release._sha256sums_text(case.release_dir, public).encode("ascii")
+    before = summary.read_bytes()
+    with pytest.raises(RuntimeError, match="refuses to overwrite"):
+        assemble_candidate_image(case)
+    assert summary.read_bytes() == before
+
+
+@pytest.mark.parametrize("changed", ["payload", "sbom"])
+def test_candidate_rejects_rebuilt_native_inputs_even_with_valid_new_package_provenance(candidate_image, changed):
+    from emule_workspace import release
+
+    case = candidate_image
+    item = case.manifest["inputs"][0]
+    asset = case.release_dir / item["asset"]
+    path = asset if changed == "payload" else case.release_dir / item["sbom"]
+    path.write_bytes(b"new valid job output bytes")
+    native_path = asset.with_name(asset.name + ".manifest.json")
+    native = json.loads(native_path.read_text())
+    native["sha256" if changed == "payload" else "sbomSha256"] = release._sha256(path)
+    native["workflow"]["runAttempt"] = "3"
+    native_path.write_text(json.dumps(native))
+    with pytest.raises(RuntimeError, match="currently assembled package and SBOM bytes"):
+        assemble_candidate_image(case)
+
+
+def test_candidate_allows_later_native_metadata_when_exact_payloads_and_materials_match(candidate_image):
+    case = candidate_image
+    asset = case.release_dir / case.manifest["inputs"][0]["asset"]
+    path = asset.with_name(asset.name + ".manifest.json")
+    native = json.loads(path.read_text())
+    native["workflow"]["runAttempt"] = "3"
+    native["builtUtc"] = "2026-01-01T00:00:00Z"
+    path.write_text(json.dumps(native))
+    assert json.loads(assemble_candidate_image(case).read_text())["status"] == "passed"
+
+
+@pytest.mark.parametrize("fault", ["missing-arm", "duplicate-x64", "qemu", "wrong-harness", "foreign-run",
+                                  "bad-checksums", "unknown-file", "wrong-cpu-sbom", "bad-smoke-auth", "wrong-config"])
+def test_candidate_blocks_incomplete_foreign_or_misbound_native_evidence(candidate_image, fault):
+    from emule_workspace import release
+
+    case = candidate_image
+    prefix = f'emulebb-rust-v{case.manifest["version"]}-image-arm64'
+    report_path = case.evidence_dir / f"{prefix}-security.json"
+    report = json.loads(report_path.read_text())
+    cpu = report["platforms"][0]
+    if fault == "missing-arm":
+        report_path.unlink()
+    elif fault == "unknown-file":
+        (case.evidence_dir / "unexpected.txt").write_text("unlisted evidence")
+    elif fault == "bad-checksums":
+        (case.evidence_dir / f"{prefix}-security-SHA256SUMS").write_text("0" * 64 + "  ../outside\n")
+    else:
+        if fault == "duplicate-x64":
+            cpu["platform"] = "linux/amd64"
+        elif fault == "qemu":
+            cpu["runtimeExecution"] = "qemu"
+        elif fault == "wrong-harness":
+            report["harnessSha"] = "d" * 40
+        elif fault == "foreign-run":
+            report["workflow"]["runId"] = "124"
+        elif fault == "wrong-config":
+            cpu["imageConfigDigest"] = "sha256:" + "d" * 64
+        elif fault == "bad-smoke-auth":
+            path = case.evidence_dir / report["smoke"]
+            smoke = json.loads(path.read_text())
+            smoke["platforms"][0]["authenticatedStatus"] = 401
+            path.write_text(json.dumps(smoke))
+            report["smokeSha256"] = release._sha256(path)
+        else:
+            path = case.evidence_dir / cpu["sbom"]
+            sbom = json.loads(path.read_text())
+            sbom["packages"][0]["externalRefs"][0]["referenceLocator"] = "pkg:deb/ubuntu/libc6@2.43?arch=amd64"
+            path.write_text(json.dumps(sbom))
+            cpu["sbomSha256"] = release._sha256(path)
+        report_path.write_text(json.dumps(report))
+        checksums = case.evidence_dir / f"{prefix}-security-SHA256SUMS"
+        members = tuple(sorted((path for path in case.evidence_dir.iterdir()
+                                 if path.name.startswith(prefix) and path != checksums), key=lambda path: path.name))
+        release._write_sha256sums(checksums, members)
+    with pytest.raises(RuntimeError):
+        assemble_candidate_image(case)
+    assert not list(case.release_dir.glob("*-image-security.json"))

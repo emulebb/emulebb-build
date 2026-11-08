@@ -1862,6 +1862,34 @@ def validate_emulebb_rust_image_ci(*, archive: Path, image: str, architecture: s
     print(f"Native GitHub image validation passed: {evidence}")
 
 
+@main.command("assemble-emulebb-rust-image-evidence-ci")
+@click.option("--archive", type=click.Path(path_type=Path, exists=True, dir_okay=False), required=True)
+@click.option("--evidence-dir", type=click.Path(path_type=Path, exists=True, file_okay=False), required=True)
+@click.option("--release-dir", type=click.Path(path_type=Path, exists=True, file_okay=False), required=True)
+@click.option("--release-version", required=True)
+@click.option("--source-sha", required=True)
+@click.option("--harness-repo", type=click.Path(path_type=Path, exists=True, file_okay=False), required=True)
+@click.option("--harness-sha", required=True)
+@click.option("--control-rust-repo", type=click.Path(path_type=Path, exists=True, file_okay=False), required=True)
+def assemble_emulebb_rust_image_evidence_ci(*, archive: Path, evidence_dir: Path, release_dir: Path,
+                                           release_version: str, source_sha: str, harness_repo: Path,
+                                           harness_sha: str, control_rust_repo: Path) -> None:
+    """Bind both native image proofs to the exact candidate GNU packages."""
+    from .image_security import assemble_image_security_ci
+
+    output_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
+    if not output_value:
+        raise click.ClickException(f"{WORKSPACE_OUTPUT_ROOT_ENV} must be inherited for image evidence assembly.")
+    try:
+        evidence = assemble_image_security_ci(
+            output_root=Path(output_value), archive=archive, evidence_dir=evidence_dir, release_dir=release_dir,
+            version=release_version, source_sha=source_sha, harness_root=harness_repo,
+            harness_sha=harness_sha, control_rust_root=control_rust_repo)
+    except Exception as error:
+        raise click.ClickException(str(error)) from error
+    print(f"Native image evidence assembled: {evidence}")
+
+
 @main.group("vm-lab")
 def vm_lab() -> None:
     """Prepare local Hyper-V Windows VM test images."""

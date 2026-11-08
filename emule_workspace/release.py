@@ -1102,12 +1102,14 @@ def _build_emulebb_rust_manifest(
     }
 
 
+def _sha256sums_text(root: Path, paths: tuple[Path, ...]) -> str:
+    """Render the canonical inventory shared by writers and strict verifiers."""
+    return "\n".join(f"{_sha256(path)}  {path.relative_to(root).as_posix()}" for path in paths) + "\n"
+
+
 def _write_sha256sums(sums_path: Path, paths: tuple[Path, ...]) -> None:
     """Writes GNU-style SHA256SUMS for release assets."""
-
-    release_root = sums_path.parent
-    lines = [f"{_sha256(path)}  {path.relative_to(release_root).as_posix()}" for path in paths]
-    sums_path.write_text("\n".join(lines) + "\n", encoding="ascii", newline="\n")
+    sums_path.write_text(_sha256sums_text(sums_path.parent, paths), encoding="ascii", newline="\n")
 
 
 def create_release_package(
