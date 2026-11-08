@@ -51,6 +51,104 @@ def test_local_linux_does_not_claim_hosted_origin_or_disallow_cross_builds(monke
     assert linux_containers._hosted_linux_environment("arm64", "amd64") == []
 
 
+@pytest.mark.parametrize("prefix", [[], ["wsl.exe", "-d", "Ubuntu", "--"]])
+@pytest.mark.parametrize("uid,gid", [("1001", "1002"), ("0", "0")])
+def test_builder_uses_the_selected_linux_operators_identity(monkeypatch, prefix, uid, gid):
+    calls = []
+    def identity(command, **kwargs):
+        calls.append(command)
+        return (uid if command[-1] == "-u" else gid) + "\n"
+    monkeypatch.setattr(linux_containers.subprocess, "check_output", identity)
+    assert linux_containers._builder_user(SimpleNamespace(prefix=prefix)) == f"{uid}:{gid}"
+    assert calls == [[*prefix, "id", "-u"], [*prefix, "id", "-g"]]
+
+
+@pytest.mark.parametrize("value", ["", "-1", "1000:0", "1000\n0", "root", "01"])
+def test_builder_rejects_invalid_operator_identity_before_docker(monkeypatch, value):
+    monkeypatch.setattr(linux_containers.subprocess, "check_output", lambda *args, **kwargs: value)
+    with pytest.raises(RuntimeError, match="numeric operator UID and GID"):
+        linux_containers._builder_user(SimpleNamespace(prefix=[]))
+
+
+def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging_as_root(tmp_path, monkeypatch):
+    from emule_workspace import release
+
+    workspace, output = tmp_path / "workspace", tmp_path / "out"
+    rust, tooling = workspace / "repos/rust", workspace / "repos/tooling"
+    rust.mkdir(parents=True)
+    docs = tooling / "docs/products/emulebb-rust"
+    docs.mkdir(parents=True)
+    (docs / "RELEASE-SCOPE.md").write_text("release scope")
+    (rust / "Cargo.toml").write_text('[workspace.package]\nversion="0.1.0-beta.2"\n')
+    (rust / "rust-toolchain.toml").write_text('[toolchain]\nchannel="1.98.1"\n')
+    for name in ("Cargo.lock", "LICENSE", "emulebb-rust-settings.example.toml"):
+        (rust / name).write_text("fixture")
+    mini, pcp = workspace / "mini", workspace / "pcp"
+    (mini / "miniupnpc").mkdir(parents=True)
+    pcp.mkdir()
+    (mini / "miniupnpc/LICENSE").write_text("mini license")
+    (pcp / "COPYING").write_text("pcp license")
+    webui = output / "webui"
+    webui.mkdir(parents=True)
+    (webui / "index.html").write_text("SPA")
+    layout = SimpleNamespace(emule_workspace_root=workspace, output_root=output,
+                             emulebb_rust_repo_root=rust, tooling_repo_root=tooling)
+    target = "x86_64-unknown-linux-musl"
+    target_directory = output / "builds/rust/target-linux-musl-amd64-uid-1001-gid-1002"
+    target_mapping = "/output/" + target_directory.relative_to(output).as_posix()
+    calls, cargo_calls = [], []
+    class Docker:
+        prefix = []
+        def path(self, value):
+            assert value.is_dir()
+            return value.as_posix()
+        def run(self, *args, **kwargs):
+            calls.append(args)
+            if args[0] == "version":
+                return SimpleNamespace(stdout="amd64")
+            if args[0] == "build":
+                assert target_directory.is_dir()
+                assert (output / "cache/cargo-linux-registry/1001-1002").is_dir()
+                assert (output / "cache/rust-linux-home/1001-1002").is_dir()
+                assert "BUILD_UID=1001" in args and "BUILD_GID=1002" in args
+            if "tar" in args:
+                archive = output / args[args.index("-cf") + 1].removeprefix("/output/")
+                assert not archive.exists()
+                archive.write_bytes(b"archive")
+            return SimpleNamespace(stdout="Machine: Advanced Micro Devices X86-64\nno dynamic section")
+    def cargo(docker, arguments, *args, **kwargs):
+        cargo_calls.append(arguments)
+        assert f"CARGO_TARGET_DIR={target_mapping}" in arguments
+        if arguments[arguments.index("cargo") + 1] == "build":
+            binary = target_directory / target / "release/emulebb-rust"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"ELF fixture")
+    def sbom(**kwargs):
+        (kwargs["package_root"] / "SBOM.spdx.json").write_text('{"spdxVersion":"SPDX-2.3"}')
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setattr(linux_containers, "_builder_user", lambda docker: "1001:1002")
+    monkeypatch.setattr(linux_containers, "run_owned_container", cargo)
+    monkeypatch.setattr(release, "_emulebb_rust_package_provenance", lambda *args: {
+        "source": {"emulebbRust": {"commit": "a" * 40}}})
+    monkeypatch.setattr(release, "_assert_emulebb_rust_package_provenance", lambda *args: None)
+    monkeypatch.setattr(release, "_emulebb_rust_native_source_roots", lambda *args: (mini, pcp))
+    monkeypatch.setattr(release, "_write_emulebb_rust_linux_sbom", sbom)
+    old_archive = output / "packages/rust-linux/0.1.0-beta.2/musl-amd64/emulebb-rust-v0.1.0-beta.2-linux-amd64-musl.tar.zst"
+    old_archive.parent.mkdir(parents=True)
+    old_archive.write_bytes(b"previous root-owned archive")
+    archive = linux_containers._build_linux_artifacts(layout, Docker(), libc="musl", architecture="amd64",
+                                                      webui_dist=webui, release_version=None, test_scope="portable")
+    assert cargo_calls
+    for arguments in [*cargo_calls, *(args for args in calls if args[0] == "run")]:
+        assert arguments[arguments.index("--user") + 1] == "1001:1002"
+        image_index = next(index for index, value in enumerate(arguments) if value.startswith("local/emulebb-rust-builder:"))
+        assert arguments.index("--user") < image_index
+        assert arguments[arguments.index("--cap-drop") + 1] == "ALL"
+    manifest = json.loads(archive.with_name(archive.name + ".manifest.json").read_text())
+    assert manifest["buildUser"] == "1001:1002"
+    assert manifest["pathMapping"]["cargoTarget"] == target_mapping
+
+
 @pytest.mark.parametrize("producer_run", ["123", "999"])
 def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypatch, tmp_path, hosted_context, producer_run):
     output = tmp_path / "out"
@@ -219,16 +317,18 @@ def test_gnu_deb_uses_verified_linux_payload_and_private_native_modes(tmp_path, 
     layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=rust, tooling_repo_root=tooling)
     version = "0.1.0-beta.2"
     deb = root / f"emulebb-rust-v{version}-linux-arm64.deb"
+    deb.write_bytes(b"previous root-owned DEB")
     calls = []
     def package(docker, arguments, log, **kwargs):
         calls.append(arguments)
+        assert not deb.exists()
         deb.write_bytes(b"DEB fixture")
     def sbom(**kwargs):
         (kwargs["package_root"] / "SBOM.spdx.json").write_text('{"spdxVersion":"SPDX-2.3"}')
     monkeypatch.setattr("emule_workspace.linux_containers.run_owned_container", package)
     monkeypatch.setattr(release, "_write_emulebb_rust_linux_sbom", sbom)
     files = _package_gnu_deb(layout, object(), root=root, stage=stage, version=version,
-                             architecture="arm64", build_arch="amd64", builder="cross-builder",
+                             architecture="arm64", build_arch="amd64", builder="cross-builder", user="1000:1000",
                              mounts=[], manifest={"sourceDirty": False, "target": "aarch64-unknown-linux-gnu"},
                              log_root=root)
     assert (root / "deb/usr/lib/emulebb-rust/emulebb-rust").read_bytes() == (stage / "emulebb-rust").read_bytes()
@@ -236,6 +336,8 @@ def test_gnu_deb_uses_verified_linux_payload_and_private_native_modes(tmp_path, 
     control = (root / "deb/DEBIAN/control").read_text()
     assert "Architecture: arm64" in control and "Depends: libc6 (>= 2.36)" in control
     assert "--tmpfs" in calls[0]
+    assert calls[0][calls[0].index("--user") + 1] == "1000:1000"
+    assert "uid=1000,gid=1000,mode=0700" in calls[0][calls[0].index("--tmpfs") + 1]
     assert "--root-owner-group" in calls[0][-1] and "chmod 0644" in calls[0][-1]
     manifest = json.loads(files[1].read_text())
     assert manifest["sha256"] == release._sha256(deb)
