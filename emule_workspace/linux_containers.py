@@ -274,6 +274,10 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) 
                    "--tmpfs", scratch_mount,
                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "bridge", *mounts,
                    "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                   # WHY: Git must inspect this exact read-only source mount even
+                   # when a root host runs the smoke as the unprivileged UID.
+                   "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory",
+                   "--env", "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-build-tests",
                    "--env", f"TMPDIR=/output/{relative}/tmp", *hosted_environment, runtime,
                    "python3", "-B", "/workspace/repos/emulebb-build-tests/scripts/smoke-rust-release-package.py",
                    "--release-dir", "/output/" + archive.parent.relative_to(output).as_posix(),

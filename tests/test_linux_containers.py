@@ -150,7 +150,8 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
 
 
 @pytest.mark.parametrize("producer_run", ["123", "999"])
-def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypatch, tmp_path, hosted_context, producer_run):
+@pytest.mark.parametrize("host_uid", ["0", "1000"])
+def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypatch, tmp_path, hosted_context, producer_run, host_uid):
     output = tmp_path / "out"
     output.mkdir()
     archive = output / "emulebb-rust-v0.1.0-beta.2-linux-amd64-musl.tar.zst"
@@ -177,7 +178,7 @@ def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypat
             return SimpleNamespace(stdout="amd64" if args[0] == "version" else "")
     launches = []
     monkeypatch.setattr(linux_containers, "LinuxDocker", Docker)
-    monkeypatch.setattr(linux_containers.subprocess, "check_output", lambda *args, **kwargs: "1000")
+    monkeypatch.setattr(linux_containers.subprocess, "check_output", lambda *args, **kwargs: host_uid)
     monkeypatch.setattr(linux_containers, "run_owned_container", lambda docker, arguments, *args, **kwargs: launches.append(arguments))
     if producer_run != "123":
         with pytest.raises(RuntimeError, match="this GitHub run and workflow"):
@@ -188,6 +189,10 @@ def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypat
     assert calls[0][0] == "version"
     command = launches[0]
     image_index = command.index("local/emulebb-rust-runtime:musl-amd64")
+    assert command[command.index("--user") + 1] == ("65534:65534" if host_uid == "0" else "1000:1000")
+    for setting in ("GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory",
+                    "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-build-tests"):
+        assert command.index(setting) < image_index
     assert all(command.index(f"{name}={value}") < image_index for name, value in hosted_context.items())
     assert not any("private-" in argument for argument in command)
 
