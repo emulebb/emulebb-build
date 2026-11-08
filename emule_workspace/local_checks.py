@@ -162,13 +162,18 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
                                     "--basetemp", str(output / "tmp" / "local-check-harness-pytest")]))
     linux_owners = {
         "emulebb-build": ("emule_workspace/linux_containers.py", "emule_workspace/linux_validation.py",
-                          "emule_workspace/rust_images.py", "emule_workspace/image_security.py",
                           "emule_workspace/release_assets/rust_linux/"),
-        "emulebb-build-tests": ("scripts/smoke-rust-release-package.py", "scripts/smoke-rust-container.py"),
+        "emulebb-build-tests": ("scripts/smoke-rust-release-package.py",),
     }
-    if stage == "push" and any(path.startswith(linux_owners.get(repo.name, ())) for path in paths):
+    image_owners = {
+        "emulebb-build": ("emule_workspace/rust_images.py", "emule_workspace/image_security.py"),
+        "emulebb-build-tests": ("scripts/smoke-rust-container.py",),
+    }
+    full_linux = any(path.startswith(linux_owners.get(repo.name, ())) for path in paths)
+    image_only = any(path.startswith(image_owners.get(repo.name, ())) for path in paths)
+    if stage == "push" and (full_linux or image_only):
         commands.append((root / "repos/emulebb-build", [py, "-B", "-m", "emule_workspace",
-                         "validate-emulebb-rust-linux", "--scope", "full"]))
+                         "validate-emulebb-rust-linux", "--scope", "full" if full_linux else "image"]))
     if repo.name == "emulebb-tooling":
         if stage == "push":
             if implementation:
