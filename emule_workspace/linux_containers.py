@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import runpy
 from pathlib import Path
 import subprocess
@@ -101,6 +102,15 @@ def linux_quality_plan(rust_root: Path, target: str) -> list[tuple[str, list[str
         arguments[index:index] = ["--target", target]
         plan.append((label, arguments))
     return plan
+
+
+def _builder_user(docker) -> str:
+    """Use the actual Linux operator identity without inheriting host credentials."""
+    values = [subprocess.check_output([*docker.prefix, "id", option], text=True, timeout=30).strip()
+              for option in ("-u", "-g")]
+    if any(re.fullmatch(r"0|[1-9][0-9]*", value) is None for value in values):
+        raise RuntimeError("Linux builder requires numeric operator UID and GID")
+    return ":".join(values)
 
 
 def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int, append: bool = False) -> None:
@@ -307,17 +317,28 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     base, build_arch, cross = build_configuration(libc, architecture, engine_arch)
     test_plan = linux_test_plan(test_scope, cross=cross, rust_root=rust)
     quality_plan = linux_quality_plan(rust, target) if test_scope == "full" else []
-    builder = f"local/emulebb-rust-builder:{libc}-{architecture}"
+    user = _builder_user(docker)
+    uid, gid = user.split(":")
+    owner = f"{uid}-{gid}"
+    target_directory = output / "builds/rust" / f"target-linux-{libc}-{architecture}-uid-{uid}-gid-{gid}"
+    cache = output / "cache/cargo-linux-registry" / owner
+    home = output / "cache/rust-linux-home" / owner
+    # WHY: Docker must not create parent directories as root. Separate stable
+    # user namespaces also avoid changing permissions on older root-owned caches.
+    for directory in (target_directory, cache, home):
+        if not directory.resolve().is_relative_to(output):
+            raise RuntimeError("Linux builder directories must remain below the operator output root")
+        directory.mkdir(parents=True, exist_ok=True)
+    builder = f"local/emulebb-rust-builder:{libc}-{architecture}-{owner}"
     context = Path(__file__).parent / "release_assets" / "rust_linux"
     docker.run("build", "--platform", f"linux/{build_arch}", "--build-arg", f"BASE_IMAGE={base}",
                "--build-arg", f"CROSS_TARGET={target if cross else ''}",
+               "--build-arg", f"BUILD_UID={uid}", "--build-arg", f"BUILD_GID={gid}",
                "--tag", builder, docker.path(context))
     root = output / "packages" / "rust-linux" / version / f"{libc}-{architecture}"
     root.mkdir(parents=True, exist_ok=True)
     log_root = output / "reports" / "rust-linux" / f"{libc}-{architecture}" / uuid4().hex
     log_root.mkdir(parents=True, exist_ok=True)
-    cache = output / "cache" / "cargo-linux-registry"
-    cache.mkdir(parents=True, exist_ok=True)
     miniupnp, pcpnatpmp = release._emulebb_rust_native_source_roots(layout)
     mounts = [
         "--mount", f"type=bind,source={docker.path(rust)},target=/source,readonly",
@@ -326,9 +347,10 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         "--mount", f"type=bind,source={docker.path(output)},target=/output",
         "--mount", f"type=bind,source={docker.path(cache)},target=/usr/local/cargo/registry",
     ]
-    target_root = f"/output/builds/rust/target-linux-{libc}-{architecture}"
+    target_root = "/output/" + target_directory.relative_to(output).as_posix()
     environment = [*hosted_environment, "--env", f"CARGO_TARGET_DIR={target_root}", "--env", "MINIUPNP_ROOT=/native/miniupnp",
-                   "--env", "PCPNATPMP_ROOT=/native/pcpnatpmp", "--env", "CARGO_BUILD_JOBS=4"]
+                   "--env", "PCPNATPMP_ROOT=/native/pcpnatpmp", "--env", "CARGO_BUILD_JOBS=4",
+                   "--env", "HOME=/output/" + home.relative_to(output).as_posix()]
     source_revision = provenance["source"]["emulebbRust"]["commit"]
     hosted = os.environ.get("GITHUB_ACTIONS") == "true"
     channel = os.environ.get("RELEASE_CHANNEL", "candidate") if hosted else "development"
@@ -342,7 +364,8 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                             "--env", f"AR_{target.replace('-', '_')}={compiler}-ar"])
         if libc == "gnu":
             environment.extend(["--env", "QEMU_LD_PREFIX=/usr/aarch64-linux-gnu"])
-    cargo = ["--rm", "--platform", f"linux/{build_arch}", *mounts, *environment,
+    user_options = ["--user", user, "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
+    cargo = ["--rm", "--platform", f"linux/{build_arch}", *user_options, *mounts, *environment,
              "--workdir", "/source", builder, "cargo"]
     for label, arguments in quality_plan:
         print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
@@ -356,13 +379,13 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     for label, arguments in test_plan:
         print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
         run_owned_container(docker, [*tests[1:], *arguments], log_root / f"{label}.log", timeout=3600)
-    binary = output / "builds" / "rust" / f"target-linux-{libc}-{architecture}" / target / "release" / "emulebb-rust"
+    binary = target_directory / target / "release" / "emulebb-rust"
     audit = docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}", *mounts,
-                       builder, "readelf", "-h", "-l", "-d", f"{target_root}/{target}/release/emulebb-rust", capture=True).stdout
+                       *user_options, *environment, builder, "readelf", "-h", "-l", "-d", f"{target_root}/{target}/release/emulebb-rust", capture=True).stdout
     (log_root / "elf.txt").write_text(audit, encoding="utf-8")
     validate_elf_audit(audit, libc=libc, architecture=architecture)
     tools = docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}",
-                       builder, "sh", "-ec", "rustc --version; cc --version; "
+                       *user_options, *mounts, *environment, builder, "sh", "-ec", "rustc --version; cc --version; "
                        "if command -v apk >/dev/null; then apk info -v; else dpkg-query -W; fi", capture=True).stdout
     (log_root / "toolchain.txt").write_text(tools, encoding="utf-8")
     stage = root / "staging" / "emulebb-rust"
@@ -397,9 +420,14 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                                          asset_name=archive.name, version=version, arch=f"{architecture}-{libc}")
     relative = root.relative_to(output).as_posix()
     docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}", *mounts,
-               builder, "chmod", "755", f"/output/{relative}/staging/emulebb-rust/emulebb-rust")
+               *user_options, builder, "chmod", "755", f"/output/{relative}/staging/emulebb-rust/emulebb-rust")
+    # Replace through the host owner: an earlier root-run Docker build may have
+    # left an archive that the operator UID cannot truncate through DrvFS.
+    if archive.is_symlink() or not archive.resolve().is_relative_to(output):
+        raise RuntimeError("Linux archive must be a regular output path")
+    archive.unlink(missing_ok=True)
     docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}", *mounts,
-               builder, "tar", "--zstd", "--sort=name", "--owner=0", "--group=0", "--numeric-owner",
+               *user_options, builder, "tar", "--zstd", "--sort=name", "--owner=0", "--group=0", "--numeric-owner",
                "-cf", f"/output/{relative}/{archive.name}",
                "-C", f"/output/{relative}/staging", "emulebb-rust")
     sbom = root / f"{stem}.sbom.spdx.json"
@@ -410,7 +438,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                 "platform": f"linux-{architecture}-{libc}",
                 "asset": archive.name, "sha256": release._sha256(archive), "sbom": sbom.name,
                 "sbomSha256": release._sha256(sbom), "target": target, "libc": libc,
-                "builderBase": base, "elfAudit": audit,
+                "builderBase": base, "buildUser": user, "elfAudit": audit,
                 "channel": channel,
                 "buildExecution": "cross" if cross else "native", "libraryTestExecution": "qemu" if cross else "native",
                 "testCompilation": "workspace" if test_scope == "full" else "selected-libraries",
@@ -427,7 +455,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     if libc == "gnu":
         deb_files = _package_gnu_deb(layout, docker, root=root, stage=stage, version=version,
                                      architecture=architecture, build_arch=build_arch,
-                                     builder=builder, mounts=mounts, manifest=manifest, log_root=log_root)
+                                     builder=builder, user=user, mounts=mounts, manifest=manifest, log_root=log_root)
     release._assert_emulebb_rust_package_provenance(layout, rust, provenance)
     release._write_sha256sums(root / "SHA256SUMS", (archive, manifest_path, sbom, *deb_files))
     print(f"Linux {architecture}/{libc} package: {archive}")
@@ -435,7 +463,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
 
 
 def _package_gnu_deb(layout, docker, *, root: Path, stage: Path, version: str, architecture: str,
-                     build_arch: str, builder: str, mounts: list[str], manifest: dict, log_root: Path) -> tuple[Path, ...]:
+                     build_arch: str, builder: str, user: str, mounts: list[str], manifest: dict, log_root: Path) -> tuple[Path, ...]:
     """Package the exact GNU payload without touching the canonical Windows stage."""
     from . import release
     deb_root = root / "deb"
@@ -475,8 +503,13 @@ def _package_gnu_deb(layout, docker, *, root: Path, stage: Path, version: str, a
         f"dpkg-deb --build --root-owner-group {q(native)} {q(destination)}",
     ])
     # DrvFS modes must not enter an installable Linux artifact.
-    run_owned_container(docker, ["--rm", "--platform", f"linux/{build_arch}", *mounts,
-                                 "--tmpfs", f"{native}:rw,exec,nosuid,nodev,size=256m,mode=0700",
+    if deb.is_symlink() or not deb.resolve().is_relative_to(layout.output_root.resolve()):
+        raise RuntimeError("GNU DEB must be a regular output path")
+    deb.unlink(missing_ok=True)
+    uid, gid = user.split(":")
+    run_owned_container(docker, ["--rm", "--platform", f"linux/{build_arch}", "--user", user,
+                                 "--cap-drop", "ALL", "--security-opt", "no-new-privileges", *mounts,
+                                 "--tmpfs", f"{native}:rw,exec,nosuid,nodev,size=256m,uid={uid},gid={gid},mode=0700",
                                  builder, "sh", "-ec", script], log_root / "deb.log", timeout=300)
     deb_manifest = {**manifest, "asset": deb.name, "sha256": release._sha256(deb),
                     "sbom": sbom.name, "sbomSha256": release._sha256(sbom),
