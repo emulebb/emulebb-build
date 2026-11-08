@@ -11,6 +11,97 @@ from emule_workspace.linux_containers import build_configuration, RUST_IMAGES, M
 from emule_workspace.linux_containers import run_owned_container
 from emule_workspace.linux_containers import _package_gnu_deb
 from emule_workspace.linux_containers import linux_test_plan, linux_quality_plan
+from emule_workspace import linux_containers
+
+
+@pytest.fixture
+def hosted_context(monkeypatch):
+    values = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "example/project",
+              "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_WORKFLOW_SHA": "c" * 40}
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("GITHUB_TOKEN", "private-host-token")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "private-oidc-token")
+    return values
+
+
+@pytest.mark.parametrize("machine,architecture", [("x86_64", "amd64"), ("aarch64", "arm64")])
+def test_hosted_linux_context_is_native_and_forwards_only_public_fields(monkeypatch, hosted_context, machine, architecture):
+    monkeypatch.setattr(linux_containers.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linux_containers.platform, "machine", lambda: machine)
+    arguments = linux_containers._hosted_linux_environment(architecture, architecture)
+    assert arguments[::2] == ["--env"] * len(hosted_context)
+    assert set(arguments[1::2]) == {f"{name}={value}" for name, value in hosted_context.items()}
+    assert not any("private-" in argument for argument in arguments)
+
+
+@pytest.mark.parametrize("system,machine,target,engine", [
+    ("Windows", "x86_64", "amd64", "amd64"), ("Linux", "unknown", "amd64", "amd64"),
+    ("Linux", "x86_64", "arm64", "amd64"), ("Linux", "aarch64", "arm64", "amd64"),
+])
+def test_hosted_linux_rejects_emulation_cross_builds_and_remote_cpu_mismatch(monkeypatch, hosted_context, system, machine, target, engine):
+    monkeypatch.setattr(linux_containers.platform, "system", lambda: system)
+    monkeypatch.setattr(linux_containers.platform, "machine", lambda: machine)
+    with pytest.raises(RuntimeError, match="matching native runner, Docker, and target CPUs"):
+        linux_containers._hosted_linux_environment(target, engine)
+
+
+def test_local_linux_does_not_claim_hosted_origin_or_disallow_cross_builds(monkeypatch):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    assert linux_containers._hosted_linux_environment("arm64", "amd64") == []
+
+
+@pytest.mark.parametrize("producer_run", ["123", "999"])
+def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypatch, tmp_path, hosted_context, producer_run):
+    output = tmp_path / "out"
+    output.mkdir()
+    archive = output / "emulebb-rust-v0.1.0-beta.2-linux-amd64-musl.tar.zst"
+    archive.write_bytes(b"synthetic package")
+    workflow = {"repository": "example/project", "runId": producer_run, "runAttempt": "1", "workflowSha": "c" * 40}
+    manifest = {"origin": "github-actions", "workflow": workflow, "sourceDirty": False,
+                "source": {"emulebbRust": {"commit": "a" * 40}}, "sha256": "b" * 64}
+    archive.with_name(archive.name + ".manifest.json").write_text(json.dumps(manifest))
+    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=tmp_path / "rust", tests_repo_root=tmp_path / "tests")
+    monkeypatch.setattr(linux_containers, "git_output", lambda repo, *args: "a" * 40 if args == ("rev-parse", "HEAD") else "")
+    monkeypatch.setattr(linux_containers.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(linux_containers.platform, "machine", lambda: "x86_64")
+    calls = []
+    class Docker:
+        prefix = []
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def path(self, value):
+            return value.as_posix()
+        def run(self, *args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(stdout="amd64" if args[0] == "version" else "")
+    launches = []
+    monkeypatch.setattr(linux_containers, "LinuxDocker", Docker)
+    monkeypatch.setattr(linux_containers.subprocess, "check_output", lambda *args, **kwargs: "1000")
+    monkeypatch.setattr(linux_containers, "run_owned_container", lambda docker, arguments, *args, **kwargs: launches.append(arguments))
+    if producer_run != "123":
+        with pytest.raises(RuntimeError, match="this GitHub run and workflow"):
+            linux_containers.smoke_linux_archive(layout, archive=archive, libc="musl", architecture="amd64")
+        assert not calls and not launches
+        return
+    linux_containers.smoke_linux_archive(layout, archive=archive, libc="musl", architecture="amd64")
+    assert calls[0][0] == "version"
+    command = launches[0]
+    image_index = command.index("local/emulebb-rust-runtime:musl-amd64")
+    assert all(command.index(f"{name}={value}") < image_index for name, value in hosted_context.items())
+    assert not any("private-" in argument for argument in command)
+
+
+def test_ci_linux_entrypoint_rejects_local_invocation(monkeypatch):
+    from click.testing import CliRunner
+    from emule_workspace.cli import main
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    result = CliRunner().invoke(main, ["package-emulebb-rust-linux-ci", "--libc", "musl",
+                                      "--architecture", "amd64", "--release-version", "0.1.0-beta.2"])
+    assert result.exit_code != 0
+    assert "requires GitHub Actions" in result.output
 
 
 def test_full_native_suite_uses_candidate_definitions_and_cross_compiles_both(tmp_path):
