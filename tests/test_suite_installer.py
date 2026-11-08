@@ -19,6 +19,16 @@ INSTALLER = Path("emule_workspace/release_assets/emulebb/scripts/Install-eMuleBB
 BOOTSTRAPPER = Path("emule_workspace/release_assets/emulebb/scripts/Bootstrap-eMuleBBSuite.ps1")
 
 
+def test_bootstrap_fixture_rejects_unconfigured_http_without_network() -> None:
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    command = suite_install_fixtures.github_http_fixture() + "\nInvoke-WebRequest -Uri 'https://example.invalid/unconfigured'"
+    result = subprocess.run([powershell, "-NoProfile", "-Command", command], text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    assert result.returncode != 0 and "Unexpected fixture HTTP request" in result.stdout
+
+
 def _write_manifest(path: Path, zip_path: Path) -> None:
     path.write_text(
         json.dumps({"sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest()}) + "\n",
@@ -1240,10 +1250,10 @@ def test_suite_bootstrapper_validates_explicit_suite_scripts_bundle_version(allo
     repo_root = Path.cwd()
     bootstrapper_path = (repo_root / BOOTSTRAPPER).resolve()
     override_arg = "-AllowSuiteScriptsVersionMismatch" if allow_mismatch else ""
-    command = rf"""
-function Invoke-RestMethod {{
+    command = suite_install_fixtures.github_http_fixture() + rf"""
+function Get-FixtureGitHubReleases {{
     param([string]$Uri, [hashtable]$Headers)
-    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases/tags/emulebb-v0.7.3-rc.2') {{
+    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases?per_page=100') {{
         throw "Unexpected release URI: $Uri"
     }}
     return [pscustomobject]@{{
@@ -1303,10 +1313,10 @@ function Invoke-RestMethod {{
 def test_suite_bootstrapper_resolves_nightly_release_assets(version_arg: str) -> None:
     repo_root = Path.cwd()
     bootstrapper_path = (repo_root / BOOTSTRAPPER).resolve()
-    command = rf"""
-function Invoke-RestMethod {{
+    command = suite_install_fixtures.github_http_fixture() + rf"""
+function Get-FixtureGitHubReleases {{
     param([string]$Uri, [hashtable]$Headers)
-    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases/tags/emulebb-nightly-20260524-ae562c1') {{
+    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases?per_page=100') {{
         throw "Unexpected release URI: $Uri"
     }}
     return [pscustomobject]@{{
@@ -1358,12 +1368,12 @@ function Invoke-RestMethod {{
 def test_suite_bootstrapper_auto_detects_platform_when_omitted() -> None:
     repo_root = Path.cwd()
     bootstrapper_path = (repo_root / BOOTSTRAPPER).resolve()
-    command = rf"""
+    command = suite_install_fixtures.github_http_fixture() + rf"""
 $env:PROCESSOR_ARCHITECTURE = 'AMD64'
 Remove-Item Env:\PROCESSOR_ARCHITEW6432 -ErrorAction SilentlyContinue
-function Invoke-RestMethod {{
+function Get-FixtureGitHubReleases {{
     param([string]$Uri, [hashtable]$Headers)
-    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases/tags/emulebb-nightly-20260524-ae562c1') {{
+    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases?per_page=100') {{
         throw "Unexpected release URI: $Uri"
     }}
     return [pscustomobject]@{{
@@ -1402,10 +1412,10 @@ function Invoke-RestMethod {{
 def test_suite_bootstrapper_prefers_release_candidate_over_nightly_by_default() -> None:
     repo_root = Path.cwd()
     bootstrapper_path = (repo_root / BOOTSTRAPPER).resolve()
-    command = rf"""
-function Invoke-RestMethod {{
+    command = suite_install_fixtures.github_http_fixture() + rf"""
+function Get-FixtureGitHubReleases {{
     param([string]$Uri, [hashtable]$Headers)
-    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases') {{
+    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases?per_page=100') {{
         throw "Unexpected release URI: $Uri"
     }}
     return @(
@@ -1455,10 +1465,10 @@ def test_suite_bootstrapper_requires_opt_in_for_nightly_only_releases() -> None:
     bootstrapper_path = (repo_root / BOOTSTRAPPER).resolve()
     powershell = shutil.which("powershell")
     assert powershell is not None
-    command = rf"""
-function Invoke-RestMethod {{
+    command = suite_install_fixtures.github_http_fixture() + rf"""
+function Get-FixtureGitHubReleases {{
     param([string]$Uri, [hashtable]$Headers)
-    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases') {{
+    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases?per_page=100') {{
         throw "Unexpected release URI: $Uri"
     }}
     return @(
@@ -1525,10 +1535,10 @@ param(
     suite_install_fixtures.write_manifest(manifest, package_zip)
     bootstrapper_path = (repo_root / BOOTSTRAPPER).resolve()
     disable_arg = "-NoSuiteScriptsBundle" if disable_bundle else ""
-    command = rf"""
-function Invoke-RestMethod {{
+    command = suite_install_fixtures.github_http_fixture() + rf"""
+function Get-FixtureGitHubReleases {{
     param([string]$Uri, [hashtable]$Headers)
-    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases/tags/emulebb-nightly-20260604-5169162') {{
+    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases?per_page=100') {{
         throw "Unexpected release URI: $Uri"
     }}
     return [pscustomobject]@{{
@@ -1563,7 +1573,7 @@ function Invoke-RestMethod {{
         )
     }}
 }}
-function Invoke-WebRequest {{
+function Copy-FixtureDownload {{
     param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile, [hashtable]$Headers)
     if ($Uri.EndsWith('emulebb-{version}-x64.manifest.json')) {{
         Copy-Item -Force -LiteralPath '{manifest.as_posix()}' -Destination $OutFile
@@ -1660,10 +1670,10 @@ param(
     automation_manifest_payload = json.loads(automation_manifest.read_text(encoding="utf-8"))
 
     bootstrapper_path = (repo_root / BOOTSTRAPPER).resolve()
-    command = rf"""
-function Invoke-RestMethod {{
+    command = suite_install_fixtures.github_http_fixture() + rf"""
+function Get-FixtureGitHubReleases {{
     param([string]$Uri, [hashtable]$Headers)
-    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases/tags/emulebb-nightly-20260604-5169162') {{
+    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases?per_page=100') {{
         throw "Unexpected release URI: $Uri"
     }}
     return [pscustomobject]@{{
@@ -1698,7 +1708,7 @@ function Invoke-RestMethod {{
         )
     }}
 }}
-function Invoke-WebRequest {{
+function Copy-FixtureDownload {{
     param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile, [hashtable]$Headers)
     if ($Uri.EndsWith('{manifest.name}')) {{
         Copy-Item -Force -LiteralPath '{manifest.as_posix()}' -Destination $OutFile
@@ -1749,10 +1759,10 @@ def test_suite_bootstrapper_rejects_incomplete_release_suite_scripts_bundle(miss
                 browser_download_url = 'https://example.invalid/suite-scripts-0.7.3-nightly.20260604.5169162.manifest.json'
             }""")
     suite_asset_text = ",\n".join(suite_assets)
-    command = rf"""
-function Invoke-RestMethod {{
+    command = suite_install_fixtures.github_http_fixture() + rf"""
+function Get-FixtureGitHubReleases {{
     param([string]$Uri, [hashtable]$Headers)
-    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases/tags/emulebb-nightly-20260604-5169162') {{
+    if ($Uri -ne 'https://api.github.com/repos/emulebb/emulebb/releases?per_page=100') {{
         throw "Unexpected release URI: $Uri"
     }}
     return [pscustomobject]@{{
@@ -1897,11 +1907,11 @@ param(
     suite_install_fixtures.write_manifest(suite_scripts_manifest, suite_scripts_zip)
     _write_automation_examples_component(release_root, "0.7.3-local.20260604")
     bootstrapper_path = (repo_root / BOOTSTRAPPER).resolve()
-    command = rf"""
-function Invoke-RestMethod {{
+    command = suite_install_fixtures.github_http_fixture() + rf"""
+function Get-FixtureGitHubReleases {{
     throw 'GitHub API should not be called for local package overrides.'
 }}
-function Invoke-WebRequest {{
+function Copy-FixtureDownload {{
     throw 'Downloads should not be used for local package overrides.'
 }}
 & '{bootstrapper_path}' -Bundle Core -NoStart -EmulebbPackageZip '{package_zip.as_posix()}' -EmulebbPackageManifest '{package_manifest.as_posix()}'

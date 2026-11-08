@@ -4,6 +4,11 @@ from pathlib import Path
 
 
 ALLOWED_WORKSPACE_STATE_PATHS = {
+    # The audit rejects VHDs under the retired state root; it never writes there.
+    (
+        "emule_workspace/windows_vm_lab.py",
+        'workspace_state_root = (layout.workspace_root / "state").resolve()',
+    ),
     (
         "emule_workspace/cleanup.py",
         'root = layout.workspace_root / "state" / LEGACY_LIVE_E2E_ARTIFACTS_DIR_NAME',
