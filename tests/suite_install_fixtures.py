@@ -11,6 +11,29 @@ from pathlib import Path
 from emule_workspace.release import EMULEBB_CONFIG_ASSET_PATHS, EMULEBB_RUNTIME_SCRIPT_PATHS
 
 
+def github_http_fixture() -> str:
+    """Intercept the current list/JSON transport and reject unconfigured HTTP.
+
+    Each scenario supplies Get-FixtureGitHubReleases and, when needed,
+    Copy-FixtureDownload. Neither path can fall through to real network I/O.
+    """
+    return r'''
+function Invoke-WebRequest {
+    param([string]$Uri, [hashtable]$Headers, [string]$OutFile,
+          [switch]$UseBasicParsing, [string]$ErrorAction)
+    if ($Uri -eq 'https://api.github.com/repos/emulebb/emulebb/releases?per_page=100') {
+        $entries = @(Get-FixtureGitHubReleases -Uri $Uri -Headers $Headers)
+        return [pscustomobject]@{ Content = (ConvertTo-Json -InputObject $entries -Depth 32) }
+    }
+    if ($OutFile -and (Get-Command Copy-FixtureDownload -ErrorAction SilentlyContinue)) {
+        Copy-FixtureDownload -Uri $Uri -Headers $Headers -OutFile $OutFile
+        return
+    }
+    throw "Unexpected fixture HTTP request: $Uri"
+}
+'''
+
+
 @dataclass(frozen=True)
 class LocalPackageArtifacts:
     release_root: Path
