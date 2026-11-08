@@ -533,6 +533,7 @@ def build_emulebb_rust_client(
     log_path = session.log_directory / f"client-emulebb-rust-build-{flavor}-{session.options.platform.lower()}.log"
     cargo_arguments = [
         "build",
+        "--locked",
         "-p",
         "emulebb-daemon",
         "--bin",
