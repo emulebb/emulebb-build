@@ -43,7 +43,12 @@ def _fetch_inputs(inputs: dict, cache_name: str, schema: str) -> Path:
         target = cache / item["sha256"] / filename
         if target.is_symlink() or not target.resolve().is_relative_to(cache.resolve()):
             raise RuntimeError("Android input cache cannot use external paths or symlink archives")
-        download_verified(item["url"], target, item["sha256"])
+        try:
+            download_verified(item["url"], target, item["sha256"])
+        except (OSError, RuntimeError) as error:
+            # WHY: hosted CDN failures otherwise lose the selected asset behind
+            # a generic HTTP status. Keep the reviewed role and host diagnosable.
+            raise RuntimeError(f"Android input {role} from {urlsplit(item['url']).hostname} failed: {error}") from error
         # WHY: the receipt describes actual cache bytes, including cache hits;
         # it is never an SDK installation or release-provenance claim.
         if not target.is_file() or sha256(target) != item["sha256"]:
