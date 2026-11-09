@@ -103,6 +103,24 @@ def test_staged_whitespace_is_rejected_and_delete_only_push_is_allowed(repo):
     local_checks.check_whitespace(repo, "push", "origin", f"(delete) {'0'*40} refs/heads/old {'1'*40}\n")
 
 
+@pytest.mark.parametrize("path", ["emule_workspace/android_install.py", "emule_workspace/android_inputs.py",
+                                   "emule_workspace/android_probe.py", "emule_workspace/android_toolchain.py",
+                                   "emule_workspace/release_assets/android/Dockerfile",
+                                   "emule_workspace/release_assets/android/toolchain.json"])
+def test_android_tool_changes_require_real_wsl_docker_probe_before_push(tmp_path, path):
+    repo = tmp_path / "repos/emulebb-build"
+    pushed = check_plan(repo, {path}, "push", tmp_path, tmp_path / "out")
+    committed = check_plan(repo, {path}, "commit", tmp_path, tmp_path / "out")
+    assert sum(command[-1] == "prepare-rust-android-toolchain" for _, command in pushed) == 1
+    assert not any(command[-1] == "prepare-rust-android-toolchain" for _, command in committed)
+
+
+def test_docs_do_not_trigger_android_tool_downloads(tmp_path):
+    repo = tmp_path / "repos/emulebb-build"
+    plan = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
+    assert not any(command[-1] == "prepare-rust-android-toolchain" for _, command in plan)
+
+
 def test_rust_docs_avoid_native_build_but_source_push_gets_full_gate(tmp_path):
     repo = tmp_path / "repos" / "emulebb-rust"
     docs = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
