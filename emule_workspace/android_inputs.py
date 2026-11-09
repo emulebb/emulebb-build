@@ -22,6 +22,14 @@ def emulator_inputs(config: Path = EMULATOR_CONFIG) -> dict:
     return _read_inputs(config, "emulebb.android-emulator-inputs/1", EMULATOR_ROLES)
 
 
+def emulator_subset(inputs: dict, images: tuple[str, ...]) -> dict:
+    """Select reviewed runtime images without implicitly downloading every guest."""
+    if len(set(images)) != len(images) or any(image not in {"min", "current"} for image in images):
+        raise ValueError("Select unique minimum/current Android images")
+    roles = {"emulator", *("system-image-" + image for image in images)}
+    return {**inputs, "assets": {role: item for role, item in inputs["assets"].items() if role in roles}}
+
+
 def _read_inputs(config: Path, schema: str, roles: frozenset[str]) -> dict:
     value = json.loads(config.read_text(encoding="utf-8"))
     if (not isinstance(value, dict) or set(value) != {"schema", "host", "assets"}

@@ -1,0 +1,19 @@
+ARG ANDROID_TOOLCHAIN_IMAGE=local/emulebb-android-toolchain:reviewed
+FROM ${ANDROID_TOOLCHAIN_IMAGE} AS tools
+FROM docker.io/library/ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    python3 unzip ca-certificates libasound2t64 libdbus-1-3 libegl1 libgl1 libnss3 \
+    libpulse0 libxcb1 libx11-6 libxkbcommon0 && rm -rf /var/lib/apt/lists/*
+COPY emule_workspace/__init__.py emule_workspace/python_runtime.py \
+     emule_workspace/android_inputs.py emule_workspace/android_install.py /opt/emulebb/emule_workspace/
+COPY emule_workspace/release_assets/android/toolchain.json \
+     emule_workspace/release_assets/android/emulator-inputs.json /opt/emulebb/emule_workspace/release_assets/android/
+ENV PYTHONPATH=/opt/emulebb PYTHONDONTWRITEBYTECODE=1
+ARG ANDROID_SYSTEM_IMAGES=""
+RUN --mount=type=bind,from=android-emulator-inputs,target=/inputs \
+    python3 -B -m emule_workspace.android_install --cache /inputs --destination /opt/android-emulator \
+    --emulator --images "$ANDROID_SYSTEM_IMAGES"
+COPY --from=tools /opt/android-tools/sdk/platform-tools /opt/android-emulator/platform-tools
+ENV ANDROID_HOME=/opt/android-emulator ANDROID_SDK_ROOT=/opt/android-emulator
+ENV PATH=/opt/android-emulator/emulator:/opt/android-emulator/platform-tools:${PATH}
+COPY emule_workspace/android_probe.py /opt/emulebb/emule_workspace/android_probe.py

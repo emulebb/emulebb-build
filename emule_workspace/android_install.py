@@ -10,12 +10,13 @@ import json
 from pathlib import Path, PurePosixPath
 import platform
 import shutil
+import stat
 import subprocess
 import tarfile
 from urllib.parse import urlsplit
 import zipfile
 
-from .android_inputs import tool_inputs
+from .android_inputs import emulator_inputs, emulator_subset, tool_inputs
 from .python_runtime import sha256
 
 
@@ -47,12 +48,39 @@ def archive_names(archive: Path) -> list[str]:
 
 def install_inputs(cache: Path, destination: Path) -> Path:
     """Validate every input before creating a new, non-overwriting installation."""
+    inputs = tool_inputs()
+    return _install_inputs(inputs, installation_layout(inputs), cache, destination, "tool-inputs.json")
+
+
+def emulator_layout(inputs: dict) -> dict[str, tuple[str, str]]:
+    """Keep runtime SDK packages in a fresh emulator-only SDK root."""
+    layout = {"emulator": ("emulator", "emulator")}
+    for role, item in inputs["assets"].items():
+        if role == "emulator":
+            continue
+        api = item["version"].split("-r")[0]
+        tag = "default" if role == "system-image-min" else "google_apis_ps16k"
+        layout[role] = ("x86_64", f"system-images/android-{api}/{tag}/x86_64")
+    return layout
+
+
+def install_emulator_inputs(cache: Path, destination: Path, *, images: tuple[str, ...] = ()) -> Path:
+    """Verify and install selected guests without creating license acceptance state."""
+    inputs = emulator_subset(emulator_inputs(), images)
+    return _install_inputs(inputs, emulator_layout(inputs), cache, destination, "emulator-inputs.json", runtime_readable=True)
+
+
+def _runtime_package_mode(mode: int, *, directory: bool) -> int:
+    """Grant read/search and existing execute access without write or set-ID grants."""
+    return (mode & 0o700) | 0o444 | (0o111 if directory or mode & 0o111 else 0)
+
+
+def _install_inputs(inputs: dict, layout: dict, cache: Path, destination: Path, receipt_name: str,
+                    *, runtime_readable: bool = False) -> Path:
     if platform.system() != "Linux" or platform.machine().lower() not in {"x86_64", "amd64"}:
         raise RuntimeError("Android tools require native Linux x86_64 (use WSL Docker on Windows)")
     if destination.exists() or destination.is_symlink():
         raise RuntimeError("Android tool installation requires a fresh destination")
-    inputs = tool_inputs()
-    layout = installation_layout(inputs)
     checked = {}
     for role, item in inputs["assets"].items():
         archive = cache / item["sha256"] / urlsplit(item["url"]).path.rsplit("/", 1)[-1]
@@ -88,7 +116,20 @@ def install_inputs(cache: Path, destination: Path) -> Path:
             shutil.move(str(scratch / root), str(installed))
         finally:
             shutil.rmtree(scratch)
-    receipt = destination / "tool-inputs.json"
+    if runtime_readable:
+        # WHY: old AOSP packages ship owner-only modes. Only this fresh image
+        # installation is normalized; non-root probes must read packages and
+        # execute existing binaries without gaining write or set-ID permissions.
+        for path in (destination, *destination.rglob("*")):
+            if not path.resolve().is_relative_to(destination.resolve()):
+                raise RuntimeError("Android runtime package links must remain inside the fresh installation")
+            if path.is_symlink():
+                continue
+            mode = path.stat().st_mode
+            if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+                raise RuntimeError("Android runtime packages require regular files and directories")
+            path.chmod(_runtime_package_mode(mode, directory=stat.S_ISDIR(mode)))
+    receipt = destination / receipt_name
     receipt.write_text(json.dumps(inputs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return receipt
 
@@ -97,8 +138,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True)
+    parser.add_argument("--emulator", action="store_true")
+    parser.add_argument("--images", default="", help="Comma-separated min/current guest images.")
     arguments = parser.parse_args()
-    print(install_inputs(arguments.cache, arguments.destination))
+    if arguments.images and not arguments.emulator:
+        parser.error("--images requires --emulator")
+    if arguments.emulator:
+        images = tuple(arguments.images.split(",")) if arguments.images else ()
+        print(install_emulator_inputs(arguments.cache, arguments.destination, images=images))
+    else:
+        print(install_inputs(arguments.cache, arguments.destination))
 
 
 if __name__ == "__main__":

@@ -8,13 +8,15 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
 import tempfile
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .python_runtime import download_verified, sha256
 
-from .android_inputs import ROLES, emulator_inputs, tool_inputs
+from .android_inputs import ROLES, emulator_inputs, emulator_subset, tool_inputs
 
 
 def fetch_tool_inputs() -> Path:
@@ -24,11 +26,7 @@ def fetch_tool_inputs() -> Path:
 
 def fetch_emulator_inputs(*, images: tuple[str, ...] = ()) -> Path:
     """Fetch only requested qualification images; ordinary local builds need none."""
-    if len(set(images)) != len(images) or any(image not in {"min", "current"} for image in images):
-        raise ValueError("Select unique minimum/current Android images")
-    inputs = emulator_inputs()
-    roles = {"emulator", *("system-image-" + image for image in images)}
-    selected = {**inputs, "assets": {role: item for role, item in inputs["assets"].items() if role in roles}}
+    selected = emulator_subset(emulator_inputs(), images)
     return _fetch_inputs(selected, "android-emulator-inputs", "emulebb.android-emulator-cache/1")
 
 
@@ -104,4 +102,57 @@ def prepare_toolchain(layout, *, wsl_distro: str = "Ubuntu") -> Path:
     if probe.get("schema") != "emulebb.android-toolchain-probe/1" or probe.get("inputs") != tool_inputs():
         raise RuntimeError("Android toolchain probe returned inconsistent input identity")
     report.write_text(json.dumps(probe, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
+
+
+def prepare_emulator_toolchain(layout, *, images: tuple[str, ...] = (), wsl_distro: str = "Ubuntu") -> Path:
+    """Install and execute pinned emulator tools offline; guest boot remains separate."""
+    from .config import resolve_required_workspace_roots
+    from .linux_containers import LinuxDocker, _builder_user, run_owned_container
+
+    inputs = emulator_subset(emulator_inputs(), images)
+    _workspace, output = resolve_required_workspace_roots()
+    if layout.output_root.resolve() != output:
+        raise RuntimeError("Android emulator output must match the inherited operator root")
+    base_report = prepare_toolchain(layout, wsl_distro=wsl_distro)
+    cache = fetch_emulator_inputs(images=images).parent
+    report = output / "reports/android-emulator" / uuid4().hex / "toolchain-probe.json"
+    report.parent.mkdir(parents=True)
+    build_log = report.parent / "build.log"
+    log = report.with_suffix(".log")
+    image = "local/emulebb-android-emulator:" + ("-".join(sorted(images)) or "tools")
+    root = Path(__file__).resolve().parents[1]
+    with LinuxDocker(wsl_distro) as docker:
+        arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
+        if arch != "amd64":
+            raise RuntimeError("Reviewed Android emulator tools require native AMD64 Docker")
+        user = _builder_user(docker)
+        if user.split(":")[0] == "0":
+            raise RuntimeError("Run Android emulator probes as a non-root Linux/WSL operator")
+        context = docker.path(root)
+        command = [*docker.prefix, "docker", "build", "--platform", "linux/amd64",
+                   "--build-context", f"android-emulator-inputs={docker.path(cache)}",
+                   "--build-arg", "ANDROID_SYSTEM_IMAGES=" + ",".join(sorted(images)),
+                   "--file", context + "/emule_workspace/release_assets/android/Dockerfile.emulator",
+                   "--tag", image, context]
+        print(f"Building Android emulator tools; log: {build_log}", flush=True)
+        try:
+            with build_log.open("w", encoding="utf-8") as stream:
+                subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=1200)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError(f"Android emulator image build failed; inspect {build_log}") from error
+        image_id = docker.run("image", "inspect", "--format", "{{.Id}}", image, capture=True, timeout=30).stdout.strip()
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+            raise RuntimeError("Android emulator image requires a content identity")
+        run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", user,
+                             "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                             "--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
+                             "--env", "HOME=/tmp/home", image_id,
+                             "python3", "-B", "-m", "emule_workspace.android_probe", "--emulator"], log, timeout=120)
+    probe = json.loads(log.read_text(encoding="utf-8"))
+    if (probe.get("schema") != "emulebb.android-emulator-toolchain-probe/1" or probe.get("inputs") != inputs
+            or probe.get("runtimeExecution") != "not-run"):
+        raise RuntimeError("Android emulator probe returned inconsistent input identity")
+    value = {**probe, "image": {"tag": image, "id": image_id}, "toolchainReport": str(base_report)}
+    report.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return report
