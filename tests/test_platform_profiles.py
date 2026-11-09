@@ -1,0 +1,34 @@
+"""Exercise selected assembly inventories without native builds or real artifacts."""
+import json
+
+import pytest
+
+from emule_workspace import release
+from emule_workspace.platform_profiles import package_layout
+
+
+@pytest.mark.parametrize("profile,count", [("full", 10), ("windows-linux", 8)])
+def test_assembler_checks_selected_payload_bytes_and_manifests(tmp_path, monkeypatch, profile, count):
+    version = "0.1.0-beta.2"
+    names = [name for values in package_layout(version, profile).values() for name in values]
+    assert len(names) == count
+    monkeypatch.setattr(release, "_emulebb_rust_artifact_origin", lambda: {"origin": "local-development"})
+    for name in names:
+        payload = tmp_path / name
+        payload.write_bytes(b"Synthetic package")
+        sbom = tmp_path / (name + ".sbom.spdx.json")
+        sbom.write_text("{}", encoding="utf-8")
+        (tmp_path / (name + ".manifest.json")).write_text(json.dumps({
+            "schema": "emulebb.rust.package/2", "sourceDirty": False,
+            "version": version, "asset": name, "sha256": release._sha256(payload),
+            "sbom": sbom.name, "sbomSha256": release._sha256(sbom),
+        }), encoding="utf-8")
+    assert release.assemble_emulebb_rust_release_assets(tmp_path, version, platform_profile=profile).is_file()
+    (tmp_path / names[-1]).write_bytes(b"Changed synthetic package")
+    with pytest.raises(RuntimeError, match="provenance mismatch"):
+        release.assemble_emulebb_rust_release_assets(tmp_path, version, platform_profile=profile)
+
+
+def test_unknown_profile_cannot_choose_inventory_from_present_files():
+    with pytest.raises(RuntimeError, match="Unsupported"):
+        package_layout("0.1.0-beta.2", "whatever-is-present")

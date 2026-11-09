@@ -2232,7 +2232,9 @@ def package_emulebb_rust_prepared_ci(image, release_version, platform):
 @main.command("assemble-emulebb-rust-release-ci")
 @click.option("--release-version", required=True)
 @click.option("--assets-dir", type=click.Path(path_type=Path), required=True)
-def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path) -> None:
+@click.option("--platform-profile", type=click.Choice(["full", "windows-linux"]), default="full", show_default=True)
+def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path,
+                                    platform_profile: str) -> None:
     """Verify native/musl packages and checksum all assembled public evidence."""
 
     output_root_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
@@ -2243,7 +2245,8 @@ def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path) 
     if not assets_dir.is_relative_to(output_root):
         raise click.ClickException("Rust release assets must be under the inherited output root.")
     try:
-        sums = assemble_emulebb_rust_release_assets(assets_dir, release_version)
+        sums = assemble_emulebb_rust_release_assets(assets_dir, release_version,
+                                                   platform_profile=platform_profile)
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
     print(f"Rust release checksums: {sums}")

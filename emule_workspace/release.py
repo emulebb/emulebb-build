@@ -878,7 +878,8 @@ def _emulebb_rust_release_root(layout: WorkspaceLayout, release_version: str) ->
     return layout.output_release_root / f"rust-v{release_version}"
 
 
-def assemble_emulebb_rust_release_assets(assets_dir: Path, version: str) -> Path:
+def assemble_emulebb_rust_release_assets(assets_dir: Path, version: str, *,
+                                       platform_profile: str = "full") -> Path:
     """Verify native/musl assets and checksum the final flat public evidence set."""
 
     if not _is_release_version(version):
@@ -891,20 +892,11 @@ def assemble_emulebb_rust_release_assets(assets_dir: Path, version: str) -> Path
         raise RuntimeError("Rust release assembly requires only regular files in a flat evidence directory")
     if any(path.name.endswith("-candidate-manifest.json") for path in entries):
         raise RuntimeError("Rust release assembly requires a fresh evidence directory without candidate manifests")
-    stem = f"emulebb-rust-v{version}"
-    payloads = (
-        f"{stem}-windows-x64.zip",
-        f"{stem}-windows-arm64.zip",
-        f"{stem}-linux-amd64.deb",
-        f"{stem}-linux-x86_64.AppImage",
-        f"{stem}-linux-arm64.deb",
-        f"{stem}-linux-aarch64.AppImage",
-        f"{stem}-macos-x64.dmg",
-        f"{stem}-macos-arm64.dmg",
-        f"{stem}-linux-amd64-musl.tar.zst",
-        f"{stem}-linux-arm64-musl.tar.zst",
-    )
+    from .platform_profiles import package_layout
+
+    payloads = tuple(name for names in package_layout(version, platform_profile).values() for name in names)
     if ".nightly." in version:
+        stem = f"emulebb-rust-v{version}"
         payloads += tuple(f"{stem}-android-{abi}.tar.zst" for abi in ("arm64-v8a", "x86_64"))
     hosted = _emulebb_rust_artifact_origin()["origin"] == "github-actions"
     for name in payloads:
