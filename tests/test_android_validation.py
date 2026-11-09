@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import struct
+import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -94,3 +96,49 @@ def test_checks_remain_locked_offline_and_include_canonical_target_lints(tmp_pat
     assert all("aarch64-linux-android" in command for _, command in plan)
     assert any(command[0] == "test" and "--no-run" in command for _, command in plan)
     assert any(command[0] == "build" and "--release" in command for _, command in plan)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_prefetch_covers_host_dependencies_and_failures_never_report_success(tmp_path, monkeypatch, fail):
+    from emule_workspace import release
+
+    output = tmp_path / "output"
+    output.mkdir()
+    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=tmp_path / "rust")
+    provenance = {"source": {"emulebbRust": {"commit": "a" * 40}}}
+    monkeypatch.setattr(release, "_emulebb_rust_package_provenance", lambda *args: provenance)
+    monkeypatch.setattr(release, "_assert_emulebb_rust_package_provenance", lambda *args: None)
+    monkeypatch.setattr(release, "_emulebb_rust_workspace_version", lambda *args: "0.1.0-beta.2")
+    monkeypatch.setattr(release, "_emulebb_rust_native_source_roots", lambda *args: (tmp_path / "nat1", tmp_path / "nat2"))
+    monkeypatch.setattr(android, "resolve_required_workspace_roots", lambda: (tmp_path, output))
+    monkeypatch.setattr(android, "resolve_required_cargo_target_dir", lambda *args: output)
+    monkeypatch.setattr(android, "prepare_toolchain", lambda *args, **kwargs: output / "toolchain.json")
+    monkeypatch.setattr(android, "_builder_user", lambda *args: "1000:1000")
+    monkeypatch.setattr(android, "validation_plan", lambda *args: [])
+    monkeypatch.setattr(android, "audit_android_elf", lambda *args: {"verified": True})
+
+    class Docker:
+        def __init__(self, *args): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def path(self, path): return str(path)
+
+    monkeypatch.setattr(android, "LinuxDocker", Docker)
+    commands = []
+    def execute(docker, arguments, log, **kwargs):
+        commands.append(arguments)
+        log.write_text("public diagnostic")
+        if fail:
+            raise RuntimeError("prefetch failed")
+    monkeypatch.setattr(android, "run_owned_container", execute)
+    if fail:
+        with pytest.raises(RuntimeError, match="prefetch failed"):
+            android.validate_android(layout)
+    else:
+        android.validate_android(layout)
+    assert commands[0][-3:] == ["cargo", "fetch", "--locked"]
+    assert "--target" not in commands[0]
+    report = json.loads(next((output / "reports/rust-android").rglob("validation.json")).read_text())
+    assert report["status"] == ("failed" if fail else "passed")
+    assert report["runtimeExecution"] == "not-run"
+    assert report["checks"][0]["status"] == ("failed" if fail else "passed")
