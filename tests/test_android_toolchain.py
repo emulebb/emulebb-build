@@ -5,6 +5,7 @@ import copy
 import hashlib
 import io
 import json
+from urllib.error import HTTPError
 from unittest.mock import Mock
 
 import pytest
@@ -65,6 +66,17 @@ def test_corrupt_download_is_never_published_as_verified(cache, monkeypatch):
         android.fetch_tool_inputs()
     assert not (output / "cache/android-tool-inputs/verified-inputs.json").exists()
     assert not list((output / "cache/android-tool-inputs").rglob("*.zip"))
+
+
+def test_http_failure_identifies_the_reviewed_asset_without_creating_a_receipt(cache, monkeypatch):
+    output, inputs, _payload, _download = cache
+    role = sorted(inputs["assets"])[0]
+    item = inputs["assets"][role]
+    failed = Mock(side_effect=HTTPError(item["url"], 504, "Gateway Time-out", {}, None))
+    monkeypatch.setattr(android, "download_verified", failed)
+    with pytest.raises(RuntimeError, match=f"Android input {role} from .* failed: HTTP Error 504"):
+        android.fetch_tool_inputs()
+    assert not (output / "cache/android-tool-inputs/verified-inputs.json").exists()
 
 
 def test_archive_symlink_is_rejected_without_touching_target(cache):
