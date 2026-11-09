@@ -736,3 +736,71 @@ def test_rust_webui_help_exposes_stateful_playwright_gate() -> None:
 
     assert result.exit_code == 0
     assert "stateful Playwright" in result.output
+
+
+def _workstream_cli_fixture(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from emule_workspace import workstreams
+
+    root = tmp_path / "source"
+    canonical = root / "repos" / "emulebb-build"
+    canonical.mkdir(parents=True)
+    output = tmp_path / "output"
+    output.mkdir()
+    options = SimpleNamespace(workspace_root=root, output_root=output, workspace_name="workspace")
+    base = SimpleNamespace(tests_repo_root=root / "repos" / "emulebb-build-tests")
+    selected = SimpleNamespace(tests_repo_root=root / "workspaces" / "agents" / "alpha" / "emulebb-build-tests")
+    monkeypatch.chdir(canonical)
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: base)
+    monkeypatch.setattr(cli, "_locked", lambda name, operation: operation)
+    received = []
+    monkeypatch.setattr(cli, "invoke_python_tests", lambda layout, options: received.append(layout))
+    monkeypatch.setattr(workstreams, "apply_workstream_layout", lambda layout, registration: selected)
+    return root, output, base, selected, received
+
+
+def test_explicit_workstream_selects_sources_from_canonical_cli_cwd(tmp_path, monkeypatch):
+    import os
+    from emule_workspace import workstreams
+
+    root, output, base, selected, received = _workstream_cli_fixture(tmp_path, monkeypatch)
+    resolutions = []
+    def resolve(root_arg, output_arg, *, repo, workstream_id):
+        resolutions.append((root_arg, output_arg, repo, workstream_id))
+        return {"id": "alpha", "repositories": {}}
+    monkeypatch.setattr(workstreams, "resolve_workstream", resolve)
+    before = os.environ.copy()
+    result = CliRunner().invoke(cli.main, ["test", "python", "--workstream", "alpha"])
+    assert result.exit_code == 0, result.output
+    assert resolutions == [(root, output, None, "alpha")]
+    assert received == [selected] and os.environ == before
+
+
+def test_managed_subdirectory_selects_registered_sources_without_explicit_flag(tmp_path, monkeypatch):
+    from emule_workspace import workstreams
+
+    root, output, base, selected, received = _workstream_cli_fixture(tmp_path, monkeypatch)
+    nested = root / "workspaces" / "agents" / "alpha" / "emulebb-build" / "tests"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+    resolutions = []
+    def resolve(root_arg, output_arg, *, repo, workstream_id):
+        resolutions.append((repo, workstream_id))
+        return {"id": "alpha", "repositories": {}}
+    monkeypatch.setattr(workstreams, "resolve_workstream", resolve)
+    result = CliRunner().invoke(cli.main, ["test", "python"])
+    assert result.exit_code == 0, result.output
+    assert resolutions == [(nested, None)] and received == [selected]
+
+
+def test_default_canonical_cli_does_not_require_workstream_registration(tmp_path, monkeypatch):
+    from emule_workspace import workstreams
+
+    root, output, base, selected, received = _workstream_cli_fixture(tmp_path, monkeypatch)
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Canonical commands must not require a registration")
+    monkeypatch.setattr(workstreams, "resolve_workstream", unexpected)
+    result = CliRunner().invoke(cli.main, ["test", "python"])
+    assert result.exit_code == 0, result.output
+    assert received == [base]

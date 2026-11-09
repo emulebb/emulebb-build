@@ -8,6 +8,8 @@ from types import ModuleType
 
 import pytest
 
+from emule_workspace.config import resolve_required_workspace_roots
+
 
 def _load_tooling_module(workspace_root: Path, module_name: str, relative_path: str) -> ModuleType:
     module_path = workspace_root / "repos" / "emulebb-tooling" / relative_path
@@ -25,7 +27,7 @@ def _load_tooling_module(workspace_root: Path, module_name: str, relative_path: 
 
 @pytest.fixture()
 def workspace_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    return resolve_required_workspace_roots()[0]
 
 
 def test_basic_hygiene_accepts_emulebb_runtime_script_header(workspace_root: Path, tmp_path: Path) -> None:

@@ -100,6 +100,7 @@ BASELINE_VARIANT_HELP = f"{APP_VARIANT_HELP} Defaults to the workspace baseline 
 
 
 def _common_options(function: F) -> F:
+    @click.option("--workstream", default=None, help="Registered parent-coordinated source workstream.")
     @click.option("--workspace-name", default=None, help="Workspace name. Defaults to build manifest value.")
     @click.option("--config", "configuration", type=click.Choice(["Debug", "Release"]), default="Release", show_default=True)
     @click.option("--platform", type=click.Choice(["x64", "ARM64"]), default="x64", show_default=True)
@@ -111,6 +112,7 @@ def _common_options(function: F) -> F:
     )
     @wraps(function)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        workstream_id = kwargs.pop("workstream", None)
         try:
             workspace_options = resolve_workspace_options(
                 workspace_name=kwargs.pop("workspace_name"),
@@ -123,8 +125,22 @@ def _common_options(function: F) -> F:
                 workspace_options.workspace_name,
                 output_root=workspace_options.output_root,
             )
+            from .workstreams import apply_workstream_layout, resolve_workstream
+
+            registration = None
+            if workstream_id or Path.cwd().resolve().is_relative_to(
+                workspace_options.workspace_root / "workspaces" / "agents"
+            ):
+                registration = resolve_workstream(
+                    workspace_options.workspace_root, workspace_options.output_root,
+                    repo=None if workstream_id else Path.cwd(), workstream_id=workstream_id,
+                )
+            if registration is not None:
+                layout = apply_workstream_layout(layout, registration)
         except Exception as exc:
             raise click.ClickException(str(exc)) from exc
+        if function.__name__ == "local_check":
+            kwargs["workstream"] = workstream_id
         return function(*args, workspace_options=workspace_options, layout=layout, **kwargs)
 
     return wrapper  # type: ignore[return-value]
@@ -362,6 +378,78 @@ def main() -> None:
     """Build, validate, test, and package an eMuleBB workspace."""
 
 
+@main.group("workstream")
+def workstream() -> None:
+    """Manage parent-assigned source checkouts; shared validation remains serialized."""
+
+
+def _print_workstream(value: Any) -> None:
+    import json
+    click.echo(json.dumps(value, indent=2))
+
+
+@workstream.command("create")
+@click.argument("workstream_id")
+@click.option("--branch", required=True)
+@click.option("--owner", required=True, help="Accountable parent/coordinator identifier.")
+@click.option("--repo", "repositories", multiple=True, required=True,
+              type=click.Choice(["emulebb-rust", "emulebb-build", "emulebb-tooling", "emulebb-build-tests"]))
+@click.option("--issue", "issues", multiple=True)
+@click.option("--pull-request", "pull_requests", multiple=True)
+@_common_options
+def workstream_create(*, workstream_id, branch, owner, repositories, issues, pull_requests,
+                      workspace_options, layout) -> None:
+    """Create worktrees from freshly fetched origin/main without moving canonical checkouts."""
+    from .workstreams import create_workstream
+    def execute(**kwargs):
+        _print_workstream(create_workstream(kwargs["layout"], workstream_id, branch, owner,
+                                            repositories, issues=issues, pull_requests=pull_requests))
+    _locked("workstream create", execute)(workspace_options=workspace_options, layout=layout)
+
+
+@workstream.command("add-repo")
+@click.argument("workstream_id")
+@click.option("--repo", required=True,
+              type=click.Choice(["emulebb-rust", "emulebb-build", "emulebb-tooling", "emulebb-build-tests"]))
+@_common_options
+def workstream_add_repo(*, workstream_id, repo, workspace_options, layout) -> None:
+    """Add one previously unassigned repository to a workstream."""
+    from .workstreams import add_repository
+    def execute(**kwargs):
+        _print_workstream(add_repository(kwargs["layout"], workstream_id, repo))
+    _locked("workstream add-repo", execute)(workspace_options=workspace_options, layout=layout)
+
+
+@workstream.command("status")
+@click.argument("workstream_id", required=False)
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable registration status.")
+@_common_options
+def workstream_status_command(*, workstream_id, as_json, workspace_options, layout) -> None:
+    """Inspect registrations without changing checkouts or acquiring the build lock."""
+    from .workstreams import workstream_status
+    statuses = workstream_status(layout, workstream_id)
+    if as_json:
+        _print_workstream(statuses)
+    else:
+        for status in statuses:
+            click.echo(f"{status['id']}: {status['verification']}" +
+                       (f" ({status['error']})" if "error" in status else ""))
+
+
+@workstream.command("remove")
+@click.argument("workstream_id")
+@click.option("--owner", required=True, help="Assigned parent owner; workers must not invoke removal.")
+@click.option("--abandoned", is_flag=True, help="Parent explicitly abandons published, unmerged work.")
+@_common_options
+def workstream_remove(*, workstream_id, owner, abandoned, workspace_options, layout) -> None:
+    """Remove safe worktrees; retained local branches preserve their history."""
+    from .workstreams import remove_workstream
+    def execute(**kwargs):
+        remove_workstream(kwargs["layout"], workstream_id, owner, abandoned=abandoned)
+        click.echo(f"Removed workstream {workstream_id}; local branches retained.")
+    _locked("workstream remove", execute)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("bootstrap-python")
 @click.option("--update-lock", is_flag=True, help="Explicitly regenerate the reviewed dependency lock")
 @click.option("--reinstall", is_flag=True, help="Reinstall only the private managed interpreter")
@@ -524,7 +612,8 @@ def validate_rust_android_ci(*, abis: tuple[str, ...]) -> None:
 @click.option("--remote", default="origin")
 @click.option("--push-stdin", is_flag=True, help="Read Git pre-push ref updates from stdin.")
 @_common_options
-def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, workspace_options, layout) -> None:
+def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, workspace_options, layout,
+                workstream: str | None = None) -> None:
     """Run local CI equivalents before committing or pushing."""
     import sys
     from .local_checks import run_checks
@@ -535,6 +624,7 @@ def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, worksp
         return run_checks(
             repo=repo, stage=stage, remote=remote, updates=updates,
             root=workspace_options.workspace_root.resolve(), output=workspace_options.output_root.resolve(),
+            workstream=workstream,
         )
 
     if stage == "commit":

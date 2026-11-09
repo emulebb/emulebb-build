@@ -12,6 +12,36 @@ def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
 
+def test_hook_repository_context_does_not_redirect_git_queries_or_fixture_init(tmp_path, monkeypatch):
+    import os
+    first, second, fixture = (tmp_path / name for name in ("first", "second", "fixture"))
+    for directory, content in ((first, "first"), (second, "second")):
+        directory.mkdir()
+        git(directory, "init", "-b", "main")
+        git(directory, "config", "user.email", "test@example.invalid")
+        git(directory, "config", "user.name", "Test")
+        (directory / "sample.txt").write_text(content)
+        git(directory, "add", "sample.txt")
+        git(directory, "commit", "-m", content)
+    original = {name: (first / ".git" / name).read_bytes() for name in ("HEAD", "config", "index")}
+    expected = git(second, "rev-parse", "HEAD")
+    monkeypatch.setenv("GIT_DIR", str(first / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(first))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(first / ".git" / "index"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "operator.gitconfig"))
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    assert local_checks.git(second, "rev-parse", "HEAD") == expected
+    child = local_checks.git_environment()
+    assert not {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}.intersection(child)
+    assert child["GIT_CONFIG_GLOBAL"] == str(tmp_path / "operator.gitconfig")
+    assert child["GIT_TERMINAL_PROMPT"] == "0"
+    fixture.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=fixture, env=child, check=True, capture_output=True)
+    assert (fixture / ".git" / "HEAD").is_file()
+    assert all((first / ".git" / name).read_bytes() == content for name, content in original.items())
+    assert os.environ["GIT_DIR"] == str(first / ".git")
+
+
 @pytest.fixture
 def repo(tmp_path):
     git(tmp_path, "init", "-b", "main")
@@ -366,3 +396,93 @@ def test_push_is_bound_to_checked_head_even_when_tree_stays_clean(tmp_path, monk
             local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=tmp_path, output=tmp_path / "output")
     else:
         local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=tmp_path, output=tmp_path / "output")
+
+
+def test_workstream_routes_nested_checks_to_selected_builder(tmp_path):
+    repo = tmp_path / "workspaces/agents/sample/emulebb-build-tests"
+    builder = tmp_path / "workspaces/agents/sample/emulebb-build"
+    tooling = tmp_path / "workspaces/agents/sample/emulebb-tooling"
+    plan = check_plan(repo, {"scripts/smoke-rust-release-package.py"}, "push", tmp_path,
+                      tmp_path / "output", {"emulebb-build": builder, "emulebb-tooling": tooling}, "sample")
+    nested = [(cwd, command) for cwd, command in plan if "emule_workspace" in command]
+    assert nested and all(cwd == builder for cwd, _ in nested)
+    assert all(command[-2:] == ["--workstream", "sample"] for _, command in nested)
+    assert plan[0][1][1] == str(tooling / "ci/guard-tracked-files.py")
+
+
+def test_workstream_rust_push_selects_exact_rest_sources(tmp_path):
+    repo = tmp_path / "workspaces/agents/sample/emulebb-rust"
+    harness = tmp_path / "workspaces/agents/sample/emulebb-build-tests"
+    tooling = tmp_path / "workspaces/agents/sample/emulebb-tooling"
+    plan = check_plan(repo, {"crates/sample.rs"}, "push", tmp_path, tmp_path / "output",
+                      {"emulebb-rust": repo, "emulebb-build-tests": harness, "emulebb-tooling": tooling}, "sample")
+    gate = next(command for _, command in plan if "tools/rust_quality_gate.py" in command)
+    assert gate[gate.index("--rest-harness-script") + 1] == str(harness / "scripts/rust-rest-openapi-ci.py")
+    assert gate[gate.index("--rest-openapi-contract") + 1] == str(tooling / "docs/products/emulebb-rust/api/REST-API-OPENAPI.yaml")
+
+
+def test_each_commit_check_has_independent_inputs(tmp_path, monkeypatch):
+    repo = tmp_path / "repos/emulebb-build"
+    repo.mkdir(parents=True)
+    monkeypatch.setattr(local_checks, "git", lambda repo, *args: str(repo) if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(local_checks, "changed_paths", lambda *args: {"sample.py"})
+    monkeypatch.setattr(local_checks, "check_whitespace", lambda *args: None)
+    inputs = []
+    def plan(*args):
+        inputs.append(args[-1])
+        return []
+    monkeypatch.setattr(local_checks, "check_plan", plan)
+    for _ in range(2):
+        local_checks.run_checks(repo=repo, stage="commit", remote="origin", updates=None,
+                               root=tmp_path, output=tmp_path / "output")
+    assert inputs[0] != inputs[1]
+    assert all(path.read_text() == '["sample.py"]' for path in inputs)
+
+
+def test_checks_do_not_export_hook_repository_context_to_test_children(tmp_path, monkeypatch):
+    repo = tmp_path / "repos/emulebb-build"
+    repo.mkdir(parents=True)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "other.git"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "other.index"))
+    monkeypatch.setattr(local_checks, "git", lambda repo, *args: str(repo) if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(local_checks, "changed_paths", lambda *args: {"sample.py"})
+    monkeypatch.setattr(local_checks, "check_whitespace", lambda *args: None)
+    monkeypatch.setattr(local_checks, "check_plan", lambda *args: [(repo, ["check"])])
+    def check(command, **kwargs):
+        assert "GIT_DIR" not in kwargs["env"]
+        assert "GIT_INDEX_FILE" not in kwargs["env"]
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(local_checks.subprocess, "run", check)
+    local_checks.run_checks(repo=repo, stage="commit", remote="origin", updates=None,
+                           root=tmp_path, output=tmp_path / "output")
+
+
+@pytest.mark.parametrize("change", ["revision", "dirty"])
+def test_workstream_push_rejects_changes_to_supporting_sources(tmp_path, monkeypatch, change):
+    import json
+    root, output = tmp_path, tmp_path / "output"
+    repo = root / "workspaces/agents/sample/emulebb-build"
+    source = root / "repos/emulebb-tooling"
+    state = {"revision": "a" * 40, "dirty": ""}
+    registration = {"id": "sample", "repositories": {"emulebb-build": {"path": str(repo)}}}
+    monkeypatch.setattr(local_checks, "_resolve_registration", lambda *args: registration)
+    monkeypatch.setattr(local_checks, "_workstream_sources", lambda *args: {"emulebb-build": repo, "emulebb-tooling": source})
+    def git_state(path, *args):
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(path)
+        if args == ("rev-parse", "HEAD"):
+            return state["revision"] if path == source else "a" * 40
+        return state["dirty"] if path == source else ""
+    monkeypatch.setattr(local_checks, "git", git_state)
+    monkeypatch.setattr(local_checks, "changed_paths", lambda *args: {"sample.py"})
+    monkeypatch.setattr(local_checks, "check_whitespace", lambda *args: None)
+    monkeypatch.setattr(local_checks, "check_plan", lambda *args: [(repo, ["check"])])
+    def check(command, **kwargs):
+        state[change] = "b" * 40 if change == "revision" else " M sample.py"
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(local_checks.subprocess, "run", check)
+    with pytest.raises(RuntimeError, match="Participating sources changed|clean worktree"):
+        local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=root, output=output)
+    evidence = json.loads(next((output / "reports").rglob("sources.json")).read_text())
+    assert evidence["sources"]["emulebb-tooling"]["revision"] == "a" * 40
+    assert evidence["sources"]["emulebb-build"]["path"] == str(repo)

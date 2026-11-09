@@ -11,6 +11,11 @@ from pathlib import Path
 from emule_workspace.release import EMULEBB_CONFIG_ASSET_PATHS, EMULEBB_RUNTIME_SCRIPT_PATHS
 
 
+def runtime_asset_path(relative_path: str | Path = "") -> Path:
+    """Resolve maintained assets from this test checkout, independently of its cwd."""
+    return Path(__file__).resolve().parents[1] / "emule_workspace" / "release_assets" / "emulebb" / relative_path
+
+
 def github_http_fixture() -> str:
     """Intercept the current list/JSON transport and reject unconfigured HTTP.
 
@@ -68,13 +73,7 @@ def write_core_release(
     package_zip = release_root / f"emulebb-{version}{flavor_asset_suffix}-{arch}.zip"
     manifest = release_root / f"emulebb-{version}{flavor_asset_suffix}-{arch}.manifest.json"
     if installer_payload is None:
-        installer_payload = (
-            Path("emule_workspace")
-            / "release_assets"
-            / "emulebb"
-            / "scripts"
-            / "Install-eMuleBBSuite.ps1"
-        ).read_bytes()
+        installer_payload = runtime_asset_path("scripts/Install-eMuleBBSuite.ps1").read_bytes()
     package_entries = {
         f"eMuleBB/{executable_name}": exe_payload,
         **runtime_script_entries(installer_payload=installer_payload),
@@ -249,7 +248,7 @@ def write_dependency_manifest(path: Path, dependency_root: Path) -> None:
 
 def runtime_script_entries(*, installer_payload: bytes) -> dict[str, bytes]:
     entries: dict[str, bytes] = {}
-    assets_root = Path("emule_workspace") / "release_assets" / "emulebb"
+    assets_root = runtime_asset_path()
     for relative_path in EMULEBB_RUNTIME_SCRIPT_PATHS:
         payload = (assets_root / relative_path).read_bytes()
         if relative_path == "scripts/Install-eMuleBBSuite.ps1":

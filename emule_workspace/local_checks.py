@@ -10,11 +10,13 @@ import sys
 from datetime import datetime, timezone
 from uuid import uuid4
 from time import perf_counter
+from .git_environment import git_environment
 
 
 def git(repo: Path, *args: str) -> str:
     """Run a read-only Git query, propagating errors."""
-    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).rstrip("\r\n")
+    return subprocess.check_output(["git", "-C", str(repo), *args], text=True,
+                                   env=git_environment()).rstrip("\r\n")
 
 
 def outgoing_ranges(repo: Path, remote: str, updates: str | None) -> list[tuple[str, str]]:
@@ -96,9 +98,13 @@ def linux_push_scope(paths: set[str], repo: Path | None = None) -> str:
     return "musl"
 
 
-def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path) -> list[tuple[Path, list[str]]]:
+def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path,
+               sources: dict[str, Path] | None = None, workstream: str | None = None,
+               paths_file: Path | None = None) -> list[tuple[Path, list[str]]]:
     """Choose checks by repository and changed surface, without running them."""
-    tooling = root / "repos" / "emulebb-tooling"
+    sources = sources or {}
+    tooling = sources.get("emulebb-tooling", root / "repos" / "emulebb-tooling")
+    builder = sources.get("emulebb-build", root / "repos" / "emulebb-build")
     py = sys.executable
     commands: list[tuple[Path, list[str]]] = []
     policy = repo / "manifests" / "privacy-guard" / "policy.v1.json"
@@ -106,7 +112,7 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
         policy = tooling / "manifests" / "privacy-guard" / "policy.v1.json"
     commands.append((repo, [py, str(tooling / "ci" / "guard-tracked-files.py"),
                             "--repo-root", str(repo), "--policy-path", str(policy),
-                            "--paths-file", str(output / "tmp" / "local-check" / f"{repo.name}-{stage}-paths.json")]))
+                            "--paths-file", str(paths_file or output / "tmp" / "local-check" / f"{repo.name}-{stage}-paths.json")]))
     commands.append((repo, [py, str(tooling / "ci" / "check-basic-hygiene.py"),
                             "--repo-root", str(repo), "--repo-kind",
                             {"emulebb-build": "emulebb-build", "emulebb-tooling": "tooling"}.get(repo.name, "generic")]))
@@ -116,9 +122,13 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
     implementation = any(not (p.endswith(".md") or p.startswith("docs/")) for p in paths)
     if repo.name == "emulebb-rust":
         gate = "pre-push" if stage == "push" and implementation else "branch-ci" if workflow_changed else "branch-check"
-        commands.append((repo, [py, "tools/rust_quality_gate.py", gate]))
+        gate_command = [py, "tools/rust_quality_gate.py", gate]
+        if workstream and stage == "push" and implementation:
+            gate_command.extend(["--rest-harness-script", str(sources.get("emulebb-build-tests", root / "repos/emulebb-build-tests") / "scripts/rust-rest-openapi-ci.py"),
+                                 "--rest-openapi-contract", str(tooling / "docs/products/emulebb-rust/api/REST-API-OPENAPI.yaml")])
+        commands.append((repo, gate_command))
         if stage == "push" and implementation:
-            commands.append((root / "repos/emulebb-build", [py, "-B", "-m", "emule_workspace",
+            commands.append((builder, [py, "-B", "-m", "emule_workspace",
                              "validate-emulebb-rust-linux", "--scope", linux_push_scope(paths, repo)]))
     if stage == "push" and repo.name == "emulebb-build" and implementation:
         tests = {"tests/test_local_checks.py", "tests/test_ci_workflows.py", "tests/test_locks.py"}
@@ -173,14 +183,14 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
     full_linux = any(path.startswith(linux_owners.get(repo.name, ())) for path in paths)
     image_only = any(path.startswith(image_owners.get(repo.name, ())) for path in paths)
     if stage == "push" and (full_linux or image_only):
-        commands.append((root / "repos/emulebb-build", [py, "-B", "-m", "emule_workspace",
+        commands.append((builder, [py, "-B", "-m", "emule_workspace",
                          "validate-emulebb-rust-linux", "--scope", "full" if full_linux else "image"]))
     android_tools_changed = repo.name == "emulebb-build" and any(path.startswith((
             "emule_workspace/android_inputs.py", "emule_workspace/android_install.py",
             "emule_workspace/android_probe.py", "emule_workspace/android_toolchain.py",
             "emule_workspace/android_validation.py", "emule_workspace/release_assets/android/")) for path in paths)
     if stage == "push" and (android_tools_changed or repo.name == "emulebb-rust" and implementation):
-        commands.append((root / "repos/emulebb-build", [py, "-B", "-m", "emule_workspace", "validate-rust-android"]))
+        commands.append((builder, [py, "-B", "-m", "emule_workspace", "validate-rust-android"]))
     emulator_tools_changed = repo.name == "emulebb-build" and any(path in {
         "emule_workspace/android_inputs.py", "emule_workspace/android_install.py", "emule_workspace/android_probe.py",
         "emule_workspace/android_toolchain.py", "emule_workspace/release_assets/android/Dockerfile",
@@ -188,7 +198,7 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
         "emule_workspace/release_assets/android/emulator-inputs.json",
     } for path in paths)
     if stage == "push" and emulator_tools_changed:
-        commands.append((root / "repos/emulebb-build", [py, "-B", "-m", "emule_workspace", "prepare-rust-android-emulator"]))
+        commands.append((builder, [py, "-B", "-m", "emule_workspace", "prepare-rust-android-emulator"]))
     if repo.name == "emulebb-tooling":
         if stage == "push":
             if implementation:
@@ -200,10 +210,49 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
                 "scripts/github-roadmap-check.py", "scripts/docs-publish-check.py",
             } for p in paths):
                 commands.append((repo, [py, "scripts/docs-publish-check.py"]))
+    if workstream:
+        for _cwd, command in commands:
+            if "emule_workspace" in command:
+                command.extend(["--workstream", workstream])
     return commands
 
 
-def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root: Path, output: Path) -> None:
+def _resolve_registration(root: Path, output: Path, repo: Path, workstream: str | None) -> dict | None:
+    """Require registration for managed agent checkouts without changing roots."""
+    if workstream or repo.is_relative_to(root / "workspaces" / "agents"):
+        from .workstreams import resolve_workstream
+        return resolve_workstream(root, output, repo=repo, workstream_id=workstream)
+    return None
+
+
+def _source_snapshot(sources: dict[str, Path], *, clean: bool) -> dict:
+    """Capture actual revisions; require stable clean inputs for push evidence."""
+    snapshot = {}
+    for name, source in sources.items():
+        revision = git(source, "rev-parse", "HEAD")
+        dirty = git(source, "status", "--porcelain")
+        if clean and dirty:
+            raise RuntimeError(f"Source {name} requires a clean worktree for push validation")
+        snapshot[name] = {"path": str(source), "revision": revision, "dirty": dirty}
+    return snapshot
+
+
+def _workstream_sources(root: Path, output: Path, registration: dict) -> dict[str, Path]:
+    """Resolve supporting sources from generated topology before applying selection."""
+    from .layout import load_layout
+    from .workstreams import REPOSITORY_FIELDS, apply_workstream_layout
+    layout = apply_workstream_layout(load_layout(root, output_root=output), registration)
+    sources = {}
+    for name, field in REPOSITORY_FIELDS.items():
+        source = getattr(layout, field)
+        if source is None:
+            raise RuntimeError(f"Required validation repository is missing from topology: {name}")
+        sources[name] = Path(source).resolve()
+    return sources
+
+
+def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root: Path, output: Path,
+               workstream: str | None = None) -> None:
     """Execute applicable checks; a missing tool or failed check blocks Git."""
     # WHY: a UTF-8 subprocess log can contain characters the Windows console
     # cannot encode. Preserve that log and report the original failing check.
@@ -215,6 +264,12 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
         raise RuntimeError("Local checks require a repository inside repos or workspaces")
     if repo != Path(git(repo, "rev-parse", "--show-toplevel")).resolve():
         raise RuntimeError("--repo must identify the repository root")
+    registration = _resolve_registration(root, output, repo, workstream)
+    source_paths = {repo.name: repo}
+    if registration:
+        source_paths = _workstream_sources(root, output, registration)
+        if source_paths.get(repo.name) != repo:
+            raise RuntimeError("--repo is not the selected workstream checkout")
     checked_head = git(repo, "rev-parse", "HEAD") if stage == "push" else None
     paths = changed_paths(repo, stage, remote, updates)
     if not paths:
@@ -227,18 +282,24 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
     target = Path(os.environ.get("CARGO_TARGET_DIR", "")).resolve()
     if repo.name == "emulebb-rust" and target != output / "builds" / "rust" / "target":
         raise RuntimeError("CARGO_TARGET_DIR must equal EMULEBB_WORKSPACE_OUTPUT_ROOT/builds/rust/target")
-    child_env = os.environ.copy()
-    scratch = output / "tmp" / "local-check"
-    scratch.mkdir(parents=True, exist_ok=True)
-    (scratch / f"{repo.name}-{stage}-paths.json").write_text(json.dumps(sorted(paths)), encoding="utf-8")
+    child_env = git_environment()
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
+    scratch = output / "tmp" / "local-check" / run_id
+    scratch.mkdir(parents=True)
+    paths_file = scratch / f"{repo.name}-{stage}-paths.json"
+    paths_file.write_text(json.dumps(sorted(paths)), encoding="utf-8")
     child_env.update(TEMP=str(scratch), TMP=str(scratch), TMPDIR=str(scratch),
                      PYTHONPYCACHEPREFIX=str(output / "cache" / "pycache"),
                      GOPATH=str(output / "cache" / "go"), GOCACHE=str(output / "cache" / "go-build"))
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
     reports = output / "reports" / "local-check" / repo.name / run_id
     reports.mkdir(parents=True)
+    snapshot = _source_snapshot(source_paths, clean=stage == "push")
+    (reports / "sources.json").write_text(json.dumps({"workstream": registration["id"] if registration else None,
+                                                      "sources": snapshot}, indent=2) + "\n", encoding="utf-8")
     results = []
-    for index, (cwd, command) in enumerate(check_plan(repo, paths, stage, root, output)):
+    plan = check_plan(repo, paths, stage, root, output, source_paths,
+                      registration["id"] if registration else None, paths_file)
+    for index, (cwd, command) in enumerate(plan):
         print(f"Local {stage}: {' '.join(command)}", flush=True)
         log_path = reports / f"{index:02d}.log"
         started = perf_counter()
@@ -266,5 +327,7 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
             raise RuntimeError("HEAD changed during validation; validate the intended commit before pushing")
         if git(repo, "status", "--porcelain"):
             raise RuntimeError("Validation changed the worktree; review changes before pushing")
+        if _source_snapshot(source_paths, clean=True) != snapshot:
+            raise RuntimeError("Participating sources changed during validation; validate the intended revisions")
     print(f"Local checks passed; evidence: {reports}")
     print("Other OS builds, hosted CodeQL, permissions and publication still require GitHub.")

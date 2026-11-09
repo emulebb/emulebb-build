@@ -222,6 +222,46 @@ def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: P
     return archive
 
 
+def _runtime_harness_source(layout, reports: Path) -> Path:
+    """Provide self-contained Git metadata when the runtime inspects a worktree."""
+    source = layout.tests_repo_root.resolve()
+    if not (source / ".git").is_file():
+        return source
+    output = layout.output_root.resolve()
+    if output.is_relative_to(layout.emule_workspace_root.resolve()):
+        raise RuntimeError("Runtime harness snapshots require the external output root")
+    revision = git_output(source, "rev-parse", "HEAD").strip()
+    if git_output(source, "status", "--porcelain").strip():
+        raise RuntimeError("Runtime harness snapshot requires clean selected source")
+    branch = git_output(source, "branch", "--show-current").strip()
+    if not branch:
+        raise RuntimeError("Runtime harness worktree snapshot requires an assigned branch")
+    snapshot = output / "tmp" / "linux-harness-snapshots" / uuid4().hex / "source"
+    if not snapshot.resolve().is_relative_to(output) or snapshot.exists():
+        raise RuntimeError("Invalid runtime harness snapshot destination")
+    snapshot.parent.mkdir(parents=True)
+    # WHY: a linked worktree's .git file contains a host-only absolute pointer.
+    # An independent clone carries the exact commit and inspectable Git metadata
+    # into the read-only container mount without exposing the canonical repo.
+    subprocess.run(["git", "clone", "--no-local", "--no-checkout", "--single-branch",
+                    "--branch", branch, "--config", "core.autocrlf=false", str(source), str(snapshot)],
+                   check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(snapshot), "checkout", "--detach", revision],
+                   check=True, capture_output=True, text=True)
+    if (not (snapshot / ".git").is_dir()
+            or (snapshot / ".git/objects/info/alternates").exists()
+            or git_output(snapshot, "rev-parse", "HEAD").strip() != revision
+            or git_output(snapshot, "status", "--porcelain").strip()
+            or git_output(source, "rev-parse", "HEAD").strip() != revision
+            or git_output(source, "status", "--porcelain").strip()):
+        raise RuntimeError("Runtime harness source changed or snapshot is not independent")
+    (reports / "harness-snapshot.json").write_text(json.dumps({
+        "schema": "emulebb.runtime-harness-snapshot/1", "sourcePath": str(source),
+        "snapshotPath": str(snapshot), "revision": revision,
+    }, indent=2) + "\n", encoding="utf-8")
+    return snapshot
+
+
 def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) -> Path:
     """@brief Run the shared two-peer lifecycle harness as a non-root container user."""
     from .release import _emulebb_rust_artifact_origin, _assert_emulebb_rust_hosted_artifact
@@ -251,6 +291,7 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) 
     reports = output / "reports/rust-linux" / f"{libc}-{architecture}" / uuid4().hex
     reports.mkdir(parents=True)
     (reports / "tmp").mkdir()
+    harness_source = _runtime_harness_source(layout, reports)
     with LinuxDocker() as docker:
         host_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
         hosted_environment = _hosted_linux_environment(architecture, host_arch)
@@ -258,7 +299,7 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) 
                    "--file", docker.path(context) + "/Dockerfile.runtime", "--tag", runtime, docker.path(context))
         mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
                   "--mount", f"type=bind,source={docker.path(layout.emulebb_rust_repo_root)},target=/workspace/repos/emulebb-rust,readonly",
-                  "--mount", f"type=bind,source={docker.path(layout.tests_repo_root)},target=/workspace/repos/emulebb-build-tests,readonly"]
+                  "--mount", f"type=bind,source={docker.path(harness_source)},target=/workspace/repos/emulebb-build-tests,readonly"]
         relative = reports.relative_to(output).as_posix()
         docker.run("run", "--rm", "--platform", f"linux/{architecture}", *mounts, runtime,
                    "chmod", "0777", f"/output/{relative}", f"/output/{relative}/tmp")
@@ -285,6 +326,11 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) 
                    "--linux-libc", libc, "--expected-source-sha", source_sha,
                    "--rust-repo", "/workspace/repos/emulebb-rust", "--report-path", f"/output/{relative}/package-smoke.json"]
         run_owned_container(docker, command, reports / "runtime.log", timeout=600)
+        if harness_source != layout.tests_repo_root.resolve() and (
+                git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip()
+                != git_output(harness_source, "rev-parse", "HEAD").strip()
+                or git_output(layout.tests_repo_root, "status", "--porcelain").strip()):
+            raise RuntimeError("Selected runtime harness changed while validating its snapshot")
         (reports / "runtime-inputs.json").write_text(json.dumps({
             "runtimeBase": RUNTIME_IMAGES[libc], "filesystem": "tmpfs", "user": user,
             "execution": "native" if host_arch == architecture else "qemu",
