@@ -400,6 +400,21 @@ def prepare_rust_android_toolchain(*, wsl_distro: str, workspace_options: Worksp
     _locked("prepare-rust-android-toolchain", prepare)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("validate-rust-android")
+@_common_options
+@click.option("--abi", "abis", type=click.Choice(["arm64-v8a", "x86_64"]), multiple=True,
+              default=("arm64-v8a", "x86_64"), show_default=True)
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def validate_rust_android(*, abis: tuple[str, ...], wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
+    """Run locked offline Rust target checks and Android ELF audits via Linux/WSL Docker."""
+    from .android_validation import validate_android
+
+    def validate(**kwargs: Any) -> None:
+        print(f"Android Rust target validation passed: {validate_android(kwargs['layout'], abis=abis, wsl_distro=wsl_distro)}")
+
+    _locked("validate-rust-android", validate)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("local-check")
 @click.option("--repo", type=click.Path(path_type=Path, exists=True), required=True)
 @click.option("--stage", type=click.Choice(["commit", "push"]), default="push")

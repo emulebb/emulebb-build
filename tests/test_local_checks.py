@@ -105,20 +105,28 @@ def test_staged_whitespace_is_rejected_and_delete_only_push_is_allowed(repo):
 
 @pytest.mark.parametrize("path", ["emule_workspace/android_install.py", "emule_workspace/android_inputs.py",
                                    "emule_workspace/android_probe.py", "emule_workspace/android_toolchain.py",
-                                   "emule_workspace/release_assets/android/Dockerfile",
+                                   "emule_workspace/android_validation.py", "emule_workspace/release_assets/android/Dockerfile",
                                    "emule_workspace/release_assets/android/toolchain.json"])
 def test_android_tool_changes_require_real_wsl_docker_probe_before_push(tmp_path, path):
     repo = tmp_path / "repos/emulebb-build"
     pushed = check_plan(repo, {path}, "push", tmp_path, tmp_path / "out")
     committed = check_plan(repo, {path}, "commit", tmp_path, tmp_path / "out")
-    assert sum(command[-1] == "prepare-rust-android-toolchain" for _, command in pushed) == 1
-    assert not any(command[-1] == "prepare-rust-android-toolchain" for _, command in committed)
+    assert sum(command[-1] == "validate-rust-android" for _, command in pushed) == 1
+    assert not any(command[-1] == "validate-rust-android" for _, command in committed)
 
 
 def test_docs_do_not_trigger_android_tool_downloads(tmp_path):
     repo = tmp_path / "repos/emulebb-build"
     plan = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
-    assert not any(command[-1] == "prepare-rust-android-toolchain" for _, command in plan)
+    assert not any(command[-1] in {"prepare-rust-android-toolchain", "validate-rust-android"} for _, command in plan)
+
+
+def test_rust_implementation_requires_android_compilation_before_push(tmp_path):
+    repo = tmp_path / "repos/emulebb-rust"
+    source = check_plan(repo, {"crates/emulebb-core/src/lib.rs"}, "push", tmp_path, tmp_path / "out")
+    docs = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
+    assert sum(command[-1] == "validate-rust-android" for _, command in source) == 1
+    assert not any(command[-1] == "validate-rust-android" for _, command in docs)
 
 
 def test_rust_docs_avoid_native_build_but_source_push_gets_full_gate(tmp_path):
@@ -153,9 +161,11 @@ def test_rust_push_runs_host_then_native_musl_and_docs_stay_light(tmp_path):
     source.parent.mkdir(parents=True)
     source.write_text("pub fn ordinary_logic() {}\n")
     plan = check_plan(repo, {"crates/emulebb-core/src/lib.rs"}, "push", tmp_path, tmp_path / "out")
-    assert plan[-2][1][-1] == "pre-push"
+    assert plan[-3][1][-1] == "pre-push"
+    assert plan[-2][0] == tmp_path / "repos/emulebb-build"
+    assert plan[-2][1][-3:] == ["validate-emulebb-rust-linux", "--scope", "musl"]
     assert plan[-1][0] == tmp_path / "repos/emulebb-build"
-    assert plan[-1][1][-3:] == ["validate-emulebb-rust-linux", "--scope", "musl"]
+    assert plan[-1][1][-1] == "validate-rust-android"
     docs = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
     assert not any("validate-emulebb-rust-linux" in command for _, command in docs)
 
