@@ -52,7 +52,7 @@ jobs:
         with:
           persist-credentials: false
           repository: emulebb/emulebb-build-tests
-          ref: 8b4c0c6666999b5458190314d26d409b0faf21b2
+          ref: 96f65e936627818ea741cf045fc8067110efda92
           path: repos/emulebb-build-tests
       - name: Set up pinned Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0

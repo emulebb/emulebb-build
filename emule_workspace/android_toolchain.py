@@ -188,6 +188,34 @@ def _kvm_group(docker) -> str:
     return group
 
 
+def _guest_failure_details(directory: Path) -> dict:
+    """Allowlist guest phases and OS facts; never publish private log text."""
+    path = directory / "guest/report.json"
+    try:
+        if (path.is_symlink() or not path.resolve().is_relative_to(directory.resolve())
+                or not path.is_file() or path.stat().st_size > 65536):
+            return {"phase": "unknown"}
+        guest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"phase": "unknown"}
+    if not isinstance(guest, dict) or guest.get("schema") != "emulebb.android.emulator-boot/1":
+        return {"phase": "unknown"}
+    phases = {"adb-start", "emulator-start", "guest-boot", "guest-properties", "guest-validation", "complete"}
+    properties = {"sdk", "codename", "abis64", "qemu", "machine", "pageSize"}
+    phase = guest.get("phase")
+    value = {"phase": phase if isinstance(phase, str) and phase in phases else "unknown"}
+    if isinstance(guest.get("property"), str) and guest["property"] in properties:
+        value["property"] = guest["property"]
+    observed = guest.get("observedGuest")
+    if isinstance(observed, dict):
+        value["observedGuest"] = {key: item for key, item in observed.items() if key in properties
+            and isinstance(item, str) and len(item) <= 128 and re.fullmatch(r"[A-Za-z0-9_.+,\-]*", item)}
+    code = guest.get("emulatorExitCode")
+    if type(code) is int and -255 <= code <= 255:
+        value["emulatorExitCode"] = code
+    return value
+
+
 def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu") -> Path:
     """Run the shared guest boot harness locally or on hosted KVM, without an APK."""
     from .android_install import emulator_layout
@@ -260,7 +288,7 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu") -> P
         # contain local authentication material and must never be uploaded.
         value.update(status="passed", guest=expected, kvm=True)
     except BaseException as error:
-        value["failureType"] = type(error).__name__
+        value.update(failureType=type(error).__name__, failureDetails=_guest_failure_details(directory))
         raise
     finally:
         report.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
