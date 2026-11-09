@@ -58,9 +58,34 @@ def output_root() -> Path:
     if not root.is_absolute() or not output.is_absolute() or not root.is_dir() or not output.is_dir():
         raise RuntimeError("Workspace and output roots must be existing absolute directories")
     root, output = root.resolve(), output.resolve()
-    if output.is_relative_to(root) or (root / "repos/emulebb-build").resolve() != BUILD_ROOT.resolve():
-        raise RuntimeError("Bootstrap requires the canonical builder and an output root outside the workspace")
+    if output.is_relative_to(root) or not _is_workspace_builder(root):
+        raise RuntimeError("Bootstrap requires the canonical builder or its managed worktree and an output root outside the workspace")
     return output
+
+
+def _is_workspace_builder(root: Path) -> bool:
+    """Accept linked builder checkouts without trusting a directory name alone."""
+    canonical = (root / "repos/emulebb-build").resolve()
+    selected = BUILD_ROOT.resolve()
+    if selected == canonical:
+        return True
+    agents = (root / "workspaces/agents").resolve()
+    if (not selected.is_relative_to(agents) or selected.name != "emulebb-build"
+            or len(selected.relative_to(agents).parts) != 2):
+        return False
+    # WHY: bootstrap precedes third-party imports and workstream registration.
+    # Git's shared repository identity proves this is a linked canonical builder.
+    def common_directory(checkout: Path) -> Path:
+        from .git_environment import git_environment
+        value = subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "--git-common-dir"],
+            text=True, stderr=subprocess.DEVNULL, env=git_environment(),
+        ).strip()
+        return (checkout / value).resolve()
+    try:
+        return common_directory(selected) == common_directory(canonical)
+    except (OSError, subprocess.CalledProcessError):
+        return False
 
 
 def environment_root(output: Path) -> Path:

@@ -14,6 +14,62 @@ from emule_workspace.linux_containers import linux_test_plan, linux_quality_plan
 from emule_workspace import linux_containers
 
 
+def _linked_harness_fixture(tmp_path):
+    """Build a real linked checkout whose host Git pointer cannot be mounted."""
+    canonical = tmp_path / "workspace/repos/emulebb-build-tests"
+    canonical.mkdir(parents=True)
+    def git(repo, *args):
+        return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+    git(canonical, "init", "--initial-branch", "main")
+    git(canonical, "config", "user.name", "Synthetic Fixture")
+    git(canonical, "config", "user.email", "fixture@example.invalid")
+    git(canonical, "config", "commit.gpgsign", "false")
+    git(canonical, "config", "core.autocrlf", "false")
+    (canonical / "sample.txt").write_text("sample harness\n", encoding="utf-8")
+    git(canonical, "add", "sample.txt")
+    git(canonical, "commit", "-m", "Synthetic harness")
+    selected = tmp_path / "workspace/workspaces/agents/sample/emulebb-build-tests"
+    selected.parent.mkdir(parents=True)
+    git(canonical, "worktree", "add", "-b", "chore/sample", str(selected))
+    reports = tmp_path / "output/reports/sample"
+    reports.mkdir(parents=True)
+    layout = SimpleNamespace(tests_repo_root=selected, output_root=tmp_path / "output",
+                             emule_workspace_root=tmp_path / "workspace")
+    return layout, reports, git
+
+
+def test_runtime_harness_worktree_gets_independent_git_metadata_and_exact_revision(tmp_path):
+    layout, reports, git = _linked_harness_fixture(tmp_path)
+    original_pointer = (layout.tests_repo_root / ".git").read_text()
+    expected = git(layout.tests_repo_root, "rev-parse", "HEAD")
+    snapshot = linux_containers._runtime_harness_source(layout, reports)
+    assert snapshot.is_relative_to(layout.output_root / "tmp/linux-harness-snapshots")
+    assert (snapshot / ".git").is_dir()
+    assert not (snapshot / ".git/objects/info/alternates").exists()
+    assert git(snapshot, "rev-parse", "HEAD") == expected
+    assert git(snapshot, "status", "--porcelain") == ""
+    assert (snapshot / "sample.txt").read_text() == "sample harness\n"
+    assert (layout.tests_repo_root / ".git").read_text() == original_pointer
+    receipt = json.loads((reports / "harness-snapshot.json").read_text())
+    assert receipt["revision"] == expected
+    assert receipt["sourcePath"] == str(layout.tests_repo_root.resolve())
+
+
+def test_runtime_harness_snapshot_refuses_dirty_selected_source(tmp_path):
+    layout, reports, _git = _linked_harness_fixture(tmp_path)
+    (layout.tests_repo_root / "sample.txt").write_text("uncommitted changes\n")
+    with pytest.raises(RuntimeError, match="clean selected source"):
+        linux_containers._runtime_harness_source(layout, reports)
+    assert not (layout.output_root / "tmp/linux-harness-snapshots").exists()
+
+
+def test_runtime_harness_canonical_clone_keeps_existing_mount_path(tmp_path):
+    source = tmp_path / "canonical"
+    (source / ".git").mkdir(parents=True)
+    layout = SimpleNamespace(tests_repo_root=source)
+    assert linux_containers._runtime_harness_source(layout, tmp_path / "reports") == source.resolve()
+
+
 @pytest.fixture
 def hosted_context(monkeypatch):
     values = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "example/project",

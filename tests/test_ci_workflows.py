@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+from emule_workspace.config import resolve_required_workspace_roots
 
 
 def _repo_root() -> Path:
@@ -40,6 +43,11 @@ def test_branch_check_leaves_concurrency_to_reusable_workflow() -> None:
 
 
 def _workspace_root() -> Path:
+    if "EMULEBB_WORKSPACE_ROOT" in os.environ:
+        return resolve_required_workspace_roots()[0]
+    # WHY: standalone workflow lint checks out only this repository. Preserve
+    # its source-only discovery/optional external-repository coverage, while
+    # managed local runs use the inherited root rather than worktree depth.
     return _repo_root().parents[1]
 
 

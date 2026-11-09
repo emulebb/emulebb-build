@@ -15,8 +15,8 @@ from emule_workspace import release
 import suite_install_fixtures
 
 
-INSTALLER = Path("emule_workspace/release_assets/emulebb/scripts/Install-eMuleBBSuite.ps1")
-BOOTSTRAPPER = Path("emule_workspace/release_assets/emulebb/scripts/Bootstrap-eMuleBBSuite.ps1")
+INSTALLER = suite_install_fixtures.runtime_asset_path("scripts/Install-eMuleBBSuite.ps1")
+BOOTSTRAPPER = suite_install_fixtures.runtime_asset_path("scripts/Bootstrap-eMuleBBSuite.ps1")
 
 
 def test_bootstrap_fixture_rejects_unconfigured_http_without_network() -> None:
@@ -1048,7 +1048,7 @@ def test_suite_installer_requires_hashed_pinned_dependencies() -> None:
 
 def test_suite_installer_uses_packaged_language_manifest() -> None:
     installer = INSTALLER.read_text(encoding="utf-8")
-    language_manifest = Path("emule_workspace/release_assets/emulebb/config/suite-languages.json")
+    language_manifest = suite_install_fixtures.runtime_asset_path("config/suite-languages.json")
     payload = json.loads(language_manifest.read_text(encoding="utf-8"))
 
     assert payload["schema"] == "emulebb.suite-languages.v1"
@@ -1078,7 +1078,7 @@ def test_suite_installer_acquires_selected_p2p_clients() -> None:
 
 
 def test_suite_initializer_applies_arr_content_language_profiles() -> None:
-    script_path = Path("emule_workspace/release_assets/emulebb/scripts/Initialize-Suite.ps1")
+    script_path = suite_install_fixtures.runtime_asset_path("scripts/Initialize-Suite.ps1")
     _assert_powershell_parse(Path.cwd() / script_path, cwd=Path.cwd())
     initialize_suite = script_path.read_text(encoding="utf-8")
 
@@ -1104,7 +1104,7 @@ def test_suite_initializer_applies_arr_content_language_profiles() -> None:
 
 
 def test_suite_arr_registration_defers_prowlarr_sync_until_all_apps_are_saved() -> None:
-    script_path = Path("emule_workspace/release_assets/emulebb/scripts/Register-ArrStack.ps1")
+    script_path = suite_install_fixtures.runtime_asset_path("scripts/Register-ArrStack.ps1")
     _assert_powershell_parse(Path.cwd() / script_path, cwd=Path.cwd())
     register_arr_stack = script_path.read_text(encoding="utf-8")
 
@@ -1191,7 +1191,7 @@ def test_suite_arr_registration_defers_prowlarr_sync_until_all_apps_are_saved() 
 
 
 def test_suite_prowlarr_registration_requires_and_passes_api_keys() -> None:
-    script_path = Path("emule_workspace/release_assets/emulebb/scripts/Register-Prowlarr.ps1")
+    script_path = suite_install_fixtures.runtime_asset_path("scripts/Register-Prowlarr.ps1")
     _assert_powershell_parse(Path.cwd() / script_path, cwd=Path.cwd())
     register_prowlarr = script_path.read_text(encoding="utf-8")
 
@@ -1236,7 +1236,7 @@ def test_suite_windows_system_helpers_explain_admin_requirement() -> None:
         "Repair-Firewall.ps1": "Windows Firewall repair requires an elevated PowerShell window.",
         "Set-DefenderExclusions.ps1": "Microsoft Defender exclusion updates require an elevated PowerShell window.",
     }.items():
-        script_path = Path("emule_workspace/release_assets/emulebb/scripts") / script_name
+        script_path = suite_install_fixtures.runtime_asset_path("scripts") / script_name
         _assert_powershell_parse(Path.cwd() / script_path, cwd=Path.cwd())
         script = script_path.read_text(encoding="utf-8")
         assert "function Assert-Administrator" in script
@@ -1607,7 +1607,7 @@ function Copy-FixtureDownload {{
 
 
 def test_suite_bootstrapper_smokes_release_package_and_suite_scripts_assets(tmp_path: Path) -> None:
-    repo_root = Path.cwd()
+    repo_root = Path(__file__).resolve().parents[1]
     release_root = tmp_path / "release"
     package_root = tmp_path / "staging" / "eMuleBB"
     captured = tmp_path / "captured-release-assets.json"

@@ -44,6 +44,32 @@ def test_native_host_assets_are_selected_explicitly(monkeypatch, system, machine
     assert runtime.host_target() == target
 
 
+def test_linked_builder_preserves_operator_environment(installation, monkeypatch):
+    root, builder, output = installation
+    def git(*args):
+        return runtime.subprocess.check_output(["git", "-C", str(builder), *args], text=True)
+    git("init")
+    git("add", "pyproject.toml")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "commit", "-m", "fixture")
+    checkout = root / "workspaces/agents/first/emulebb-build"
+    git("worktree", "add", "--detach", str(checkout))
+    monkeypatch.setattr(runtime, "BUILD_ROOT", checkout)
+    inherited = dict(runtime.os.environ)
+    assert runtime.output_root() == output
+    assert dict(runtime.os.environ) == inherited
+
+
+def test_unrelated_builder_under_agents_is_rejected(installation, monkeypatch):
+    root, _, _ = installation
+    checkout = root / "workspaces/agents/impostor/emulebb-build"
+    checkout.mkdir(parents=True)
+    runtime.subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True)
+    monkeypatch.setattr(runtime, "BUILD_ROOT", checkout)
+    with pytest.raises(RuntimeError, match="canonical builder or its managed worktree"):
+        runtime.output_root()
+
+
 @pytest.mark.parametrize("fault", ["missing", "relative", "inside-workspace", "wrong-builder"])
 def test_invalid_operator_roots_are_reported_without_repair(installation, monkeypatch, fault):
     root, builder, output = installation
