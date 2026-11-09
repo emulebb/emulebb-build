@@ -414,6 +414,22 @@ def prepare_rust_android_toolchain(*, wsl_distro: str, workspace_options: Worksp
     _locked("prepare-rust-android-toolchain", prepare)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("prepare-rust-android-emulator")
+@_common_options
+@click.option("--image", "images", type=click.Choice(["min", "current"]), multiple=True)
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def prepare_rust_android_emulator(*, images: tuple[str, ...], wsl_distro: str,
+                                  workspace_options: WorkspaceOptions, layout) -> None:
+    """Build/probe emulator tools offline without booting a device or requiring local KVM."""
+    from .android_toolchain import prepare_emulator_toolchain
+
+    def prepare(**kwargs: Any) -> None:
+        report = prepare_emulator_toolchain(kwargs["layout"], images=images, wsl_distro=wsl_distro)
+        print(f"Android emulator tool probe passed: {report}")
+
+    _locked("prepare-rust-android-emulator", prepare)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("validate-rust-android")
 @_common_options
 @click.option("--abi", "abis", type=click.Choice(["arm64-v8a", "x86_64"]), multiple=True,

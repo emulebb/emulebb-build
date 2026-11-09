@@ -118,7 +118,17 @@ def test_android_tool_changes_require_real_wsl_docker_probe_before_push(tmp_path
 def test_docs_do_not_trigger_android_tool_downloads(tmp_path):
     repo = tmp_path / "repos/emulebb-build"
     plan = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
-    assert not any(command[-1] in {"prepare-rust-android-toolchain", "validate-rust-android"} for _, command in plan)
+    assert not any(command[-1] in {"prepare-rust-android-toolchain", "validate-rust-android", "prepare-rust-android-emulator"} for _, command in plan)
+
+
+@pytest.mark.parametrize("path", ["emule_workspace/android_probe.py", "emule_workspace/android_install.py",
+                                  "emule_workspace/release_assets/android/Dockerfile.emulator",
+                                  "emule_workspace/release_assets/android/emulator-inputs.json"])
+def test_emulator_tool_changes_require_offline_execution_before_push(tmp_path, path):
+    repo = tmp_path / "repos/emulebb-build"
+    plan = check_plan(repo, {path}, "push", tmp_path, tmp_path / "out")
+    command = next(command for _, command in plan if command[-1] == "prepare-rust-android-emulator")
+    assert "--image" not in command
 
 
 def test_rust_implementation_requires_android_compilation_before_push(tmp_path):

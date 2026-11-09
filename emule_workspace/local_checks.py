@@ -181,6 +181,14 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
             "emule_workspace/android_validation.py", "emule_workspace/release_assets/android/")) for path in paths)
     if stage == "push" and (android_tools_changed or repo.name == "emulebb-rust" and implementation):
         commands.append((root / "repos/emulebb-build", [py, "-B", "-m", "emule_workspace", "validate-rust-android"]))
+    emulator_tools_changed = repo.name == "emulebb-build" and any(path in {
+        "emule_workspace/android_inputs.py", "emule_workspace/android_install.py", "emule_workspace/android_probe.py",
+        "emule_workspace/android_toolchain.py", "emule_workspace/release_assets/android/Dockerfile",
+        "emule_workspace/release_assets/android/Dockerfile.emulator", "emule_workspace/release_assets/android/toolchain.json",
+        "emule_workspace/release_assets/android/emulator-inputs.json",
+    } for path in paths)
+    if stage == "push" and emulator_tools_changed:
+        commands.append((root / "repos/emulebb-build", [py, "-B", "-m", "emule_workspace", "prepare-rust-android-emulator"]))
     if repo.name == "emulebb-tooling":
         if stage == "push":
             if implementation:

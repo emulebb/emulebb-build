@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 import json
+import argparse
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 
-from .android_inputs import tool_inputs
+from .android_inputs import emulator_inputs, emulator_subset, tool_inputs
+from .android_install import emulator_layout
+
+
+def _properties(path: Path) -> dict[str, str]:
+    return {key.strip(): value.strip() for line in path.read_text().splitlines()
+            if "=" in line and not line.lstrip().startswith("#") for key, value in [line.split("=", 1)]}
 
 
 def probe() -> dict:
@@ -47,5 +55,60 @@ def probe() -> dict:
             "commandLinePackageRevision": properties["Pkg.Revision"], "probes": versions}
 
 
+def probe_emulator(*, require_kvm: bool = False) -> dict:
+    """Prove offline tool execution and installed image metadata, not guest boot."""
+    if platform.system() != "Linux" or platform.machine() != "x86_64" or os.getuid() == 0:
+        raise RuntimeError("Emulator tool probes require non-root native Linux x86_64")
+    root = Path("/opt/android-emulator")
+    installed = json.loads((root / "emulator-inputs.json").read_text())
+    roles = installed.get("assets", {})
+    if not isinstance(roles, dict) or "emulator" not in roles:
+        raise RuntimeError("Installed emulator input inventory is invalid")
+    images = tuple(sorted(role.removeprefix("system-image-") for role in roles if role != "emulator"))
+    inputs = emulator_subset(emulator_inputs(), images)
+    if installed != inputs:
+        raise RuntimeError("Installed emulator inputs differ from the reviewed pins")
+    metadata = {}
+    for role, (_archive_root, directory) in emulator_layout(inputs).items():
+        properties = _properties(root / directory / "source.properties")
+        item = inputs["assets"][role]
+        if role == "emulator":
+            build = item["url"].rsplit("-", 1)[-1].removesuffix(".zip")
+            if properties.get("Pkg.Revision") != item["version"] or properties.get("Pkg.BuildId") != build:
+                raise RuntimeError("Installed emulator version/build differs from its pin")
+        else:
+            api, revision = item["version"].split("-r")
+            tag = "default" if role == "system-image-min" else "page_size_16kb"
+            if (properties.get("Pkg.Revision") != revision or properties.get("AndroidVersion.ApiLevel") != api
+                    or properties.get("SystemImage.Abi") != "x86_64"
+                    or tag not in properties.get("SystemImage.TagId", "").split(",")
+                    or properties.get("AndroidVersion.PreviewSdkInt", "0") != "0"):
+                raise RuntimeError("Installed emulator guest API/revision/ABI/page-size variant differs from its pin")
+        metadata[role] = properties
+    Path.home().mkdir(parents=True, exist_ok=True)
+    executable = str(root / "emulator/emulator")
+    version = subprocess.run([executable, "-no-window", "-version"], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, timeout=60, check=False)
+    expected = re.escape(inputs["assets"]["emulator"]["version"])
+    if version.returncode or len(version.stdout) > 65536 or re.search(rf"Android emulator version\s+{expected}(?:\.[0-9]+)?\b", version.stdout) is None:
+        raise RuntimeError(f"Unexpected emulator version execution: {version.stdout[:65536]}")
+    kvm = {"deviceVisible": Path("/dev/kvm").exists(), "usable": False}
+    if kvm["deviceVisible"]:
+        acceleration = subprocess.run([executable, "-no-window", "-accel-check"], text=True, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=30, check=False)
+        kvm["usable"] = acceleration.returncode == 0
+    if require_kvm and not kvm["usable"]:
+        raise RuntimeError("Hardware-accelerated Android execution requires usable KVM; no software fallback")
+    return {"schema": "emulebb.android-emulator-toolchain-probe/1", "inputs": inputs,
+            "uid": os.getuid(), "gid": os.getgid(), "metadata": metadata,
+            "versionOutput": version.stdout.strip(), "kvm": kvm, "runtimeExecution": "not-run"}
+
+
 if __name__ == "__main__":
-    print(json.dumps(probe(), sort_keys=True))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--emulator", action="store_true")
+    parser.add_argument("--require-kvm", action="store_true")
+    arguments = parser.parse_args()
+    if arguments.require_kvm and not arguments.emulator:
+        parser.error("--require-kvm requires --emulator")
+    print(json.dumps(probe_emulator(require_kvm=arguments.require_kvm) if arguments.emulator else probe(), sort_keys=True))

@@ -60,3 +60,59 @@ def test_failed_version_probe_retains_diagnostic(environment, monkeypatch, exit_
     with pytest.raises(RuntimeError) as failure:
         probe.probe()
     assert output in str(failure.value)
+
+
+@pytest.fixture
+def emulator_environment(environment, monkeypatch):
+    inputs = probe.emulator_inputs()
+    monkeypatch.setattr(probe, "emulator_inputs", lambda: inputs)
+    original_exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda path: False if path.as_posix() == "/dev/kvm" else original_exists(path))
+    def read(path, *args, **kwargs):
+        if path.name == "emulator-inputs.json":
+            return json.dumps(inputs)
+        if path.parent.name == "emulator":
+            return "Pkg.Revision=37.2.13\nPkg.BuildId=16740729"
+        if "android-28" in path.as_posix():
+            return "Pkg.Revision=4\nAndroidVersion.ApiLevel=28\nSystemImage.Abi=x86_64\nSystemImage.TagId=default"
+        return ("Pkg.Revision=7\nAndroidVersion.ApiLevel=37.2\nSystemImage.Abi=x86_64\n"
+                "SystemImage.TagId=google_apis,page_size_16kb\nAndroidVersion.PreviewSdkInt=0")
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(probe.subprocess, "run", lambda command, **kwargs:
+                        subprocess.CompletedProcess(command, 0, "Android emulator version 37.2.13.0 (build_id 16740729)"))
+    return inputs
+
+
+def test_emulator_tool_execution_does_not_claim_guest_runtime(emulator_environment, monkeypatch):
+    execute = probe.subprocess.run
+    commands = []
+    def headless(command, **kwargs):
+        commands.append(command)
+        assert "-no-window" in command
+        return execute(command, **kwargs)
+    monkeypatch.setattr(probe.subprocess, "run", headless)
+    result = probe.probe_emulator()
+    assert result["inputs"] == emulator_environment
+    assert result["runtimeExecution"] == "not-run"
+    assert result["uid"] == 1000 and result["kvm"] == {"deviceVisible": False, "usable": False}
+    assert len(commands) == 1 and "-version" in commands[0]
+
+
+def test_required_kvm_cannot_silently_fall_back_to_software(emulator_environment):
+    with pytest.raises(RuntimeError, match="usable KVM"):
+        probe.probe_emulator(require_kvm=True)
+
+
+@pytest.mark.parametrize("field,value", [("SystemImage.Abi", "arm64-v8a"), ("AndroidVersion.PreviewSdkInt", "1"),
+                                       ("SystemImage.TagId", "google_apis"), ("AndroidVersion.ApiLevel", "37.1")])
+def test_wrong_guest_variant_fails_before_emulator_execution(emulator_environment, monkeypatch, field, value):
+    original = Path.read_text
+    def read(path, *args, **kwargs):
+        text = original(path, *args, **kwargs)
+        if "android-37.2" in path.as_posix():
+            text = "\n".join(field + "=" + value if line.startswith(field + "=") else line for line in text.splitlines())
+        return text
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(probe.subprocess, "run", lambda *args, **kwargs: pytest.fail("mismatched guest execution"))
+    with pytest.raises(RuntimeError, match="differs from its pin"):
+        probe.probe_emulator()
