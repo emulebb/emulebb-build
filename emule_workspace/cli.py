@@ -1457,12 +1457,17 @@ def test_certification(
 @test.command("rust-unit")
 @_common_options
 @click.option("--package", default=None, help="Limit to one Rust workspace package.")
-def test_rust_unit(*, package: str | None, workspace_options: WorkspaceOptions, layout) -> None:
+@click.option("--refresh-workspace-lock", is_flag=True,
+              help="Authoring only: refresh workspace lock entries offline before locked tests.")
+def test_rust_unit(*, package: str | None, refresh_workspace_lock: bool,
+                   workspace_options: WorkspaceOptions, layout) -> None:
     """Run Rust tests through workspace orchestration."""
 
     _locked(
         "test rust-unit",
-        lambda **kwargs: invoke_rust_unit_tests(kwargs["layout"], package=package),
+        lambda **kwargs: invoke_rust_unit_tests(
+            kwargs["layout"], package=package, refresh_workspace_lock=refresh_workspace_lock,
+        ),
     )(workspace_options=workspace_options, layout=layout)
 
 

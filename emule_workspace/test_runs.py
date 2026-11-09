@@ -968,7 +968,9 @@ def invoke_rust_network_proof(
     )
 
 
-def invoke_rust_unit_tests(layout: WorkspaceLayout, *, package: str | None = None) -> None:
+def invoke_rust_unit_tests(
+    layout: WorkspaceLayout, *, package: str | None = None, refresh_workspace_lock: bool = False,
+) -> None:
     """Run Rust unit/integration tests against the inherited canonical target dir."""
 
     args = ["cargo", "test", "--locked"]
@@ -977,6 +979,16 @@ def invoke_rust_unit_tests(layout: WorkspaceLayout, *, package: str | None = Non
     else:
         args.append("--workspace")
     try:
+        if refresh_workspace_lock:
+            # WHY: adding a workspace crate needs a lockfile update, but ordinary
+            # CI must never rewrite it. Cargo's workspace-only offline update
+            # retains unrelated locked dependencies and never downloads new input.
+            run_native(
+                ["cargo", "update", "--workspace", "--offline"],
+                label="eMuleBB Rust workspace lock refresh",
+                cwd=layout.emulebb_rust_repo_root,
+                env=_workspace_env(layout),
+            )
         run_native(
             args,
             label="eMuleBB Rust tests",
