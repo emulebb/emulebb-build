@@ -1,0 +1,89 @@
+name: Android guest boot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'feature/**', 'fix/**', 'chore/**']
+    paths:
+      - '.github/workflows/android-guest.yml'
+      - 'emule_workspace/android_toolchain.py'
+      - 'emule_workspace/android_install.py'
+      - 'emule_workspace/android_inputs.py'
+      - 'emule_workspace/android_probe.py'
+      - 'emule_workspace/release_assets/android/**'
+      - 'tests/test_android_guest.py'
+  pull_request:
+    paths:
+      - '.github/workflows/android-guest.yml'
+      - 'emule_workspace/android_toolchain.py'
+      - 'emule_workspace/android_install.py'
+      - 'emule_workspace/android_inputs.py'
+      - 'emule_workspace/android_probe.py'
+      - 'emule_workspace/release_assets/android/**'
+      - 'tests/test_android_guest.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-guest-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boot:
+    name: Stable Android guest (${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [min, current]
+    env:
+      EMULEBB_WORKSPACE_ROOT: ${{ github.workspace }}
+      EMULEBB_TESTS_REPO: ${{ github.workspace }}/repos/emulebb-build-tests
+    steps:
+      - name: Checkout build orchestration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: repos/emulebb-build
+      - name: Checkout pinned Android guest harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: emulebb/emulebb-build-tests
+          ref: 8b4c0c6666999b5458190314d26d409b0faf21b2
+          path: repos/emulebb-build-tests
+      - name: Set up pinned Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.15.2'
+      - name: Install pinned workspace CLI dependencies
+        run: python -m pip install click==8.4.1 pydantic==2.14.3
+      - name: Set up pinned Docker
+        uses: docker/setup-docker-action@7ec28a010822b4626af4874f9448a4b05ac6f3e5 # v5.6.0
+        with:
+          version: v29.6.1
+          daemon-config: '{"features":{"containerd-snapshotter":true}}'
+      - name: Set up pinned Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        with:
+          version: v0.35.0
+          driver: docker
+          use: false
+      - name: Run the shared isolated KVM boot probe
+        working-directory: repos/emulebb-build
+        env:
+          EMULEBB_WORKSPACE_OUTPUT_ROOT: ${{ runner.temp }}/emulebb-android-out
+        run: |
+          mkdir -p "$EMULEBB_WORKSPACE_OUTPUT_ROOT"
+          python -B -m emule_workspace probe-rust-android-guest-ci --image ${{ matrix.image }}
+      - name: Retain sanitized guest proof
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-guest-${{ matrix.image }}-${{ github.sha }}-${{ github.run_attempt }}
+          # Private AVDs, emulator logs and local authentication files stay off GitHub artifacts.
+          path: ${{ runner.temp }}/emulebb-android-out/reports/android-emulator-boot/*/validation.json
+          if-no-files-found: warn
+          retention-days: 14

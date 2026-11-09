@@ -430,6 +430,46 @@ def prepare_rust_android_emulator(*, images: tuple[str, ...], wsl_distro: str,
     _locked("prepare-rust-android-emulator", prepare)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("probe-rust-android-guest")
+@_common_options
+@click.option("--image", type=click.Choice(["min", "current"]), required=True)
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def probe_rust_android_guest(*, image: str, wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
+    """Boot one pinned Android guest with KVM; APK qualification is separate."""
+    from .android_toolchain import probe_emulator_guest
+
+    def probe(**kwargs: Any) -> None:
+        print(f"Android guest boot passed: {probe_emulator_guest(kwargs['layout'], image=image, wsl_distro=wsl_distro)}")
+
+    _locked("probe-rust-android-guest", probe)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("probe-rust-android-guest-ci")
+@click.option("--image", type=click.Choice(["min", "current"]), required=True)
+def probe_rust_android_guest_ci(*, image: str) -> None:
+    """Use the same guest boot owner on minimal hosted build/harness checkouts."""
+    from .android_toolchain import probe_emulator_guest
+    from .release import _emulebb_rust_artifact_origin
+
+    if _emulebb_rust_artifact_origin()["origin"] != "github-actions":
+        raise click.ClickException("CI Android guest boot requires GitHub Actions; use probe-rust-android-guest locally")
+    workspace, output = resolve_required_workspace_roots()
+    value = os.environ.get("EMULEBB_TESTS_REPO", "").strip()
+    if not value:
+        raise click.ClickException("CI Android guest boot requires inherited EMULEBB_TESTS_REPO")
+    harness = Path(value).resolve()
+    if not harness.is_dir() or not harness.is_relative_to(workspace):
+        raise click.ClickException("EMULEBB_TESTS_REPO must name an existing checkout below the workspace root")
+    layout = replace(build_ci_layout(output_root=output), emule_workspace_root=workspace,
+                     tests_repo_root=harness, build_repo_root=Path(__file__).resolve().parents[1])
+    options = WorkspaceOptions(workspace_root=workspace, output_root=output, workspace_name="ci")
+
+    def probe(**kwargs: Any) -> None:
+        print(f"Android guest boot passed: {probe_emulator_guest(kwargs['layout'], image=image)}")
+
+    _locked("probe-rust-android-guest-ci", probe)(workspace_options=options, layout=layout)
+
+
 @main.command("validate-rust-android")
 @_common_options
 @click.option("--abi", "abis", type=click.Choice(["arm64-v8a", "x86_64"]), multiple=True,
