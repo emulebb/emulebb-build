@@ -1,12 +1,20 @@
 """Exercise real Git worktree boundaries using local disposable repositories."""
 
 from dataclasses import dataclass
+from contextlib import contextmanager
+import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+import time
+from types import SimpleNamespace
 
 import pytest
 
 from emule_workspace import workstreams as ws
+from emule_workspace.git_environment import git_environment
 
 
 @dataclass
@@ -17,6 +25,10 @@ class Layout:
     tooling_repo_root: Path
     tests_repo_root: Path
     emulebb_rust_repo_root: Path
+
+    @property
+    def output_tmp_root(self):
+        return self.output_root / "tmp"
 
 
 @pytest.fixture
@@ -203,3 +215,228 @@ def test_cleanup_preserves_ignored_operator_files(layout):
     with pytest.raises(RuntimeError, match="Dirty"):
         ws.remove_workstream(layout, "alpha", "parent")
     assert state.read_text(encoding="utf-8") == "operator state\n"
+
+
+# These subprocesses use only disposable fixture roots. A separate process is
+# essential: a same-process lock mock cannot prove Windows/POSIX exclusion or
+# release after an abrupt exit.
+_LIFECYCLE_CHILD = r"""
+import json
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+from emule_workspace import workstreams as ws
+from emule_workspace.config import WorkspaceOptions
+from emule_workspace.locks import WorkspaceLock
+
+layout = SimpleNamespace(**{key: Path(value) for key, value in json.loads(sys.argv[1]).items()})
+layout.output_tmp_root = layout.output_root / 'tmp'
+ready, mode = Path(sys.argv[2]), sys.argv[3]
+def wait():
+    ready.write_text('held', encoding='utf-8')
+    sys.stdin.readline()
+if mode == 'heavy':
+    lock = WorkspaceLock(layout, 'fixture validation', WorkspaceOptions(workspace_root=layout.emule_workspace_root))
+    assert lock.acquire(), 'fixture workspace lock not acquired'
+    try:
+        wait()
+    finally:
+        lock.release()
+elif mode == 'lifecycle':
+    with ws._lifecycle_guard(layout):
+        wait()
+elif mode == 'create':
+    original = ws._git
+    def pause(repo, *args, **kwargs):
+        if args[:2] == ('worktree', 'add'):
+            wait()
+        return original(repo, *args, **kwargs)
+    ws._git = pause
+    ws.create_workstream(layout, 'contended', 'chore/contended', 'parent', ('emulebb-rust',))
+"""
+
+
+@contextmanager
+def lifecycle_child(layout, tmp_path, mode, *, crash=False):
+    ready = tmp_path / f"{mode}-ready"
+    environment = git_environment()
+    environment.pop("EMULEBB_WORKSPACE_LOCK_TOKEN", None)
+    process = subprocess.Popen(
+        [sys.executable, "-B", "-c", _LIFECYCLE_CHILD,
+         json.dumps({key: str(value) for key, value in vars(layout).items()}), str(ready), mode],
+        cwd=Path(ws.__file__).resolve().parents[1], env=environment,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            if process.poll() is not None:
+                raise AssertionError(process.communicate()[1])
+            if time.monotonic() >= deadline:
+                raise AssertionError("Fixture child did not reach its lock barrier")
+            time.sleep(0.02)
+        yield process
+    finally:
+        if crash and process.poll() is None:
+            process.kill()
+            process.wait(timeout=30)
+        if process.poll() is None:
+            try:
+                _, error = process.communicate("continue\n", timeout=30)
+                assert process.returncode == 0, error
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise
+        else:
+            _, error = process.communicate()
+            assert crash or process.returncode == 0, error
+
+
+def source_state(repo):
+    status = ws._git(repo, "status", "--porcelain")
+    common = Path(ws._common_dir(repo))
+    return {
+        "head": ws._git(repo, "rev-parse", "HEAD"),
+        "branch": ws._git(repo, "branch", "--show-current"),
+        "tracking": ws._git(repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"),
+        "tags": ws._git(repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/tags"),
+        "status": status,
+        "config": (common / "config").read_bytes(),
+        "index": hashlib.sha256((Path(ws._git(repo, "rev-parse", "--path-format=absolute", "--git-path", "index"))).read_bytes()).hexdigest(),
+        "fetch_head": (common / "FETCH_HEAD").read_bytes() if (common / "FETCH_HEAD").exists() else None,
+    }
+
+
+def test_cli_creates_during_real_heavy_lock_without_changing_active_sources(layout, tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from emule_workspace import cli
+    from emule_workspace.config import WorkspaceOptions
+
+    active = create(layout)
+    active_repo = Path(active["repositories"]["emulebb-rust"]["path"])
+    canonical = layout.emulebb_rust_repo_root
+    ws._git(canonical, "fetch", "origin", "main")
+    # A newer advertised main must not move shared origin/main or FETCH_HEAD.
+    writer = tmp_path / "writer"
+    ws._git(tmp_path, "clone", ws._git(canonical, "remote", "get-url", "origin"), str(writer))
+    for key, value in (("user.email", "fixture@example.invalid"), ("user.name", "Fixture Author"),
+                       ("core.hooksPath", str(tmp_path / "empty-hooks"))):
+        ws._git(writer, "config", key, value)
+    (writer / "sample.txt").write_text("new advertised main\n", encoding="utf-8")
+    ws._git(writer, "add", "sample.txt")
+    ws._git(writer, "commit", "-m", "fixture newer main")
+    ws._git(writer, "push", "origin", "main")
+    advertised = ws._git(writer, "rev-parse", "HEAD")
+    ws._git(canonical, "config", "fetch.prune", "true")
+    ws._git(canonical, "config", "fetch.pruneTags", "true")
+    ws._git(canonical, "update-ref", "refs/remotes/origin/retained-proof", active["repositories"]["emulebb-rust"]["base_revision"])
+    ws._git(canonical, "tag", "local-proof")
+    before = {str(repo): source_state(repo) for repo in [*ws._sources(layout).values(), active_repo]}
+    registration_path = layout.output_root / "tmp/workstreams/alpha.json"
+    registration_before = registration_path.read_bytes()
+    options = WorkspaceOptions(workspace_root=layout.emule_workspace_root, output_root=layout.output_root)
+    monkeypatch.chdir(layout.build_repo_root)
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: layout)
+    with lifecycle_child(layout, tmp_path, "heavy"):
+        metadata = layout.output_root / "tmp/active-command-lock.json"
+        owner = metadata.read_bytes()
+        result = CliRunner().invoke(cli.main, ["workstream", "create", "beta", "--branch", "chore/beta",
+                                               "--owner", "parent", "--repo", "emulebb-rust"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["repositories"]["emulebb-rust"]["base_revision"] == advertised
+        assert ws._git(layout.emule_workspace_root / "workspaces/agents/beta/emulebb-rust", "rev-parse", "HEAD") == advertised
+        assert metadata.read_bytes() == owner
+        assert registration_path.read_bytes() == registration_before
+        assert {str(repo): source_state(repo) for repo in [*ws._sources(layout).values(), active_repo]} == before
+        for arguments in (["add-repo", "alpha", "--repo", "emulebb-tooling"],
+                          ["remove", "alpha", "--owner", "parent"]):
+            blocked = CliRunner().invoke(cli.main, ["workstream", *arguments])
+            assert blocked.exit_code != 0 and "Workspace busy" in blocked.output
+        assert registration_path.read_bytes() == registration_before
+
+
+def test_concurrent_real_creator_cannot_replace_reserved_id_or_branch(layout, tmp_path):
+    create(layout)
+    path = layout.output_root / "tmp/workstreams/contended.json"
+    with lifecycle_child(layout, tmp_path, "create"):
+        reserved = path.read_bytes()
+        assert json.loads(reserved)["state"] == "creating"
+        with pytest.raises(RuntimeError, match="lifecycle busy"):
+            create(layout, "contended")
+        with pytest.raises(RuntimeError, match="lifecycle busy"):
+            create(layout, "other")
+        with pytest.raises(RuntimeError, match="lifecycle busy"):
+            ws.add_repository(layout, "alpha", "emulebb-tooling")
+        with pytest.raises(RuntimeError, match="lifecycle busy"):
+            ws.remove_workstream(layout, "alpha", "parent")
+        assert path.read_bytes() == reserved
+    completed = path.read_bytes()
+    with pytest.raises(RuntimeError, match="already registered"):
+        create(layout, "contended")
+    with pytest.raises(RuntimeError, match="Branch already exists"):
+        ws.create_workstream(layout, "other", "chore/contended", "parent", ("emulebb-rust",))
+    assert path.read_bytes() == completed
+    assert not (path.parent / "other.json").exists()
+
+
+def test_common_git_guard_excludes_other_registry_and_releases_after_crash(layout, tmp_path):
+    alternate = SimpleNamespace(**{**vars(layout), "output_root": tmp_path / "other-output"})
+    with lifecycle_child(layout, tmp_path, "lifecycle", crash=True):
+        with pytest.raises(RuntimeError, match="lifecycle busy"):
+            create(alternate)
+    registration = create(alternate)
+    assert registration["state"] == "ready"
+    # Persistent lock files are harmless; there is no stale PID-file recovery.
+    assert (layout.output_root / "tmp/workstreams/.lifecycle.lock").is_file()
+    assert ws.resolve_workstream(alternate.emule_workspace_root, alternate.output_root,
+                                 workstream_id="alpha")["id"] == "alpha"
+
+
+def test_crashed_creator_keeps_incomplete_receipt_and_refuses_automatic_recovery(layout, tmp_path):
+    path = layout.output_root / "tmp/workstreams/contended.json"
+    with lifecycle_child(layout, tmp_path, "create", crash=True):
+        reserved = path.read_bytes()
+    with pytest.raises(RuntimeError, match="already registered"):
+        create(layout, "contended")
+    assert path.read_bytes() == reserved
+    status = ws.workstream_status(layout, "contended")[0]
+    assert status["verification"] == "invalid" and "incomplete" in status["error"]
+    assert not (layout.emule_workspace_root / "workspaces/agents/contended/emulebb-rust").exists()
+
+
+def test_advertised_revision_fetch_failure_has_no_moving_ref_fallback(layout, monkeypatch):
+    original = ws._git
+    requested = "f" * 40
+    calls = []
+    def stale_advertisement(repo, *args, **kwargs):
+        calls.append(args)
+        if args[:1] == ("ls-remote",):
+            return requested + "\trefs/heads/main"
+        return original(repo, *args, **kwargs)
+    before = source_state(layout.emulebb_rust_repo_root)
+    monkeypatch.setattr(ws, "_git", stale_advertisement)
+    with pytest.raises(RuntimeError):
+        create(layout)
+    assert ("fetch", "--no-tags", "--no-prune", "--no-prune-tags",
+            "--no-write-fetch-head", "--refmap=", "origin", requested) in calls
+    assert not any("refs/remotes/origin/main" in arguments for arguments in calls)
+    assert source_state(layout.emulebb_rust_repo_root) == before
+    assert not (layout.output_root / "tmp/workstreams/alpha.json").exists()
+
+
+def test_create_ignores_inherited_foreign_git_repository_and_index(layout, monkeypatch):
+    foreign = layout.tooling_repo_root
+    before = source_state(foreign)
+    rust_before = source_state(layout.emulebb_rust_repo_root)
+    inherited = {"GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign),
+                 "GIT_INDEX_FILE": str(foreign / ".git/index")}
+    for name, value in inherited.items():
+        monkeypatch.setenv(name, value)
+    registration = create(layout)
+    selected = Path(registration["repositories"]["emulebb-rust"]["path"])
+    assert ws._git(selected, "rev-parse", "HEAD") == rust_before["head"]
+    assert source_state(foreign) == before
+    assert source_state(layout.emulebb_rust_repo_root) == rust_before
+    assert {name: os.environ[name] for name in inherited} == inherited
