@@ -64,22 +64,27 @@ def test_failed_version_probe_retains_diagnostic(environment, monkeypatch, exit_
 
 @pytest.fixture
 def emulator_environment(environment, monkeypatch):
-    inputs = probe.emulator_inputs()
+    inputs = probe.emulator_subset(probe.emulator_inputs(), ("min", "current"))
     monkeypatch.setattr(probe, "emulator_inputs", lambda: inputs)
     original_exists = Path.exists
     monkeypatch.setattr(Path, "exists", lambda path: False if path.as_posix() == "/dev/kvm" else original_exists(path))
     def read(path, *args, **kwargs):
+        if path.name == "toolchain.json":
+            return json.dumps(environment)
         if path.name == "emulator-inputs.json":
             return json.dumps(inputs)
         if path.parent.name == "emulator":
             return "Pkg.Revision=37.2.13\nPkg.BuildId=16740729"
+        if path.parent.name == "platform-tools":
+            return "Pkg.Revision=37.0.1"
         if "android-28" in path.as_posix():
             return "Pkg.Revision=4\nAndroidVersion.ApiLevel=28\nSystemImage.Abi=x86_64\nSystemImage.TagId=default"
         return ("Pkg.Revision=7\nAndroidVersion.ApiLevel=37.2\nSystemImage.Abi=x86_64\n"
                 "SystemImage.TagId=google_apis,page_size_16kb\nAndroidVersion.PreviewSdkInt=0")
     monkeypatch.setattr(Path, "read_text", read)
     monkeypatch.setattr(probe.subprocess, "run", lambda command, **kwargs:
-                        subprocess.CompletedProcess(command, 0, "Android emulator version 37.2.13.0 (build_id 16740729)"))
+                        subprocess.CompletedProcess(command, 0, "Version 37.0.1-123" if command[-1] == "version" else
+                            "Android emulator version 37.2.13.0 (build_id 16740729)"))
     return inputs
 
 
@@ -88,19 +93,31 @@ def test_emulator_tool_execution_does_not_claim_guest_runtime(emulator_environme
     commands = []
     def headless(command, **kwargs):
         commands.append(command)
-        assert "-no-window" in command
+        if "emulator/emulator" in command[0]:
+            assert "-no-window" in command
         return execute(command, **kwargs)
     monkeypatch.setattr(probe.subprocess, "run", headless)
     result = probe.probe_emulator()
     assert result["inputs"] == emulator_environment
     assert result["runtimeExecution"] == "not-run"
     assert result["uid"] == 1000 and result["kvm"] == {"deviceVisible": False, "usable": False}
-    assert len(commands) == 1 and "-version" in commands[0]
+    assert len(commands) == 2 and "-version" in commands[0]
+    assert commands[1][-1] == "version"
 
 
 def test_required_kvm_cannot_silently_fall_back_to_software(emulator_environment):
     with pytest.raises(RuntimeError, match="usable KVM"):
         probe.probe_emulator(require_kvm=True)
+
+
+def test_emulator_adb_package_mismatch_fails_before_execution(emulator_environment, monkeypatch):
+    original = Path.read_text
+    def read(path, *args, **kwargs):
+        return "Pkg.Revision=0" if path.parent.name == "platform-tools" else original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(probe.subprocess, "run", lambda *args, **kwargs: pytest.fail("unverified ADB execution"))
+    with pytest.raises(RuntimeError, match="ADB package revision"):
+        probe.probe_emulator()
 
 
 @pytest.mark.parametrize("field,value", [("SystemImage.Abi", "arm64-v8a"), ("AndroidVersion.PreviewSdkInt", "1"),

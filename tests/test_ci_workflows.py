@@ -9,7 +9,7 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def test_android_guest_proof_uploads_only_sanitized_results():
+def test_android_guest_proof_uploads_only_public_construction_and_sanitized_results():
     import yaml
 
     workflow = yaml.safe_load((_repo_root() / ".github/workflows/android-guest.yml").read_text(encoding="utf-8"))
@@ -21,7 +21,10 @@ def test_android_guest_proof_uploads_only_sanitized_results():
     assert any("probe-rust-android-guest-ci" in step.get("run", "") for step in steps)
     uploads = [step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")]
     assert len(uploads) == 1
-    assert uploads[0]["with"]["path"].endswith("/reports/android-emulator-boot/*/validation.json")
+    root = "${{ runner.temp }}/emulebb-android-out/reports/"
+    assert set(uploads[0]["with"]["path"].splitlines()) == {
+        root + "android-emulator/*/build.log", root + "android-emulator/*/toolchain-probe.json",
+        root + "android-emulator-boot/*/validation.json"}
     for step in steps:
         if step.get("uses", "").startswith("actions/checkout@"):
             assert step["with"]["persist-credentials"] is False

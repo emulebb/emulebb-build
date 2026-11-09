@@ -10,7 +10,7 @@ import zipfile
 
 import pytest
 
-from emule_workspace import android_install as install
+from emule_workspace import android_inputs, android_install as install
 
 
 @pytest.fixture
@@ -113,7 +113,7 @@ def test_extraction_failure_never_creates_success_receipt(installation):
 def test_emulator_and_both_images_use_verified_fresh_installation(tmp_path, monkeypatch, tamper):
     monkeypatch.setattr(install.platform, "system", lambda: "Linux")
     monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
-    inputs = install.emulator_inputs()
+    inputs = install.emulator_subset(install.emulator_inputs(), ("min", "current"))
     cache, destination = tmp_path / "cache", tmp_path / "emulator"
     for role, (root, _target) in install.emulator_layout(inputs).items():
         item = inputs["assets"][role]
@@ -125,6 +125,7 @@ def test_emulator_and_both_images_use_verified_fresh_installation(tmp_path, monk
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(buffer.getvalue())
     monkeypatch.setattr(install, "emulator_inputs", lambda: inputs)
+    monkeypatch.setattr(android_inputs, "tool_inputs", lambda: {"assets": {"platform-tools": inputs["assets"]["platform-tools"]}})
     def extract(command, **kwargs):
         with zipfile.ZipFile(command[2]) as archive:
             archive.extractall(command[-1])
@@ -141,6 +142,7 @@ def test_emulator_and_both_images_use_verified_fresh_installation(tmp_path, monk
         assert json.loads(receipt.read_text()) == inputs
         assert (destination / "system-images/android-28/default/x86_64/source.properties").is_file()
         assert (destination / "system-images/android-37.2/google_apis_ps16k/x86_64/source.properties").is_file()
+        assert (destination / "platform-tools/source.properties").is_file()
         assert not (destination / "licenses").exists()
 
 

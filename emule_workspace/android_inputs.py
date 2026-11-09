@@ -23,11 +23,15 @@ def emulator_inputs(config: Path = EMULATOR_CONFIG) -> dict:
 
 
 def emulator_subset(inputs: dict, images: tuple[str, ...]) -> dict:
-    """Select reviewed runtime images without implicitly downloading every guest."""
+    """Select emulator/ADB and requested guests without compiler-only inputs."""
     if len(set(images)) != len(images) or any(image not in {"min", "current"} for image in images):
         raise ValueError("Select unique minimum/current Android images")
     roles = {"emulator", *("system-image-" + image for image in images)}
-    return {**inputs, "assets": {role: item for role, item in inputs["assets"].items() if role in roles}}
+    assets = {role: item for role, item in inputs["assets"].items() if role in roles}
+    # WHY: guest boot needs ADB, but not the SDK/NDK/JDK/Gradle stack. Reuse
+    # its single reviewed pin without depending on unrelated upstream downloads.
+    assets["platform-tools"] = tool_inputs()["assets"]["platform-tools"]
+    return {**inputs, "assets": assets}
 
 
 def _read_inputs(config: Path, schema: str, roles: frozenset[str]) -> dict:

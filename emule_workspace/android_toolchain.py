@@ -25,7 +25,7 @@ def fetch_tool_inputs() -> Path:
 
 
 def fetch_emulator_inputs(*, images: tuple[str, ...] = ()) -> Path:
-    """Fetch only requested qualification images; ordinary local builds need none."""
+    """Fetch pinned emulator/ADB and only explicitly requested qualification images."""
     selected = emulator_subset(emulator_inputs(), images)
     return _fetch_inputs(selected, "android-emulator-inputs", "emulebb.android-emulator-cache/1")
 
@@ -119,7 +119,6 @@ def prepare_emulator_toolchain(layout, *, images: tuple[str, ...] = (), wsl_dist
     _workspace, output = resolve_required_workspace_roots()
     if layout.output_root.resolve() != output:
         raise RuntimeError("Android emulator output must match the inherited operator root")
-    base_report = prepare_toolchain(layout, wsl_distro=wsl_distro)
     cache = fetch_emulator_inputs(images=images).parent
     report = output / "reports/android-emulator" / uuid4().hex / "toolchain-probe.json"
     report.parent.mkdir(parents=True)
@@ -158,7 +157,7 @@ def prepare_emulator_toolchain(layout, *, images: tuple[str, ...] = (), wsl_dist
     if (probe.get("schema") != "emulebb.android-emulator-toolchain-probe/1" or probe.get("inputs") != inputs
             or probe.get("runtimeExecution") != "not-run"):
         raise RuntimeError("Android emulator probe returned inconsistent input identity")
-    value = {**probe, "image": {"tag": image, "id": image_id}, "toolchainReport": str(base_report)}
+    value = {**probe, "image": {"tag": image, "id": image_id}}
     report.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return report
 

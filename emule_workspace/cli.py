@@ -390,7 +390,7 @@ def fetch_rust_android_tools(*, workspace_options: WorkspaceOptions, layout) -> 
 @main.command("fetch-rust-android-emulator-tools")
 @_common_options
 @click.option("--image", "images", type=click.Choice(["min", "current"]), multiple=True,
-              help="Also fetch this pinned system image; default: emulator binary only.")
+              help="Also fetch this pinned system image; default: emulator and ADB only.")
 def fetch_rust_android_emulator_tools(*, images: tuple[str, ...], workspace_options: WorkspaceOptions, layout) -> None:
     """Cache pinned emulator inputs without executing tools or accepting licenses."""
     from .android_toolchain import fetch_emulator_inputs
