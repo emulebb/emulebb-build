@@ -7,6 +7,68 @@ from click.testing import CliRunner
 from emule_workspace import cli
 
 
+def test_ci_android_validation_rejects_local_execution(monkeypatch):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    result = CliRunner().invoke(cli.main, ["validate-rust-android-ci"])
+    assert result.exit_code != 0 and "requires GitHub Actions" in result.output
+
+
+def test_ci_android_validation_uses_shared_checks_and_workspace_lock(tmp_path, monkeypatch):
+    import os
+    from emule_workspace import android_validation, release
+
+    output = tmp_path / "output"
+    output.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    names = ("EMULEBB_RUST_REPO", "EMULEBB_TOOLING_REPO", "MINIUPNP_ROOT", "PCPNATPMP_ROOT")
+    for name in names:
+        path = workspace / name.lower()
+        path.mkdir()
+        monkeypatch.setenv(name, str(path))
+    monkeypatch.setattr(release, "_emulebb_rust_artifact_origin", lambda: {"origin": "github-actions"})
+    monkeypatch.setattr(cli, "resolve_required_workspace_roots", lambda: (workspace, output))
+    before = os.environ.copy()
+    captured = []
+    def locked(name, function):
+        def invoke(**kwargs):
+            assert name == "validate-rust-android-ci"
+            assert kwargs["workspace_options"].workspace_root == workspace
+            captured.append("locked")
+            return function(**kwargs)
+        return invoke
+    def validate(layout, *, abis):
+        assert captured == ["locked"]
+        assert layout.emule_workspace_root == workspace
+        assert layout.output_root == output
+        assert layout.emulebb_rust_repo_root == Path(os.environ["EMULEBB_RUST_REPO"])
+        assert layout.tooling_repo_root == Path(os.environ["EMULEBB_TOOLING_REPO"])
+        assert abis == ("x86_64",)
+        captured.append("validated")
+        return output / "validation.json"
+    monkeypatch.setattr(cli, "_locked", locked)
+    monkeypatch.setattr(android_validation, "validate_android", validate)
+    result = CliRunner().invoke(cli.main, ["validate-rust-android-ci", "--abi", "x86_64"])
+    assert result.exit_code == 0, result.output
+    assert captured == ["locked", "validated"]
+    assert os.environ == before
+
+
+def test_ci_android_validation_rejects_missing_and_external_inputs(tmp_path, monkeypatch):
+    from emule_workspace import release
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(release, "_emulebb_rust_artifact_origin", lambda: {"origin": "github-actions"})
+    monkeypatch.setattr(cli, "resolve_required_workspace_roots", lambda: (workspace, tmp_path))
+    monkeypatch.delenv("EMULEBB_RUST_REPO", raising=False)
+    result = CliRunner().invoke(cli.main, ["validate-rust-android-ci"])
+    assert result.exit_code != 0 and "requires inherited EMULEBB_RUST_REPO" in result.output
+    monkeypatch.setenv("EMULEBB_RUST_REPO", str(tmp_path))
+    result = CliRunner().invoke(cli.main, ["validate-rust-android-ci"])
+    assert result.exit_code != 0 and "below the workspace root" in result.output
+
+
 def test_python_bootstrap_reports_failures_as_cli_errors(monkeypatch):
     from emule_workspace import python_runtime
 
