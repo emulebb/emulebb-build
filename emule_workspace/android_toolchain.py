@@ -14,16 +14,29 @@ from uuid import uuid4
 
 from .python_runtime import download_verified, sha256
 
-from .android_inputs import ROLES, tool_inputs
+from .android_inputs import ROLES, emulator_inputs, tool_inputs
 
 
 def fetch_tool_inputs() -> Path:
     """Cache exact archives and record verified bytes without running SDK tools."""
+    return _fetch_inputs(tool_inputs(), "android-tool-inputs", "emulebb.android-tool-cache/1")
+
+
+def fetch_emulator_inputs(*, images: tuple[str, ...] = ()) -> Path:
+    """Fetch only requested qualification images; ordinary local builds need none."""
+    if len(set(images)) != len(images) or any(image not in {"min", "current"} for image in images):
+        raise ValueError("Select unique minimum/current Android images")
+    inputs = emulator_inputs()
+    roles = {"emulator", *("system-image-" + image for image in images)}
+    selected = {**inputs, "assets": {role: item for role, item in inputs["assets"].items() if role in roles}}
+    return _fetch_inputs(selected, "android-emulator-inputs", "emulebb.android-emulator-cache/1")
+
+
+def _fetch_inputs(inputs: dict, cache_name: str, schema: str) -> Path:
     from .config import resolve_required_workspace_roots
 
     _workspace, output = resolve_required_workspace_roots()
-    inputs = tool_inputs()
-    cache = output / "cache/android-tool-inputs"
+    cache = output / "cache" / cache_name
     if not cache.resolve().is_relative_to(output):
         raise RuntimeError("Android tool cache must remain within the inherited output root")
     records = {}
@@ -41,7 +54,7 @@ def fetch_tool_inputs() -> Path:
     receipt = cache / "verified-inputs.json"
     if receipt.is_symlink():
         raise RuntimeError("Android input receipt cannot replace a symlink")
-    value = {"schema": "emulebb.android-tool-cache/1", "host": inputs["host"], "assets": records}
+    value = {"schema": schema, "host": inputs["host"], "assets": records}
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache, delete=False) as stream:
