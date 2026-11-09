@@ -156,7 +156,9 @@ def validate_android(layout, *, abis: tuple[str, ...] = ("arm64-v8a", "x86_64"),
                 finally:
                     report.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
-            check("fetch-locked", ["fetch", "--locked", *[arg for abi in abis for arg in ("--target", TARGETS[abi][0])]])
+            # Cargo also compiles host build dependencies and procedural macros.
+            # Fetch the complete lockfile before disabling network access.
+            check("fetch-locked", ["fetch", "--locked"])
             for abi in abis:
                 for label, command in validation_plan(rust, abi):
                     check(abi + "-" + label, command, abi=abi)
