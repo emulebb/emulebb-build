@@ -375,6 +375,18 @@ def bootstrap_python(*, update_lock: bool, reinstall: bool) -> None:
         raise click.ClickException(str(error)) from error
 
 
+@main.command("fetch-rust-android-tools")
+@_common_options
+def fetch_rust_android_tools(*, workspace_options: WorkspaceOptions, layout) -> None:
+    """Download verified Android build inputs for Linux/WSL; do not install or execute them."""
+    from .android_toolchain import fetch_tool_inputs
+
+    def fetch(**kwargs: Any) -> None:
+        print(f"Verified Android input cache: {fetch_tool_inputs()}")
+
+    _locked("fetch-rust-android-tools", fetch)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("local-check")
 @click.option("--repo", type=click.Path(path_type=Path, exists=True), required=True)
 @click.option("--stage", type=click.Choice(["commit", "push"]), default="push")
