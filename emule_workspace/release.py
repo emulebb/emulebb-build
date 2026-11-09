@@ -900,6 +900,8 @@ def assemble_emulebb_rust_release_assets(assets_dir: Path, version: str) -> Path
         f"{stem}-linux-amd64-musl.tar.zst",
         f"{stem}-linux-arm64-musl.tar.zst",
     )
+    if ".nightly." in version:
+        payloads += tuple(f"{stem}-android-{abi}.tar.zst" for abi in ("arm64-v8a", "x86_64"))
     hosted = _emulebb_rust_artifact_origin()["origin"] == "github-actions"
     for name in payloads:
         payload = assets_dir / name

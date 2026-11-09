@@ -579,6 +579,36 @@ def validate_rust_android(*, abis: tuple[str, ...], wsl_distro: str, workspace_o
 def validate_rust_android_ci(*, abis: tuple[str, ...]) -> None:
     """Run the local Android validator on explicit, minimal GitHub checkouts."""
     from .android_validation import validate_android
+
+    options, layout = _android_ci_layout()
+
+    def validate(**kwargs: Any) -> None:
+        print(f"Android Rust target validation passed: {validate_android(kwargs['layout'], abis=abis)}")
+
+    _locked("validate-rust-android-ci", validate)(workspace_options=options, layout=layout)
+
+
+@main.command("package-rust-android-ci")
+@click.option("--abi", required=True, type=click.Choice(["arm64-v8a", "x86_64"]))
+@click.option("--release-version", required=True)
+@click.option("--channel", required=True, type=click.Choice(["nightly"]))
+@click.option("--expected-source-sha", required=True)
+def package_rust_android_ci(*, abi: str, release_version: str, channel: str, expected_source_sha: str) -> None:
+    """Build source-bound experimental Android daemon archives; never an APK."""
+    from .android_package import package_android
+
+    options, layout = _android_ci_layout()
+
+    def package(**kwargs: Any) -> None:
+        archive = package_android(kwargs["layout"], abi=abi, release_version=release_version,
+                                  channel=channel, expected_source_sha=expected_source_sha)
+        print(f"Experimental Android developer bundle: {archive}")
+
+    _locked("package-rust-android-ci", package)(workspace_options=options, layout=layout)
+
+
+def _android_ci_layout():
+    """Share the validated minimal hosted checkout boundary for Android owners."""
     from .release import _emulebb_rust_artifact_origin
 
     if _emulebb_rust_artifact_origin()["origin"] != "github-actions":
@@ -598,12 +628,7 @@ def validate_rust_android_ci(*, abis: tuple[str, ...]) -> None:
                      tooling_repo_root=paths["EMULEBB_TOOLING_REPO"])
     options = WorkspaceOptions(workspace_root=workspace, output_root=output, workspace_name="ci")
 
-    def validate(**kwargs: Any) -> None:
-        print(f"Android Rust target validation passed: {validate_android(kwargs['layout'], abis=abis)}")
-
-    # WHY: hosted checkouts have no materialized workspace manifest. Only layout
-    # selection differs; locking, source checks and all target checks stay shared.
-    _locked("validate-rust-android-ci", validate)(workspace_options=options, layout=layout)
+    return options, layout
 
 
 @main.command("local-check")
