@@ -156,3 +156,108 @@ def prepare_emulator_toolchain(layout, *, images: tuple[str, ...] = (), wsl_dist
     value = {**probe, "image": {"tag": image, "id": image_id}, "toolchainReport": str(base_report)}
     report.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return report
+
+
+def _guest_sources(layout) -> dict:
+    """Record only clean contributing revisions, without private remotes or paths."""
+    from .git import git_output
+
+    result = {}
+    for name, path in (("build", Path(__file__).resolve().parents[1]), ("harness", layout.tests_repo_root)):
+        if git_output(path, "status", "--porcelain", "--untracked-files=all").strip():
+            raise RuntimeError("Android guest boot requires clean build and harness checkouts")
+        commit = git_output(path, "rev-parse", "HEAD").strip()
+        if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            raise RuntimeError("Android guest boot requires full contributing source revisions")
+        result[name] = {"commit": commit}
+    return result
+
+
+def _kvm_group(docker) -> str:
+    """Preflight the selected Linux host before fetching or building guest inputs."""
+    available = subprocess.run([*docker.prefix, "test", "-c", "/dev/kvm"], capture_output=True, timeout=30)
+    if available.returncode:
+        raise RuntimeError("Android guest boot requires /dev/kvm on the selected Linux/WSL host; use GitHub KVM runners")
+    group = subprocess.check_output([*docker.prefix, "stat", "--format=%g", "/dev/kvm"], text=True, timeout=30).strip()
+    if re.fullmatch(r"0|[1-9][0-9]*", group) is None:
+        raise RuntimeError("Android KVM device requires a numeric group identity")
+    return group
+
+
+def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu") -> Path:
+    """Run the shared guest boot harness locally or on hosted KVM, without an APK."""
+    from .android_install import emulator_layout
+    from .config import resolve_required_workspace_roots
+    from .linux_containers import LinuxDocker, _builder_user, run_owned_container
+    from .release import _emulebb_rust_artifact_origin
+
+    inputs = emulator_subset(emulator_inputs(), (image,))
+    workspace, output = resolve_required_workspace_roots()
+    if layout.output_root.resolve() != output:
+        raise RuntimeError("Android guest output must match the inherited operator root")
+    harness = layout.tests_repo_root.resolve()
+    if not harness.is_relative_to(workspace) or not (harness / "scripts/probe-android-emulator.py").is_file():
+        raise RuntimeError("Android guest boot requires the shared harness below the workspace root")
+    with LinuxDocker(wsl_distro) as docker:
+        group = _kvm_group(docker)
+        if docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip() != "amd64":
+            raise RuntimeError("Android guest boot requires native AMD64 Docker")
+        user = _builder_user(docker)
+        if user.split(":")[0] == "0":
+            raise RuntimeError("Android guest boot requires a non-root operator")
+    source = _guest_sources(layout)
+    tool_report = prepare_emulator_toolchain(layout, images=(image,), wsl_distro=wsl_distro)
+    tools = json.loads(tool_report.read_text(encoding="utf-8"))
+    image_id = tools.get("image", {}).get("id", "")
+    if (re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None or tools.get("inputs") != inputs
+            or tools.get("runtimeExecution") != "not-run"):
+        raise RuntimeError("Android guest boot requires the exact verified emulator tool image")
+    role = "system-image-" + image
+    image_path = emulator_layout(inputs)[role][1]
+    api = int(inputs["assets"][role]["version"].split(".")[0].split("-")[0])
+    page_size = 4096 if image == "min" else 16384
+    directory = output / "reports/android-emulator-boot" / uuid4().hex
+    if not directory.resolve().is_relative_to(output):
+        raise RuntimeError("Android boot evidence must remain below the output root")
+    directory.mkdir(parents=True, mode=0o700)
+    report = directory / "validation.json"
+    value = {"schema": "emulebb.android.guest-validation/1", "status": "failed", "scope": "guest-boot",
+             "applicationQualification": "not-run", "source": source, "inputs": inputs,
+             "imageId": image_id, "selectedGuest": image, **_emulebb_rust_artifact_origin()}
+    try:
+        if _guest_sources(layout) != source:
+            raise RuntimeError("Android guest boot sources changed during tool preparation")
+        with LinuxDocker(wsl_distro) as docker:
+            # WHY: only this fresh run directory is writable. ADB has no host
+            # ports, USB access, Docker socket, credentials or shared server.
+            run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", user,
+                "--device", "/dev/kvm", "--group-add", group, "--network", "none", "--read-only",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
+                "--env", "HOME=/tmp/home", "--mount", f"type=bind,source={docker.path(directory)},target=/output",
+                "--mount", f"type=bind,source={docker.path(harness)},target=/harness,readonly",
+                image_id, "python3", "-B", "/harness/scripts/probe-android-emulator.py",
+                "--sdk-root", "/opt/android-emulator", "--image-dir", "/opt/android-emulator/" + image_path,
+                "--api", str(api), "--page-size", str(page_size), "--output-root", "/output",
+                "--report-dir", "/output/guest"], directory / "container.log", timeout=480)
+        guest = json.loads((directory / "guest/report.json").read_text(encoding="utf-8"))
+        expected = {"sdk": api, "codename": "REL", "machine": "x86_64", "pageSize": page_size, "emulator": True}
+        facts = guest.get("guest")
+        if (guest.get("schema") != "emulebb.android.emulator-boot/1" or guest.get("status") != "passed"
+                or guest.get("scope") != "guest-boot" or guest.get("applicationQualification") != "not-run"
+                or guest.get("kvm") is not True or not isinstance(facts, dict)
+                or any(facts.get(key) != item for key, item in expected.items())
+                or not isinstance(facts.get("supported64BitAbis"), list)
+                or "x86_64" not in facts["supported64BitAbis"]):
+            raise RuntimeError("Android boot harness did not prove the requested stable guest")
+        if _guest_sources(layout) != source:
+            raise RuntimeError("Android guest boot sources changed during qualification")
+        # Publish an allowlisted result only; private AVDs and emulator logs can
+        # contain local authentication material and must never be uploaded.
+        value.update(status="passed", guest=expected, kvm=True)
+    except BaseException as error:
+        value["failureType"] = type(error).__name__
+        raise
+    finally:
+        report.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report

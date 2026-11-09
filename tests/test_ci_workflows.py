@@ -9,6 +9,25 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def test_android_guest_proof_uploads_only_sanitized_results():
+    import yaml
+
+    workflow = yaml.safe_load((_repo_root() / ".github/workflows/android-guest.yml").read_text(encoding="utf-8"))
+    assert workflow["permissions"] == {"contents": "read"}
+    job = workflow["jobs"]["boot"]
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert set(job["strategy"]["matrix"]["image"]) == {"min", "current"}
+    steps = job["steps"]
+    assert any("probe-rust-android-guest-ci" in step.get("run", "") for step in steps)
+    uploads = [step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")]
+    assert len(uploads) == 1
+    assert uploads[0]["with"]["path"].endswith("/reports/android-emulator-boot/*/validation.json")
+    for step in steps:
+        if step.get("uses", "").startswith("actions/checkout@"):
+            assert step["with"]["persist-credentials"] is False
+        assert "secrets." not in str(step)
+
+
 def test_branch_check_leaves_concurrency_to_reusable_workflow() -> None:
     text = (_repo_root() / ".github/workflows/branch-check.yml").read_text(encoding="utf-8")
     # WHY: identical caller/callee groups cancel the caller before any jobs run.

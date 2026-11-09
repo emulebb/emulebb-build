@@ -7,6 +7,48 @@ from click.testing import CliRunner
 from emule_workspace import cli
 
 
+def test_ci_android_guest_rejects_local_execution(monkeypatch):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    result = CliRunner().invoke(cli.main, ["probe-rust-android-guest-ci", "--image", "min"])
+    assert result.exit_code != 0 and "requires GitHub Actions" in result.output
+
+
+def test_ci_android_guest_uses_shared_owner_under_lock(tmp_path, monkeypatch):
+    import os
+    from emule_workspace import android_toolchain, release
+
+    workspace = tmp_path / "workspace"
+    harness = workspace / "repos/emulebb-build-tests"
+    harness.mkdir(parents=True)
+    output = tmp_path / "output"
+    output.mkdir()
+    monkeypatch.setenv("EMULEBB_TESTS_REPO", str(harness))
+    monkeypatch.setattr(cli, "resolve_required_workspace_roots", lambda: (workspace, output))
+    monkeypatch.setattr(release, "_emulebb_rust_artifact_origin", lambda: {"origin": "github-actions"})
+    called = []
+
+    def locked(name, operation):
+        def invoke(**kwargs):
+            assert name == "probe-rust-android-guest-ci"
+            called.append("locked")
+            return operation(**kwargs)
+        return invoke
+
+    def probe(layout, *, image):
+        assert called == ["locked"] and image == "current"
+        assert layout.tests_repo_root == harness and layout.emule_workspace_root == workspace
+        assert layout.output_root == output
+        called.append("probed")
+        return output / "validation.json"
+
+    monkeypatch.setattr(cli, "_locked", locked)
+    monkeypatch.setattr(android_toolchain, "probe_emulator_guest", probe)
+    before = os.environ.copy()
+    result = CliRunner().invoke(cli.main, ["probe-rust-android-guest-ci", "--image", "current"])
+    assert result.exit_code == 0, result.output
+    assert called == ["locked", "probed"] and os.environ == before
+
+
 def test_ci_android_validation_rejects_local_execution(monkeypatch):
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     result = CliRunner().invoke(cli.main, ["validate-rust-android-ci"])
