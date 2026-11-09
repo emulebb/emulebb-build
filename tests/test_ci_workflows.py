@@ -108,7 +108,7 @@ def test_build_baseline_uses_supported_reusable_inputs() -> None:
     workflow = _repo_root() / ".github" / "workflows" / "baseline.yml"
     text = workflow.read_text(encoding="utf-8")
 
-    assert "uses: emulebb/emulebb-tooling/.github/workflows/reusable-baseline.yml@01e96f56d9f3939e109f78f724902fbb7febc029" in text
+    assert "uses: emulebb/emulebb-tooling/.github/workflows/reusable-baseline.yml@856e0499d12e281697618cc81a0b09805e96f59e" in text
     assert "repo_kind: emulebb-build" in text
     assert "extra_step_script:" not in text
     assert "extra_commands:" in text
