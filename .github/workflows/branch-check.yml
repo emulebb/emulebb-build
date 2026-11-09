@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   check:
-    uses: emulebb/emulebb-tooling/.github/workflows/branch-check.yml@630d1a3492ae65acad0a8dfd1575d671ff7b492c
+    uses: emulebb/emulebb-tooling/.github/workflows/branch-check.yml@856e0499d12e281697618cc81a0b09805e96f59e
     with:
       repo_kind: emulebb-build
-      tooling_ref: 630d1a3492ae65acad0a8dfd1575d671ff7b492c
+      tooling_ref: 856e0499d12e281697618cc81a0b09805e96f59e
