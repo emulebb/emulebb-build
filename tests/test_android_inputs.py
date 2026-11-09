@@ -24,6 +24,12 @@ def test_emulator_inputs_separate_minimum_aosp_and_current_16kb_images():
     assert not inputs.EMULATOR_ROLES & inputs.ROLES
 
 
+def test_guest_tool_selection_uses_shared_adb_pin_and_excludes_compilers():
+    selected = inputs.emulator_subset(inputs.emulator_inputs(), ())
+    assert set(selected["assets"]) == {"emulator", "platform-tools"}
+    assert selected["assets"]["platform-tools"] == inputs.tool_inputs()["assets"]["platform-tools"]
+
+
 @pytest.mark.parametrize("role,changes", [
     ("emulator", {"url": "https://dl.google.com/android/repository/emulator-linux_x64-latest.zip"}),
     ("emulator", {"sha256": "f" * 63}),

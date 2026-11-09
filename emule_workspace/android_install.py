@@ -55,8 +55,10 @@ def install_inputs(cache: Path, destination: Path) -> Path:
 def emulator_layout(inputs: dict) -> dict[str, tuple[str, str]]:
     """Keep runtime SDK packages in a fresh emulator-only SDK root."""
     layout = {"emulator": ("emulator", "emulator")}
+    if "platform-tools" in inputs["assets"]:
+        layout["platform-tools"] = ("platform-tools", "platform-tools")
     for role, item in inputs["assets"].items():
-        if role == "emulator":
+        if role in {"emulator", "platform-tools"}:
             continue
         api = item["version"].split("-r")[0]
         tag = "default" if role == "system-image-min" else "google_apis_ps16k"

@@ -64,7 +64,7 @@ def probe_emulator(*, require_kvm: bool = False) -> dict:
     roles = installed.get("assets", {})
     if not isinstance(roles, dict) or "emulator" not in roles:
         raise RuntimeError("Installed emulator input inventory is invalid")
-    images = tuple(sorted(role.removeprefix("system-image-") for role in roles if role != "emulator"))
+    images = tuple(sorted(role.removeprefix("system-image-") for role in roles if role.startswith("system-image-")))
     inputs = emulator_subset(emulator_inputs(), images)
     if installed != inputs:
         raise RuntimeError("Installed emulator inputs differ from the reviewed pins")
@@ -76,6 +76,9 @@ def probe_emulator(*, require_kvm: bool = False) -> dict:
             build = item["url"].rsplit("-", 1)[-1].removesuffix(".zip")
             if properties.get("Pkg.Revision") != item["version"] or properties.get("Pkg.BuildId") != build:
                 raise RuntimeError("Installed emulator version/build differs from its pin")
+        elif role == "platform-tools":
+            if properties.get("Pkg.Revision") != item["version"]:
+                raise RuntimeError("Installed emulator ADB package revision differs from its pin")
         else:
             api, revision = item["version"].split("-r")
             tag = "default" if role == "system-image-min" else "page_size_16kb"
@@ -92,6 +95,12 @@ def probe_emulator(*, require_kvm: bool = False) -> dict:
     expected = re.escape(inputs["assets"]["emulator"]["version"])
     if version.returncode or len(version.stdout) > 65536 or re.search(rf"Android emulator version\s+{expected}(?:\.[0-9]+)?\b", version.stdout) is None:
         raise RuntimeError(f"Unexpected emulator version execution: {version.stdout[:65536]}")
+    adb = subprocess.run([str(root / "platform-tools/adb"), "version"], text=True, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=30, check=False)
+    adb_version = re.escape(inputs["assets"]["platform-tools"]["version"])
+    if (adb.returncode or len(adb.stdout) > 65536
+            or re.search(rf"\bVersion\s+{adb_version}(?:-|\s|$)", adb.stdout) is None):
+        raise RuntimeError("Unexpected emulator ADB version execution")
     kvm = {"deviceVisible": Path("/dev/kvm").exists(), "usable": False}
     if kvm["deviceVisible"]:
         acceleration = subprocess.run([executable, "-no-window", "-accel-check"], text=True, stdout=subprocess.PIPE,
@@ -101,7 +110,8 @@ def probe_emulator(*, require_kvm: bool = False) -> dict:
         raise RuntimeError("Hardware-accelerated Android execution requires usable KVM; no software fallback")
     return {"schema": "emulebb.android-emulator-toolchain-probe/1", "inputs": inputs,
             "uid": os.getuid(), "gid": os.getgid(), "metadata": metadata,
-            "versionOutput": version.stdout.strip(), "kvm": kvm, "runtimeExecution": "not-run"}
+            "versionOutput": version.stdout.strip(), "adbVersionOutput": adb.stdout.strip(),
+            "kvm": kvm, "runtimeExecution": "not-run"}
 
 
 if __name__ == "__main__":
