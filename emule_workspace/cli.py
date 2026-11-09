@@ -387,6 +387,20 @@ def fetch_rust_android_tools(*, workspace_options: WorkspaceOptions, layout) -> 
     _locked("fetch-rust-android-tools", fetch)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("fetch-rust-android-emulator-tools")
+@_common_options
+@click.option("--image", "images", type=click.Choice(["min", "current"]), multiple=True,
+              help="Also fetch this pinned system image; default: emulator binary only.")
+def fetch_rust_android_emulator_tools(*, images: tuple[str, ...], workspace_options: WorkspaceOptions, layout) -> None:
+    """Cache pinned emulator inputs without executing tools or accepting licenses."""
+    from .android_toolchain import fetch_emulator_inputs
+
+    def fetch(**kwargs: Any) -> None:
+        print(f"Verified Android emulator input cache: {fetch_emulator_inputs(images=images)}")
+
+    _locked("fetch-rust-android-emulator-tools", fetch)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("prepare-rust-android-toolchain")
 @_common_options
 @click.option("--wsl-distro", default="Ubuntu", show_default=True)

@@ -1,0 +1,24 @@
+{
+  "schema": "emulebb.android-emulator-inputs/1",
+  "host": "linux-x86_64",
+  "assets": {
+    "emulator": {
+      "version": "37.2.13",
+      "url": "https://dl.google.com/android/repository/emulator-linux_x64-16740729.zip",
+      "sha256": "cbc7c3cfb83220b8a0f9c513fdab557712e74d339ec19ddffa43f23350ae9bdd",
+      "kind": "zip"
+    },
+    "system-image-min": {
+      "version": "28-r4",
+      "url": "https://dl.google.com/android/repository/sys-img/android/x86_64-28_r04.zip",
+      "sha256": "ff6ce81aa1424951a214da5f392f8e12382de46d33c08aeaa5d21caba6a39b62",
+      "kind": "zip"
+    },
+    "system-image-current": {
+      "version": "37.2-r7",
+      "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-ps16k-37.2_r07.zip",
+      "sha256": "02d2cdb501d11f70f318a2e542e8b997edb0d468855399d8c8efae22721b9b8c",
+      "kind": "zip"
+    }
+  }
+}

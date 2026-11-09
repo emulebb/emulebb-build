@@ -8,15 +8,26 @@ from urllib.parse import urlsplit
 
 CONFIG = Path(__file__).parent / "release_assets/android/toolchain.json"
 ROLES = frozenset({"command-line-tools", "ndk", "build-tools", "platform", "platform-tools", "gradle", "jdk", "android-cli"})
+EMULATOR_CONFIG = CONFIG.with_name("emulator-inputs.json")
+EMULATOR_ROLES = frozenset({"emulator", "system-image-min", "system-image-current"})
 
 
 def tool_inputs(config: Path = CONFIG) -> dict:
     """Reject incomplete or floating input declarations before any download."""
+    return _read_inputs(config, "emulebb.android-tool-inputs/1", ROLES)
+
+
+def emulator_inputs(config: Path = EMULATOR_CONFIG) -> dict:
+    """Keep emulator/image pins separate from the mandatory local compile inputs."""
+    return _read_inputs(config, "emulebb.android-emulator-inputs/1", EMULATOR_ROLES)
+
+
+def _read_inputs(config: Path, schema: str, roles: frozenset[str]) -> dict:
     value = json.loads(config.read_text(encoding="utf-8"))
     if (not isinstance(value, dict) or set(value) != {"schema", "host", "assets"}
-            or value["schema"] != "emulebb.android-tool-inputs/1"
+            or value["schema"] != schema
             or value["host"] != "linux-x86_64"
-            or not isinstance(value["assets"], dict) or set(value["assets"]) != ROLES):
+            or not isinstance(value["assets"], dict) or set(value["assets"]) != roles):
         raise RuntimeError("Expected the complete reviewed Linux x86_64 Android tool inputs")
     for role, item in value["assets"].items():
         if (not isinstance(item, dict) or set(item) != {"version", "url", "sha256", "kind"}
@@ -33,10 +44,22 @@ def tool_inputs(config: Path = CONFIG) -> dict:
             ("dl.google.com", "/android/repository/"))
         if role == "android-cli":
             expected_host, prefix = "dl.google.com", "/android/cli/" + item["version"] + "/linux_x86_64/"
+        elif role.startswith("system-image-"):
+            prefix += "sys-img/" + ("android/" if role == "system-image-min" else "google_apis/")
         filename = url.path.rsplit("/", 1)[-1]
         if (url.scheme != "https" or url.netloc != expected_host or not url.path.startswith(prefix)
                 or url.query or url.fragment
                 or (filename != "android-cli" if role == "android-cli" else not filename.endswith("." + expected_kind))
                 or re.fullmatch(r"[A-Za-z0-9_.+-]+", filename) is None):
             raise RuntimeError(f"Android input must use a reviewed official archive URL: {role}")
+        if role == "emulator" and re.fullmatch(r"emulator-linux_x64-[0-9]+\.zip", filename) is None:
+            raise RuntimeError("Android emulator must use an immutable build archive")
+        if role.startswith("system-image-"):
+            version = re.fullmatch(r"(?P<api>[0-9]+(?:\.[0-9]+)?)-r(?P<revision>[0-9]+)", item["version"])
+            if version is None:
+                raise RuntimeError("Android system images require an API and exact revision")
+            variant = "ps16k-" if role == "system-image-current" else ""
+            expected = f"x86_64-{variant}{version['api']}_r{int(version['revision']):02}.zip"
+            if filename != expected:
+                raise RuntimeError("Android system image URL must match its API, page-size variant and revision")
     return value

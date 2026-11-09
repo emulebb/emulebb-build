@@ -93,3 +93,42 @@ def test_external_cache_directory_is_rejected(cache, tmp_path):
         android.fetch_tool_inputs()
     assert not list(external.iterdir())
     download.assert_not_called()
+
+
+@pytest.mark.parametrize("images,roles", [
+    ((), {"emulator"}),
+    (("min",), {"emulator", "system-image-min"}),
+    (("current",), {"emulator", "system-image-current"}),
+    (("min", "current"), {"emulator", "system-image-min", "system-image-current"}),
+])
+def test_emulator_cache_downloads_only_requested_images_and_rechecks_every_byte(cache, monkeypatch, images, roles):
+    output, _tools, payload, download = cache
+    value = copy.deepcopy(android.emulator_inputs())
+    for item in value["assets"].values():
+        item["sha256"] = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(android, "emulator_inputs", lambda: value)
+    receipt = android.fetch_emulator_inputs(images=images)
+    assert receipt == output / "cache/android-emulator-inputs/verified-inputs.json"
+    records = json.loads(receipt.read_text())
+    assert records["schema"] == "emulebb.android-emulator-cache/1"
+    assert set(records["assets"]) == roles
+    assert download.call_count == len(roles)
+    before = receipt.read_bytes()
+    download.reset_mock()
+    android.fetch_emulator_inputs(images=images)
+    download.assert_not_called()
+    first = next(iter(records["assets"].values()))
+    (output / first["path"]).write_bytes(b"tampered input")
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        android.fetch_emulator_inputs(images=images)
+    assert receipt.read_bytes() == before
+    download.assert_not_called()
+
+
+@pytest.mark.parametrize("images", [("unknown",), ("min", "min")])
+def test_unknown_or_duplicate_image_selection_fails_before_downloading(monkeypatch, images):
+    download = Mock()
+    monkeypatch.setattr(android, "download_verified", download)
+    with pytest.raises(ValueError, match="unique"):
+        android.fetch_emulator_inputs(images=images)
+    download.assert_not_called()
