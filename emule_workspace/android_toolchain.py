@@ -8,52 +8,26 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import re
 import tempfile
 from urllib.parse import urlsplit
+from uuid import uuid4
 
-from .config import resolve_required_workspace_roots
 from .python_runtime import download_verified, sha256
 
-CONFIG = Path(__file__).parent / "release_assets/android/toolchain.json"
-ROLES = frozenset({"command-line-tools", "ndk", "build-tools", "platform", "platform-tools", "gradle", "jdk"})
-
-
-def tool_inputs(config: Path = CONFIG) -> dict:
-    """Reject incomplete or floating input declarations before any download."""
-    value = json.loads(config.read_text(encoding="utf-8"))
-    if (not isinstance(value, dict) or set(value) != {"schema", "host", "archives"}
-            or value["schema"] != "emulebb.android-tool-inputs/1"
-            or value["host"] != "linux-x86_64"
-            or not isinstance(value["archives"], dict) or set(value["archives"]) != ROLES):
-        raise RuntimeError("Expected the complete reviewed Linux x86_64 Android tool inputs")
-    for role, item in value["archives"].items():
-        if (not isinstance(item, dict) or set(item) != {"version", "url", "sha256"}
-                or not all(isinstance(part, str) for part in item.values())
-                or re.fullmatch(r"[0-9]+(?:\.[0-9]+)*(?:[+-](?:r)?[0-9]+)?", item["version"]) is None
-                or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None):
-            raise RuntimeError(f"Invalid reviewed Android input: {role}")
-        url = urlsplit(item["url"])
-        expected_host, prefix = ("services.gradle.org", "/distributions/") if role == "gradle" else (
-            ("github.com", "/adoptium/temurin21-binaries/releases/download/") if role == "jdk" else
-            ("dl.google.com", "/android/repository/"))
-        filename = url.path.rsplit("/", 1)[-1]
-        if (url.scheme != "https" or url.netloc != expected_host or not url.path.startswith(prefix)
-                or url.query or url.fragment or not filename.endswith((".zip", ".tar.gz"))
-                or re.fullmatch(r"[A-Za-z0-9_.+-]+", filename) is None):
-            raise RuntimeError(f"Android input must use a reviewed official archive URL: {role}")
-    return value
+from .android_inputs import ROLES, tool_inputs
 
 
 def fetch_tool_inputs() -> Path:
     """Cache exact archives and record verified bytes without running SDK tools."""
+    from .config import resolve_required_workspace_roots
+
     _workspace, output = resolve_required_workspace_roots()
     inputs = tool_inputs()
     cache = output / "cache/android-tool-inputs"
     if not cache.resolve().is_relative_to(output):
         raise RuntimeError("Android tool cache must remain within the inherited output root")
     records = {}
-    for role, item in sorted(inputs["archives"].items()):
+    for role, item in sorted(inputs["assets"].items()):
         filename = urlsplit(item["url"]).path.rsplit("/", 1)[-1]
         target = cache / item["sha256"] / filename
         if target.is_symlink() or not target.resolve().is_relative_to(cache.resolve()):
@@ -67,7 +41,7 @@ def fetch_tool_inputs() -> Path:
     receipt = cache / "verified-inputs.json"
     if receipt.is_symlink():
         raise RuntimeError("Android input receipt cannot replace a symlink")
-    value = {"schema": "emulebb.android-tool-cache/1", "host": inputs["host"], "archives": records}
+    value = {"schema": "emulebb.android-tool-cache/1", "host": inputs["host"], "assets": records}
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache, delete=False) as stream:
@@ -78,3 +52,43 @@ def fetch_tool_inputs() -> Path:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     return receipt
+
+
+def prepare_toolchain(layout, *, wsl_distro: str = "Ubuntu") -> Path:
+    """Build and probe one reviewed native Android toolchain through Linux/WSL Docker."""
+    from .config import resolve_required_workspace_roots
+    from .linux_containers import LinuxDocker, _builder_user, run_owned_container
+
+    output = layout.output_root.resolve()
+    _workspace, inherited_output = resolve_required_workspace_roots()
+    if output != inherited_output:
+        raise RuntimeError("Android toolchain output must match the inherited operator root")
+    cache = fetch_tool_inputs().parent
+    root = Path(__file__).resolve().parents[1]
+    image = "local/emulebb-android-toolchain:reviewed"
+    report = output / "reports/android-toolchain" / uuid4().hex / "toolchain-probe.json"
+    report.parent.mkdir(parents=True)
+    log = report.with_suffix(".log")
+    with LinuxDocker(wsl_distro) as docker:
+        arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
+        if arch != "amd64":
+            raise RuntimeError("The reviewed Android SDK/NDK archives require native AMD64 Docker")
+        user = _builder_user(docker)
+        if user.split(":")[0] == "0":
+            raise RuntimeError("Run Android validation as a non-root Linux/WSL operator")
+        context = docker.path(root)
+        docker.run("build", "--platform", "linux/amd64", "--build-context", f"android-inputs={docker.path(cache)}",
+                   "--file", context + "/emule_workspace/release_assets/android/Dockerfile",
+                   "--tag", image, context, timeout=1200)
+        run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", user,
+                             "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                             # The pinned CLI unpacks its embedded JVM here;
+                             # its shared libraries require executable mappings.
+                             "--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
+                             "--env", "HOME=/tmp/home", "--env", "GRADLE_USER_HOME=/tmp/gradle",
+                             image, "python3", "-B", "-m", "emule_workspace.android_probe"], log, timeout=300)
+    probe = json.loads(log.read_text(encoding="utf-8"))
+    if probe.get("schema") != "emulebb.android-toolchain-probe/1" or probe.get("inputs") != tool_inputs():
+        raise RuntimeError("Android toolchain probe returned inconsistent input identity")
+    report.write_text(json.dumps(probe, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report

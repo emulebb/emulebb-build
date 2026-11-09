@@ -1,41 +1,54 @@
 {
   "schema": "emulebb.android-tool-inputs/1",
   "host": "linux-x86_64",
-  "archives": {
+  "assets": {
     "command-line-tools": {
       "version": "23.0",
       "url": "https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip",
-      "sha256": "0877a1d048fe4a24efe2eff536ca4223f7adeb58648bb81909d33c446918cfa8"
+      "sha256": "0877a1d048fe4a24efe2eff536ca4223f7adeb58648bb81909d33c446918cfa8",
+      "kind": "zip"
     },
     "ndk": {
       "version": "30.0.16248370",
       "url": "https://dl.google.com/android/repository/android-ndk-r30-linux.zip",
-      "sha256": "753611f410d002cfcd3f3dc2ef49aad532089d3180b436c060a90bf0fcb64df2"
+      "sha256": "753611f410d002cfcd3f3dc2ef49aad532089d3180b436c060a90bf0fcb64df2",
+      "kind": "zip"
     },
     "build-tools": {
       "version": "37.0.0",
       "url": "https://dl.google.com/android/repository/build-tools_r37_linux.zip",
-      "sha256": "01af179347cbcd9c208b7f8171f7b21f6dd1d2f85bcd15e88caa51d5d7b86060"
+      "sha256": "01af179347cbcd9c208b7f8171f7b21f6dd1d2f85bcd15e88caa51d5d7b86060",
+      "kind": "zip"
     },
     "platform": {
       "version": "37.2-r2",
       "url": "https://dl.google.com/android/repository/platform-37.2_r02.zip",
-      "sha256": "17af98ec1427a1fed9ea278184aba71e53b87eca103655602f9fc64ef11ea4d3"
+      "sha256": "17af98ec1427a1fed9ea278184aba71e53b87eca103655602f9fc64ef11ea4d3",
+      "kind": "zip"
     },
     "platform-tools": {
       "version": "37.0.1",
       "url": "https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip",
-      "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1"
+      "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
+      "kind": "zip"
     },
     "gradle": {
       "version": "9.9.0",
       "url": "https://services.gradle.org/distributions/gradle-9.9.0-bin.zip",
-      "sha256": "0b00b0ffe07c4d4789c12d4935a44a7057d55774b7540bd4a3f76f336deb177a"
+      "sha256": "0b00b0ffe07c4d4789c12d4935a44a7057d55774b7540bd4a3f76f336deb177a",
+      "kind": "zip"
     },
     "jdk": {
       "version": "21.0.13+9",
       "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz",
-      "sha256": "d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c"
+      "sha256": "d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c",
+      "kind": "tar.gz"
+    },
+    "android-cli": {
+      "version": "1.1.16717390",
+      "url": "https://dl.google.com/android/cli/1.1.16717390/linux_x86_64/android-cli",
+      "sha256": "b34ed0baeeffa2aaee2720d82491b975835696e2e56840449078bec885436564",
+      "kind": "binary"
     }
   }
 }

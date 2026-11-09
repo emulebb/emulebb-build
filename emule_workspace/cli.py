@@ -387,6 +387,19 @@ def fetch_rust_android_tools(*, workspace_options: WorkspaceOptions, layout) -> 
     _locked("fetch-rust-android-tools", fetch)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("prepare-rust-android-toolchain")
+@_common_options
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def prepare_rust_android_toolchain(*, wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
+    """Build and probe the pinned Android toolchain through native Linux/WSL Docker."""
+    from .android_toolchain import prepare_toolchain
+
+    def prepare(**kwargs: Any) -> None:
+        print(f"Android toolchain probe passed: {prepare_toolchain(kwargs['layout'], wsl_distro=wsl_distro)}")
+
+    _locked("prepare-rust-android-toolchain", prepare)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("local-check")
 @click.option("--repo", type=click.Path(path_type=Path, exists=True), required=True)
 @click.option("--stage", type=click.Choice(["commit", "push"]), default="push")
