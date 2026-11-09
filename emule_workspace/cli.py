@@ -415,6 +415,39 @@ def validate_rust_android(*, abis: tuple[str, ...], wsl_distro: str, workspace_o
     _locked("validate-rust-android", validate)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("validate-rust-android-ci")
+@click.option("--abi", "abis", type=click.Choice(["arm64-v8a", "x86_64"]), multiple=True,
+              default=("arm64-v8a", "x86_64"), show_default=True)
+def validate_rust_android_ci(*, abis: tuple[str, ...]) -> None:
+    """Run the local Android validator on explicit, minimal GitHub checkouts."""
+    from .android_validation import validate_android
+    from .release import _emulebb_rust_artifact_origin
+
+    if _emulebb_rust_artifact_origin()["origin"] != "github-actions":
+        raise click.ClickException("CI Android validation requires GitHub Actions; use validate-rust-android locally")
+    workspace, output = resolve_required_workspace_roots()
+    paths = {}
+    for name in ("EMULEBB_RUST_REPO", "EMULEBB_TOOLING_REPO", "MINIUPNP_ROOT", "PCPNATPMP_ROOT"):
+        value = os.environ.get(name, "").strip()
+        if not value:
+            raise click.ClickException(f"CI Android validation requires inherited {name}")
+        path = Path(value).resolve()
+        if not path.is_dir() or not path.is_relative_to(workspace):
+            raise click.ClickException(f"{name} must name an existing checkout below the workspace root")
+        paths[name] = path
+    layout = replace(build_ci_layout(output_root=output), emule_workspace_root=workspace,
+                     emulebb_rust_repo_root=paths["EMULEBB_RUST_REPO"],
+                     tooling_repo_root=paths["EMULEBB_TOOLING_REPO"])
+    options = WorkspaceOptions(workspace_root=workspace, output_root=output, workspace_name="ci")
+
+    def validate(**kwargs: Any) -> None:
+        print(f"Android Rust target validation passed: {validate_android(kwargs['layout'], abis=abis)}")
+
+    # WHY: hosted checkouts have no materialized workspace manifest. Only layout
+    # selection differs; locking, source checks and all target checks stay shared.
+    _locked("validate-rust-android-ci", validate)(workspace_options=options, layout=layout)
+
+
 @main.command("local-check")
 @click.option("--repo", type=click.Path(path_type=Path, exists=True), required=True)
 @click.option("--stage", type=click.Choice(["commit", "push"]), default="push")
