@@ -112,3 +112,26 @@ def test_guest_sources_reject_dirty_or_changed_revisions(tmp_path, monkeypatch):
     monkeypatch.setattr(git, "git_output", lambda path, *a: " M script.py" if a[0] == "status" else "1" * 40)
     with pytest.raises(RuntimeError, match="clean build and harness"):
         subject._guest_sources(SimpleNamespace(tests_repo_root=tmp_path))
+
+
+def test_failure_evidence_publishes_only_bounded_os_facts(tmp_path):
+    directory = tmp_path / "guest"
+    directory.mkdir()
+    (directory / "report.json").write_text(json.dumps({
+        "schema": "emulebb.android.emulator-boot/1", "phase": "guest-validation", "property": "pageSize",
+        "error": "synthetic-private-token", "emulatorExitCode": 1,
+        "observedGuest": {"sdk": "28", "codename": "REL", "pageSize": "4096", "qemu": "1",
+            "machine": "/private/operator/path", "abis64": "x" * 129, "authentication": "synthetic-private-token"},
+    }))
+    assert subject._guest_failure_details(tmp_path) == {
+        "phase": "guest-validation", "property": "pageSize", "emulatorExitCode": 1,
+        "observedGuest": {"sdk": "28", "codename": "REL", "pageSize": "4096", "qemu": "1"}}
+
+
+@pytest.mark.parametrize("payload", ["not JSON", "[]", '{"schema":"other"}', " " * 65537],
+                         ids=["malformed", "array", "schema", "oversize"])
+def test_missing_or_invalid_failure_receipt_cannot_claim_a_boot_phase(tmp_path, payload):
+    assert subject._guest_failure_details(tmp_path) == {"phase": "unknown"}
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(payload)
+    assert subject._guest_failure_details(tmp_path) == {"phase": "unknown"}
