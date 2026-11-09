@@ -124,6 +124,41 @@ def test_build_baseline_uses_supported_reusable_inputs() -> None:
     assert "python -m pytest tests/test_ci_workflows.py" in text
 
 
+def test_linux_lifecycle_proof_cannot_skip_os_process_tests_or_drift_dependency_pins():
+    import re
+    import shlex
+    import tomllib
+    import yaml
+
+    workflow = yaml.safe_load((_repo_root() / ".github/workflows/baseline.yml").read_text(encoding="utf-8"))
+    job = workflow["jobs"]["lifecycle-linux"]
+    assert job["runs-on"].startswith("ubuntu-")
+    assert job["defaults"]["run"]["shell"] == "bash"
+    assert not job.get("continue-on-error") and "if" not in job
+    steps = job["steps"]
+    for step in steps:
+        assert not step.get("continue-on-error") and "if" not in step
+        if "uses" in step:
+            assert re.fullmatch(r"actions/(checkout|setup-python)@[0-9a-f]{40}", step["uses"])
+        if step.get("uses", "").startswith("actions/checkout@"):
+            assert step["with"]["persist-credentials"] is False
+            assert "repository" not in step["with"]
+        if step.get("uses", "").startswith("actions/setup-python@"):
+            assert step["with"]["python-version-file"] == ".python-version"
+    commands = [shlex.split(step["run"]) for step in steps if "run" in step]
+    test = next(command for command in commands if "pytest" in command)
+    assert {"tests/test_workstreams.py", "tests/test_locks.py", "tests/test_cli.py"} <= set(test)
+    assert not {"-k", "-m", "--deselect", "--ignore", "||"} & set(test[4:])
+    assert test[test.index("--basetemp") + 1].startswith("${{ runner.temp }}/")
+    assert "no:cacheprovider" in test and "-B" in test
+    locked = {package["name"]: package["version"]
+              for package in tomllib.loads((_repo_root() / "uv.lock").read_text(encoding="utf-8"))["package"]}
+    install = next(command for command in commands if "install" in command)
+    for requirement in install[install.index("install") + 1:]:
+        name, version = requirement.split("==")
+        assert locked[name.lower()] == version
+
+
 def test_controlled_smoke_uses_reusable_core_offline_and_lan_suite() -> None:
     text = _read_app_workflow("controlled-smoke.yml")
 

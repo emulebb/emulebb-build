@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import secrets
 import socket
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -16,6 +18,48 @@ from .config import WorkspaceOptions
 from .layout import WorkspaceLayout
 
 WORKSPACE_LOCK_TOKEN_ENV = "EMULEBB_WORKSPACE_LOCK_TOKEN"
+
+
+@contextmanager
+def lifecycle_file_lock(path: Path):
+    """Hold a nonblocking, crash-released lifecycle guard on an existing parent.
+
+    Keep the file after release: unlinking it could let another process lock a
+    replacement inode while a previous holder still owns the original file.
+    This guard neither acquires nor delegates the heavyweight workspace lock.
+    """
+    with path.open("a+b") as stream:
+        if os.fstat(stream.fileno()).st_size == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            def acquire():
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+
+            def release():
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            def acquire():
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def release():
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        try:
+            acquire()
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                raise
+            raise RuntimeError("Workstream lifecycle busy; retry after the other lifecycle operation finishes") from exc
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            release()
 
 
 @dataclass

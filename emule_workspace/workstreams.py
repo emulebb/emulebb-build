@@ -8,9 +8,12 @@ from pathlib import Path
 import re
 import subprocess
 from dataclasses import replace
+from contextlib import ExitStack, contextmanager
+from functools import wraps
 from typing import Any
 from uuid import uuid4
 from .git_environment import git_environment
+from .locks import lifecycle_file_lock
 
 
 REPOSITORY_FIELDS = {
@@ -57,10 +60,23 @@ def _registry(root: Path, output: Path) -> Path:
     return _safe_path(output.resolve(), output.resolve() / "tmp" / "workstreams")
 
 
-def _write(root: Path, output: Path, registration: dict[str, Any]) -> None:
+def _write(root: Path, output: Path, registration: dict[str, Any], *, reserve: bool = False) -> None:
     directory = _registry(root, output)
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / f"{_id(registration['id'])}.json"
+    if reserve:
+        # WHY: never replace another creator's receipt, even an interrupted one.
+        # A crash during this first write leaves an invalid, diagnosable receipt;
+        # subsequent lifecycle updates use the atomic replacement below.
+        try:
+            with target.open("x", encoding="utf-8", newline="\n") as stream:
+                json.dump(registration, stream, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except FileExistsError as exc:
+            raise RuntimeError("Workstream ID already registered") from exc
+        return
     temporary = directory / f".{target.stem}-{uuid4().hex}.tmp"
     try:
         with temporary.open("x", encoding="utf-8", newline="\n") as stream:
@@ -88,6 +104,28 @@ def _read(root: Path, output: Path, workstream_id: str) -> dict[str, Any]:
 
 def _common_dir(repo: Path) -> str:
     return str(Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve())
+
+
+@contextmanager
+def _lifecycle_guard(layout):
+    """Serialize registry and shared Git administration, independently of builds."""
+    directory = _registry(layout.emule_workspace_root, layout.output_root)
+    directory.mkdir(parents=True, exist_ok=True)
+    with ExitStack() as guards:
+        guards.enter_context(lifecycle_file_lock(_safe_path(directory, directory / ".lifecycle.lock")))
+        common_dirs = sorted({_common_dir(repo) for repo in _sources(layout).values()})
+        for common in common_dirs:
+            root = Path(common)
+            guards.enter_context(lifecycle_file_lock(_safe_path(root, root / "emulebb-workstreams.lock")))
+        yield
+
+
+def _lifecycle_operation(function):
+    @wraps(function)
+    def guarded(layout, *args, **kwargs):
+        with _lifecycle_guard(layout):
+            return function(layout, *args, **kwargs)
+    return guarded
 
 
 def _check_entry(root: Path, workstream_id: str, name: str, entry: dict[str, Any]) -> None:
@@ -172,8 +210,18 @@ def _prepare_entry(layout, registration: dict[str, Any], name: str, *, base: str
         raise RuntimeError(f"Checkout already exists; refusing adoption: {destination}")
     if _git(canonical, "show-ref", "--verify", f"refs/heads/{registration['branch']}", check=False):
         raise RuntimeError(f"Branch already exists: {registration['branch']}")
-    _git(canonical, "fetch", "origin", "main")
-    revision = _git(canonical, "rev-parse", "--verify", base or "refs/remotes/origin/main")
+    advertised = _git(canonical, "ls-remote", "--exit-code", "origin", "refs/heads/main").splitlines()
+    if len(advertised) != 1:
+        raise RuntimeError("Origin must advertise one exact main revision")
+    revision, ref = advertised[0].split()
+    if ref != "refs/heads/main" or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision):
+        raise RuntimeError("Origin advertised an invalid main revision")
+    # WHY: ordinary fetch updates shared origin/main and FETCH_HEAD while an
+    # active validator may still read them. Fetch the advertised immutable tip
+    # without ref mappings or FETCH_HEAD; never fall back to a moving ref.
+    _git(canonical, "fetch", "--no-tags", "--no-prune", "--no-prune-tags",
+         "--no-write-fetch-head", "--refmap=", "origin", revision)
+    revision = _git(canonical, "rev-parse", "--verify", f"{base or revision}^{{commit}}")
     return {"path": str(destination), "canonical_path": str(canonical), "branch": registration["branch"],
             "base_revision": revision, "common_dir": _common_dir(canonical),
             "origin": _git(canonical, "remote", "get-url", "origin"), "status": "planned"}
@@ -195,9 +243,10 @@ def _materialize(layout, registration: dict[str, Any], names: tuple[str, ...]) -
     return registration
 
 
+@_lifecycle_operation
 def create_workstream(layout, workstream_id: str, branch: str, owner: str, repositories: tuple[str, ...],
                       *, issues: tuple[str, ...] = (), pull_requests: tuple[str, ...] = ()) -> dict[str, Any]:
-    """Create new parent-assigned branches and worktrees while holding the workspace lock."""
+    """Create unrelated checkouts from the exact advertised main tip under lifecycle guards."""
     workstream_id = _id(workstream_id)
     root, output = layout.emule_workspace_root.resolve(), layout.output_root.resolve()
     if not owner.strip() or not repositories or len(set(repositories)) != len(repositories):
@@ -213,9 +262,11 @@ def create_workstream(layout, workstream_id: str, branch: str, owner: str, repos
                     "state": "creating", "repositories": {}}
     for name in repositories:
         registration["repositories"][name] = _prepare_entry(layout, registration, name)
+    _write(root, output, registration, reserve=True)
     return _materialize(layout, registration, repositories)
 
 
+@_lifecycle_operation
 def add_repository(layout, workstream_id: str, name: str) -> dict[str, Any]:
     """Add one new checkout, preserving all existing workstream branches."""
     registration = resolve_workstream(layout.emule_workspace_root, layout.output_root, workstream_id=workstream_id)
@@ -225,6 +276,7 @@ def add_repository(layout, workstream_id: str, name: str) -> dict[str, Any]:
     return _materialize(layout, registration, (name,))
 
 
+@_lifecycle_operation
 def register_bootstrap(layout, workstream_id: str, branch: str, owner: str,
                        base_revisions: dict[str, str], *, allow_dirty: bool = False,
                        extend: bool = False) -> dict[str, Any]:
@@ -290,6 +342,7 @@ def _open_pull_requests(entry: dict[str, Any]) -> list[dict[str, Any]]:
     return json.loads(result.stdout)
 
 
+@_lifecycle_operation
 def remove_workstream(layout, workstream_id: str, owner: str, *, abandoned: bool = False) -> None:
     """Parent-only cleanup refuses dirty, unpublished or open-PR work; never force-removes."""
     registration = resolve_workstream(layout.emule_workspace_root, layout.output_root, workstream_id=workstream_id)

@@ -22,3 +22,28 @@ jobs:
         python -m pip install -e .[dev]
         python -m pytest tests/test_ci_workflows.py tests/test_workstreams.py tests/test_local_checks.py tests/test_python_runtime.py tests/test_cli.py tests/test_linux_containers.py
       tooling_ref: 856e0499d12e281697618cc81a0b09805e96f59e
+
+  lifecycle-linux:
+    name: Portable workstream lifecycle (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pinned Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+      - name: Install portable test dependencies
+        # Match uv.lock without installing Windows/VM or documentation extras.
+        run: python -B -m pip install click==8.4.1 pydantic==2.14.3 pytest==9.1.1 PyYAML==6.0.3 jsonschema==4.26.0
+      - name: Exercise OS guards and real Git fixtures
+        run: >-
+          python -B -m pytest
+          tests/test_workstreams.py tests/test_locks.py tests/test_cli.py tests/test_ci_workflows.py
+          -p no:cacheprovider --basetemp "${{ runner.temp }}/workstream-tests"

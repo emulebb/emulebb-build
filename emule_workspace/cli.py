@@ -427,12 +427,13 @@ def _print_workstream(value: Any) -> None:
 @_common_options
 def workstream_create(*, workstream_id, branch, owner, repositories, issues, pull_requests,
                       workspace_options, layout) -> None:
-    """Create worktrees from freshly fetched origin/main without moving canonical checkouts."""
+    """Create unrelated worktrees from origin's advertised main tip during builds."""
     from .workstreams import create_workstream
-    def execute(**kwargs):
-        _print_workstream(create_workstream(kwargs["layout"], workstream_id, branch, owner,
-                                            repositories, issues=issues, pull_requests=pull_requests))
-    _locked("workstream create", execute)(workspace_options=workspace_options, layout=layout)
+    try:
+        _print_workstream(create_workstream(layout, workstream_id, branch, owner,
+                                          repositories, issues=issues, pull_requests=pull_requests))
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @workstream.command("add-repo")
