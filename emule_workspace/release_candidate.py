@@ -11,6 +11,9 @@ from .image_security import TRIVY_IMAGE, _material_commits, _verify_spdx_archite
 from .linux_containers import validate_elf_audit
 from .release import _is_release_version, _sha256, _sha256sums_text
 from .rust_images import image_package_name, image_prefix, verified_smoke_platforms
+from . import android_package
+from .android_inputs import tool_inputs
+from .android_validation import MIN_API, PAGE_SIZE, TARGETS, SYSTEM_LIBRARIES, needed_libraries
 
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -168,7 +171,110 @@ def public_names(context: CandidateContext) -> set[str]:
             names.update((asset, asset + ".manifest.json", package_sbom(asset)))
     for variant in ("ubuntu", "alpine"):
         names.update(image_public_names(context, variant))
+    if context.channel == "nightly":
+        for abi in TARGETS:
+            names.update(android_package.names(context.version, abi).values())
     return names
+
+
+def _android_packages(root: Path, context: CandidateContext) -> list[dict]:
+    """Verify experimental Android builds separately from native runtime proof."""
+    if context.channel != "nightly":
+        return []
+    android_package.identity(context.version, context.channel, context.source["emulebbRust"])
+    result = []
+    for abi, (target, _machine) in TARGETS.items():
+        names = android_package.names(context.version, abi)
+        metadata, proof = _read(root / names["manifest"]), _read(root / names["proof"])
+        common = {"version": context.version, "channel": "nightly", "abi": abi,
+                  "target": target, "minApi": MIN_API, "pageSize": PAGE_SIZE,
+                  "experimental": True, "distribution": "developer-daemon",
+                  "runtimeExecution": "not-run", "testCompilation": "workspace",
+                  "testExecution": "not-run", "buildExecution": "cross", "sourceDirty": False,
+                  "limitations": list(android_package.LIMITATIONS), "toolInputs": tool_inputs()}
+        for value, label in ((metadata, names["manifest"]), (proof, names["proof"])):
+            _hosted(value, context, label)
+            _fields(value, common, label)
+            _same(_material_commits(value.get("source")), context.materials, label + " source")
+        _fields(metadata, {"schema": "emulebb.rust.package/2", "package": "emulebb-rust",
+                          "platform": "android-" + abi, "asset": names["archive"],
+                          "sha256": _sha256(root / names["archive"]), "sbom": names["sbom"],
+                          "sbomSha256": _sha256(root / names["sbom"]),
+                          "compileProof": names["proof"],
+                          "compileProofSha256": _sha256(root / names["proof"])}, names["manifest"])
+        _fields(proof, {"schema": "emulebb.android.compile-elf/1", "status": "passed"}, names["proof"])
+        _fields(_read(root / names["sbom"]), {"spdxVersion": "SPDX-2.3"}, names["sbom"])
+        for key in ("binary", "elfAudit", "runtimeDependencies"):
+            _same(proof.get(key), metadata.get(key), names["proof"] + " " + key)
+        checks = proof.get("checks")
+        required = {"fetch-locked", *(abi + "-" + name for name in
+                    ("clippy", "packet-diagnostics", "workspace-test-link", "release-link"))}
+        if (not isinstance(checks, list) or len(checks) != len(required)
+                or any(not isinstance(item, dict) or item.get("status") != "passed" for item in checks)
+                or {item.get("label") for item in checks} != required):
+            raise RuntimeError("Android compilation proof is missing required successful checks")
+        for item in checks:
+            command = item.get("command")
+            if (not isinstance(command, list) or any(not isinstance(arg, str) for arg in command)
+                    or "--locked" not in command
+                    or (item["label"] != "fetch-locked" and ("--offline" not in command or target not in command))):
+                raise RuntimeError("Android compilation proof has an invalid target/locked command")
+            kind = item["label"].removeprefix(abi + "-")
+            verb = {"fetch-locked": "fetch", "clippy": "clippy", "packet-diagnostics": "check",
+                    "workspace-test-link": "test", "release-link": "build"}[kind]
+            if not command or command[0] != verb:
+                raise RuntimeError("Android compilation proof has an invalid check command")
+            if kind == "workspace-test-link" and not {"--workspace", "--no-run"} <= set(command):
+                raise RuntimeError("Android target tests must be linked without claiming execution")
+            if kind == "release-link" and not {"--release", "--bin", "emulebb-rust", "-p", "emulebb-daemon"} <= set(command):
+                raise RuntimeError("Android proof requires the release daemon link")
+            if kind == "packet-diagnostics" and not {"--features", "packet-diagnostics"} <= set(command):
+                raise RuntimeError("Android diagnostics compilation is missing")
+        files = _object(metadata.get("files"), "Android file hashes")
+        if (len(files) > android_package.MAX_FILES or any(
+                not isinstance(name, str) or not isinstance(digest, str) or HASH.fullmatch(digest) is None
+                for name, digest in files.items())):
+            raise RuntimeError("Android file inventory requires bounded SHA-256 values")
+        binary = _object(metadata.get("binary"), "Android executable")
+        _fields(binary, {"path": "emulebb-rust/emulebb-rust"}, "Android executable")
+        _positive(binary.get("sizeBytes"), "Android executable size")
+        if files.get(binary["path"]) != binary.get("sha256"):
+            raise RuntimeError("Android executable differs from its bound file checksum")
+        runtime = _object(metadata.get("runtimeDependencies"), "Android runtime dependencies")
+        needed = needed_libraries(runtime.get("readelf", ""))
+        _same(runtime.get("needed"), needed, "Android DT_NEEDED")
+        if set(needed) - SYSTEM_LIBRARIES - {"libc++_shared.so"}:
+            raise RuntimeError("Android has unresolved runtime libraries")
+        bundled = runtime.get("bundled")
+        expected = {"libc++_shared.so"} if "libc++_shared.so" in needed else set()
+        if (not isinstance(bundled, list) or len(bundled) != len(expected)
+                or any(not isinstance(item, dict) for item in bundled)
+                or {item.get("name") for item in bundled} != expected):
+            raise RuntimeError("Android must bundle its exact non-system runtime closure")
+        ndk = tool_inputs()["assets"]["ndk"]
+        for library in bundled:
+            _fields(library, {"path": "emulebb-rust/lib/libc++_shared.so",
+                             "licensePath": "emulebb-rust/licenses/Android-NDK-NOTICE",
+                             "ndkVersion": ndk["version"], "ndkArchiveSha256": ndk["sha256"]}, "Android C++ runtime")
+            if (files.get(library["path"]) != library.get("sha256")
+                    or files.get(library["licensePath"]) != library.get("licenseSha256")):
+                raise RuntimeError("Android C++ runtime or its license differs from staged bytes")
+            dependencies = needed_libraries(library.get("readelf", ""))
+            _same(library.get("needed"), dependencies, "Android C++ DT_NEEDED")
+            if set(dependencies) - SYSTEM_LIBRARIES:
+                raise RuntimeError("Android C++ runtime has unresolved dependencies")
+        actual = android_package.inspect_archive(root / names["archive"], abi=abi, files=files,
+                                                  sbom_sha256=metadata["sbomSha256"])
+        _same(actual["binary"], metadata.get("elfAudit"), "Android actual ELF")
+        _same(actual["binarySize"], binary["sizeBytes"], "Android actual executable size")
+        if set(actual["libraries"]) != expected:
+            raise RuntimeError("Android archive contains an unexpected runtime library")
+        for library in bundled:
+            _same(actual["libraries"][library["name"]], library.get("elfAudit"), "Android bundled ELF")
+        result.append({"abi": abi, "asset": names["archive"], "sha256": metadata["sha256"],
+                       "manifest": names["manifest"], "compileProof": names["proof"],
+                       "compileProofSha256": metadata["compileProofSha256"], "runtimeExecution": "not-run"})
+    return result
 
 
 def candidate_path(root: Path, context: CandidateContext) -> Path:
@@ -437,9 +543,12 @@ def candidate_manifest(*, release_dir: Path, archives_dir: Path, context: Candid
     smoke = _package_smoke(release_dir, context, packages)
     images = _images(release_dir, archives_dir, context, packages, archive_identity)
     _sums(release_dir, "SHA256SUMS", names - {"SHA256SUMS"})
-    return {"formatVersion": 3, "releaseVersion": context.version, "channel": context.channel,
+    result = {"formatVersion": 3, "releaseVersion": context.version, "channel": context.channel,
             "source": context.source, "workflow": context.workflow,
             "packageSmoke": smoke, "images": images, "artifacts": _records(release_dir, names)}
+    if context.channel == "nightly":
+        result["experimentalAndroid"] = _android_packages(release_dir, context)
+    return result
 
 
 def write_candidate(*, release_dir: Path, archives_dir: Path, context: CandidateContext,

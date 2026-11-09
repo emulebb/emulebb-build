@@ -115,7 +115,11 @@ def test_prefetch_covers_host_dependencies_and_failures_never_report_success(tmp
     monkeypatch.setattr(android, "prepare_toolchain", lambda *args, **kwargs: output / "toolchain.json")
     monkeypatch.setattr(android, "_builder_user", lambda *args: "1000:1000")
     monkeypatch.setattr(android, "validation_plan", lambda *args: [])
-    monkeypatch.setattr(android, "audit_android_elf", lambda *args: {"verified": True})
+    def audited_fixture(path, *args):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"Synthetic compiled fixture")
+        return {"verified": True}
+    monkeypatch.setattr(android, "audit_android_elf", audited_fixture)
 
     class Docker:
         def __init__(self, *args): pass
@@ -142,3 +146,45 @@ def test_prefetch_covers_host_dependencies_and_failures_never_report_success(tmp
     assert report["status"] == ("failed" if fail else "passed")
     assert report["runtimeExecution"] == "not-run"
     assert report["checks"][0]["status"] == ("failed" if fail else "passed")
+
+
+def test_nightly_build_receives_identity_before_fresh_release_link(tmp_path, monkeypatch):
+    from emule_workspace import release
+    from android_package_fixtures import VERSION
+    output = tmp_path/"output"
+    output.mkdir()
+    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=tmp_path/"rust")
+    sha = "1"*40
+    provenance = {"source": {"emulebbRust": {"commit": sha}}}
+    monkeypatch.setattr(release, "_emulebb_rust_package_provenance", lambda *args: provenance)
+    monkeypatch.setattr(release, "_assert_emulebb_rust_package_provenance", lambda *args: None)
+    monkeypatch.setattr(release, "_emulebb_rust_native_source_roots", lambda *args: (tmp_path/"mini", tmp_path/"pcp"))
+    monkeypatch.setattr(android, "resolve_required_workspace_roots", lambda: (tmp_path, output))
+    monkeypatch.setattr(android, "resolve_required_cargo_target_dir", lambda *args: output)
+    monkeypatch.setattr(android, "prepare_toolchain", lambda *args, **kwargs: output/"tools.json")
+    monkeypatch.setattr(android, "_builder_user", lambda *args: "1000:1000")
+    monkeypatch.setattr(android, "validation_plan", lambda *args: [("release-link", ["build", "--release"])])
+    monkeypatch.setattr(android, "_runtime_dependencies", lambda *args: {"needed": [], "bundled": []})
+    binary = output/"builds/rust/target-android-uid-1000-gid-1000/aarch64-linux-android/release/emulebb-rust"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"old development binary")
+    class Docker:
+        def __init__(self, *args): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def path(self, path): return str(path)
+    monkeypatch.setattr(android, "LinuxDocker", Docker)
+    def execute(docker, arguments, log, **kwargs):
+        log.write_text("Synthetic compile")
+        assert "EMULEBB_RELEASE_VERSION="+VERSION in arguments
+        assert "EMULEBB_RELEASE_CHANNEL=nightly" in arguments
+        if arguments[-2:] == ["build", "--release"]:
+            assert not binary.exists()
+            binary.write_bytes(b"new nightly binary")
+    monkeypatch.setattr(android, "run_owned_container", execute)
+    monkeypatch.setattr(android, "audit_android_elf", lambda *args: {"verified": True})
+    path = android.validate_android(layout, abis=("arm64-v8a",), release_version=VERSION,
+                                    channel="nightly", expected_source_sha=sha)
+    report = json.loads(path.read_text())
+    assert report["binaries"]["arm64-v8a"]["sha256"] == release._sha256(binary)
+    assert report["version"] == VERSION and report["status"] == "passed"
