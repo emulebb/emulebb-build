@@ -122,6 +122,7 @@ def test_build_baseline_uses_supported_reusable_inputs() -> None:
     assert "extra_commands:" in text
     assert "python -m pip install -e .[dev]" in text
     assert "python -m pytest tests/test_ci_workflows.py" in text
+    assert {"tests/test_layout.py", "tests/test_materialize.py", "tests/test_public_presence_checks.py"} <= set(text.split())
 
 
 def test_linux_lifecycle_proof_cannot_skip_os_process_tests_or_drift_dependency_pins():
@@ -147,7 +148,7 @@ def test_linux_lifecycle_proof_cannot_skip_os_process_tests_or_drift_dependency_
             assert step["with"]["python-version-file"] == ".python-version"
     commands = [shlex.split(step["run"]) for step in steps if "run" in step]
     test = next(command for command in commands if "pytest" in command)
-    assert {"tests/test_workstreams.py", "tests/test_locks.py", "tests/test_cli.py"} <= set(test)
+    assert {"tests/test_workstreams.py", "tests/test_locks.py", "tests/test_cli.py", "tests/test_public_presence_checks.py"} <= set(test)
     assert not {"-k", "-m", "--deselect", "--ignore", "||"} & set(test[4:])
     assert test[test.index("--basetemp") + 1].startswith("${{ runner.temp }}/")
     assert "no:cacheprovider" in test and "-B" in test

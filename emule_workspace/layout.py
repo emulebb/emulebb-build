@@ -65,6 +65,8 @@ class WorkspaceLayout:
     test_targets: TestTargets
     toolset_override_variable: str
     emulebb_rust_repo_root: Path | None = None
+    emulebb_pages_repo_root: Path | None = None
+    emulebb_org_profile_repo_root: Path | None = None
     p2p_overlord_agents_repo_root: Path | None = None
     p2p_overlord_be_repo_root: Path | None = None
     p2p_overlord_tooling_repo_root: Path | None = None
@@ -267,6 +269,9 @@ def load_layout(emule_workspace_root: Path, workspace_name: str | None = None, *
     app_repo = _required_dict(workspace_topology, "app_repo")
     seed_repo = _required_dict(app_repo, "seed_repo")
     repos = _required_dict(workspace_topology, "repos")
+    optional_repos = workspace_topology.get("optional_repos", {})
+    if not isinstance(optional_repos, dict):
+        raise RuntimeError("Workspace optional_repos must be an object")
     build_app_repo = _required_dict(build_workspace, "app_repo")
     test_targets = _required_dict(build_app_repo, "test_targets")
     toolchain = _required_dict(build_workspace, "toolchain")
@@ -300,6 +305,8 @@ def load_layout(emule_workspace_root: Path, workspace_name: str | None = None, *
         amule_stable_repo_root=_resolve_workspace_manifest_path(workspace_root, repos["amule_stable"]),
         amule_head_repo_root=_resolve_workspace_manifest_path(workspace_root, repos["amule_head"]),
         emulebb_rust_repo_root=_resolve_workspace_manifest_path(workspace_root, repos["emulebb_rust"]),
+        emulebb_pages_repo_root=_optional_workspace_manifest_path(workspace_root, optional_repos, "pages"),
+        emulebb_org_profile_repo_root=_optional_workspace_manifest_path(workspace_root, optional_repos, "org_profile"),
         p2p_overlord_agents_repo_root=_optional_workspace_manifest_path(workspace_root, repos, "p2p_overlord_agents"),
         p2p_overlord_be_repo_root=_optional_workspace_manifest_path(workspace_root, repos, "p2p_overlord_be"),
         p2p_overlord_tooling_repo_root=_optional_workspace_manifest_path(workspace_root, repos, "p2p_overlord_tooling"),

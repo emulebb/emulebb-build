@@ -99,7 +99,7 @@ Python-first commands:
 ```powershell
 python -m emule_workspace materialize
 python -m emule_workspace sync
-python -m emule_workspace sync --profile public-presence
+python -m emule_workspace sync --profile public-presence --optional-only
 python -m emule_workspace status
 python -m emule_workspace dep-updates
 python -m emule_workspace compare
@@ -113,6 +113,7 @@ python -m emule_workspace build tests
 python -m emule_workspace build clients
 python -m emule_workspace build all
 python -m emule_workspace test python
+python -m emule_workspace test public-presence --repo emulebb-pages
 python -m emule_workspace test all
 python -m emule_workspace test live-diff
 python -m emule_workspace test protocol-parity
@@ -125,6 +126,24 @@ python -m emule_workspace full
 python -m emule_workspace package-release
 python -m emule_workspace vm-lab prepare
 ```
+
+For an existing workspace, `sync --profile public-presence --optional-only`
+admits Pages and the organization profile and installs their shared hooks while
+leaving core, app, analysis and third-party checkouts unchanged. Setup requires
+the same validation/lifecycle guards used by workstream administration. New
+workstream creation uses the short lifecycle guard and can run during validation;
+adding or removing a repository remains serialized with validation.
+
+After optional setup, `workstream create` and `workstream add-repo` accept
+`emulebb-pages` and `emulebb-org-profile` alongside the four core repositories.
+Use the same parent-owned branch, issue and cleanup rules for each. Their push
+checks consume only the selected public repository, Tooling and Builder; core
+product checks do not acquire an optional repository dependency.
+
+`test public-presence --repo emulebb-pages|emulebb-org-profile` also accepts
+`--workstream`. Reports and unique staging live under the inherited OUTPUT.
+Pages requires a renderer advertising the safe external-staging protocol; an old
+renderer blocks the check instead of writing into a source `.local` directory.
 
 `build clients` defaults to the materialized `emulebb-rust` client. The
 `--client amule` build always uses the exact frozen `repos\amule-stable` 3.0.1

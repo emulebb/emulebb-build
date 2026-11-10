@@ -16,12 +16,17 @@ from .git_environment import git_environment
 from .locks import lifecycle_file_lock
 
 
-REPOSITORY_FIELDS = {
+CORE_REPOSITORY_FIELDS = {
     "emulebb-rust": "emulebb_rust_repo_root",
     "emulebb-build": "build_repo_root",
     "emulebb-tooling": "tooling_repo_root",
     "emulebb-build-tests": "tests_repo_root",
 }
+OPTIONAL_REPOSITORY_FIELDS = {
+    "emulebb-pages": "emulebb_pages_repo_root",
+    "emulebb-org-profile": "emulebb_org_profile_repo_root",
+}
+REPOSITORY_FIELDS = {**CORE_REPOSITORY_FIELDS, **OPTIONAL_REPOSITORY_FIELDS}
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> str:
@@ -107,16 +112,41 @@ def _common_dir(repo: Path) -> str:
 
 
 @contextmanager
-def _lifecycle_guard(layout):
-    """Serialize registry and shared Git administration, independently of builds."""
-    directory = _registry(layout.emule_workspace_root, layout.output_root)
+def workspace_lifecycle_guard(root: Path, output: Path, repositories=()):
+    """Coordinate every setup/lifecycle writer before shared Git administration.
+
+    The workspace registry guard comes first, then sorted existing Git common
+    directories. Setup holds the same guard while creating missing anchors.
+    Optional anchors are locked when present, without admitting them as inputs.
+    """
+    directory = _registry(root, output)
     directory.mkdir(parents=True, exist_ok=True)
     with ExitStack() as guards:
         guards.enter_context(lifecycle_file_lock(_safe_path(directory, directory / ".lifecycle.lock")))
-        common_dirs = sorted({_common_dir(repo) for repo in _sources(layout).values()})
-        for common in common_dirs:
-            root = Path(common)
-            guards.enter_context(lifecycle_file_lock(_safe_path(root, root / "emulebb-workstreams.lock")))
+        from .topology import canonical_topology
+        declared = canonical_topology(profiles=("public-presence",))
+        optional = [root / repo.relative_path.replace("\\", "/") for repo in declared.repos
+                    if repo.name in OPTIONAL_REPOSITORY_FIELDS]
+        common_dirs = {_common_dir(repo) for repo in repositories}
+        for repo in optional:
+            # A disabled optional profile must not make core work depend on a
+            # missing/non-Git folder. A selected entry is validated separately.
+            if repo.is_dir() and (repo / ".git").exists():
+                _safe_path(root, repo)
+                common = _git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+                if common:
+                    common_dirs.add(str(Path(common).resolve()))
+        for common in sorted(common_dirs):
+            common_root = Path(common)
+            guards.enter_context(lifecycle_file_lock(_safe_path(common_root, common_root / "emulebb-workstreams.lock")))
+        yield
+
+
+@contextmanager
+def _lifecycle_guard(layout):
+    """Hold the common setup/lifecycle guard for admitted canonical anchors."""
+    with workspace_lifecycle_guard(layout.emule_workspace_root, layout.output_root,
+                                   _sources(layout).values()):
         yield
 
 
@@ -184,6 +214,8 @@ def _sources(layout) -> dict[str, Path]:
         value = getattr(layout, field, None)
         if value is not None:
             path = Path(value).resolve()
+            if name in OPTIONAL_REPOSITORY_FIELDS and not path.is_dir():
+                continue
             if not path.is_relative_to(layout.emule_workspace_root.resolve() / "repos"):
                 # WHY: lifecycle code may itself run from a managed builder worktree.
                 # Its shared Git directory identifies the canonical anchor without
@@ -195,6 +227,10 @@ def _sources(layout) -> dict[str, Path]:
                         or _common_dir(candidate) != str(common)):
                     raise RuntimeError("Selected repository has no canonical workspace anchor")
                 path = candidate
+            if name in OPTIONAL_REPOSITORY_FIELDS:
+                _safe_path(layout.emule_workspace_root, path)
+                if path.name != name:
+                    raise RuntimeError("Optional topology has an invalid canonical repository identity")
             sources[name] = path
     return sources
 
@@ -204,6 +240,13 @@ def _prepare_entry(layout, registration: dict[str, Any], name: str, *, base: str
     if name not in sources:
         raise RuntimeError(f"Unsupported or unavailable repository: {name}")
     canonical = sources[name]
+    if name in OPTIONAL_REPOSITORY_FIELDS:
+        hooks = _git(canonical, "config", "--get", "core.hooksPath", check=False)
+        expected_hooks = sources["emulebb-tooling"] / "hooks"
+        selected_hooks = (canonical / hooks).resolve() if hooks else None
+        if selected_hooks != expected_hooks or not all((expected_hooks / hook).is_file()
+                                                       for hook in ("pre-commit", "pre-push")):
+            raise RuntimeError("Optional repository requires completed shared-hook setup")
     destination = _safe_path(layout.emule_workspace_root.resolve(), layout.emule_workspace_root.resolve()
                              / "workspaces" / "agents" / registration["id"] / name)
     if destination.exists():

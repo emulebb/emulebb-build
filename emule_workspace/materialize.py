@@ -7,10 +7,14 @@ import os
 import shutil
 import stat
 import sys
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
-from .config import resolve_required_workspace_roots
-from .layout import build_repo_root
+from .config import WorkspaceOptions, resolve_required_workspace_roots
+from .layout import build_ci_layout, build_repo_root
+from .locks import WorkspaceLock
 from .process import find_tool, run_captured, run_native
 from .topology import (
     AppRepo,
@@ -19,6 +23,9 @@ from .topology import (
     WORKSPACE_MANIFEST_NAME,
     WORKSPACE_PROPS_FILE_NAME,
     WorkspaceTopology,
+    WorkspaceManifestContract,
+    OPTIONAL_WORKSPACE_PROFILES,
+    load_json,
     REPO_ROLE_MANIFEST_NAME,
     build_workspace_manifest,
     build_repo_role_manifest,
@@ -99,18 +106,14 @@ def materialize_workspace(
     root = resolve_setup_workspace_root(workspace_root)
     topology = canonical_topology(profiles=profiles)
     resolved_workspace_name = workspace_name or topology.default_workspace_name
-    assert_materialize_bootstrap_root(root)
-    sync_workspace(
-        workspace_root=str(root),
-        workspace_name=resolved_workspace_name,
-        artifacts_seed_root=artifacts_seed_root,
-        include_worktrees=True,
-        persist_environment=True,
-        profiles=profiles,
-    )
-    legacy_status_path = root / "workspaces" / resolved_workspace_name / "state" / "EMULE-STATUS.md"
-    legacy_status_path.unlink(missing_ok=True)
-    log_line(root, "Materialize complete.")
+    with _setup_guard(root, resolved_workspace_name, "materialize"):
+        assert_materialize_bootstrap_root(root)
+        _sync_workspace_unlocked(root=root, topology=topology, workspace_name=resolved_workspace_name,
+                                 artifacts_seed_root=artifacts_seed_root, include_worktrees=True,
+                                 persist_environment=True)
+        legacy_status_path = root / "workspaces" / resolved_workspace_name / "state" / "EMULE-STATUS.md"
+        legacy_status_path.unlink(missing_ok=True)
+        log_line(root, "Materialize complete.")
 
 
 def sync_workspace(
@@ -121,12 +124,56 @@ def sync_workspace(
     include_worktrees: bool = True,
     persist_environment: bool = False,
     profiles: tuple[str, ...] = (),
+    optional_only: bool = False,
 ) -> None:
     """Synchronizes setup-owned workspace state."""
 
     root = resolve_setup_workspace_root(workspace_root)
     topology = canonical_topology(profiles=profiles)
     resolved_workspace_name = workspace_name or topology.default_workspace_name
+    with _setup_guard(root, resolved_workspace_name, "sync"):
+        if optional_only:
+            if artifacts_seed_root or persist_environment:
+                raise ValueError("Optional-only sync cannot overlay artifacts or persist environment")
+            _sync_optional_only(root, resolved_workspace_name, profiles)
+        else:
+            _sync_workspace_unlocked(root=root, topology=topology, workspace_name=resolved_workspace_name,
+                                     artifacts_seed_root=artifacts_seed_root, include_worktrees=include_worktrees,
+                                     persist_environment=persist_environment)
+
+
+@contextmanager
+def _setup_guard(root: Path, workspace_name: str, command: str):
+    """Hold the heavy owner before the shared lifecycle/Git administration guard."""
+    from .workstreams import workspace_lifecycle_guard, _safe_path
+
+    inherited_root, output = resolve_required_workspace_roots()
+    if inherited_root.resolve() != root.resolve():
+        raise RuntimeError("Setup root must match inherited EMULEBB_WORKSPACE_ROOT")
+    layout = replace(build_ci_layout(output_root=output), emule_workspace_root=root,
+                     workspace_name=workspace_name)
+    options = WorkspaceOptions(workspace_root=root, output_root=output, workspace_name=workspace_name)
+    lock = WorkspaceLock(layout, command, options)
+    if not lock.acquire():
+        raise RuntimeError(f"Workspace busy: {lock.active_owner_text()}")
+    try:
+        topology = canonical_topology(profiles=OPTIONAL_WORKSPACE_PROFILES)
+        anchors = []
+        for repo in topology.all_repos():
+            path = _safe_path(root, root / repo.relative_path.replace("\\", "/"))
+            if (path / ".git").exists():
+                anchors.append(path)
+        with workspace_lifecycle_guard(root, output, anchors):
+            yield
+    finally:
+        lock.release()
+
+
+def _sync_workspace_unlocked(*, root: Path, topology: WorkspaceTopology, workspace_name: str,
+                             artifacts_seed_root: str | None, include_worktrees: bool,
+                             persist_environment: bool) -> None:
+    """Apply full setup while the common setup/lifecycle guards are held."""
+    resolved_workspace_name = workspace_name
     ensure_required_tools()
     ensure_root_layout(root, topology, resolved_workspace_name)
     for repo in topology.all_repos():
@@ -144,6 +191,58 @@ def sync_workspace(
     if persist_environment:
         set_workspace_root_environment(root)
     log_line(root, "Sync complete.")
+
+
+def _sync_optional_only(root: Path, workspace_name: str, profiles: tuple[str, ...]) -> None:
+    """Admit explicit optional repositories without synchronizing core inputs."""
+    from .workstreams import OPTIONAL_REPOSITORY_FIELDS, _git, _safe_path
+
+    if not profiles or set(profiles).difference(OPTIONAL_WORKSPACE_PROFILES):
+        raise ValueError("Optional-only sync requires an explicit optional profile")
+    manifest_path = _safe_path(root, root / "workspaces" / workspace_name / WORKSPACE_MANIFEST_NAME)
+    payload = load_json(manifest_path)
+    contract = WorkspaceManifestContract.model_validate(payload)
+    if (manifest_path.parent / contract.emule_workspace_root.replace("\\", "/")).resolve() != root:
+        raise RuntimeError("Existing workspace manifest belongs to another root")
+    topology = canonical_topology(profiles=(*contract.workspace.profiles, *profiles))
+    selected = [repo for repo in topology.repos if repo.name in OPTIONAL_REPOSITORY_FIELDS]
+    role_path = _safe_path(root, manifest_path.parent / REPO_ROLE_MANIFEST_NAME)
+    generated_roles = build_repo_role_manifest(topology, workspace_name)
+    roles = load_json(role_path) if role_path.exists() else generated_roles
+    if (not isinstance(roles.get("workspace"), dict) or not isinstance(roles.get("repos"), list)
+            or any(not isinstance(repo, dict) for repo in roles["repos"])):
+        raise RuntimeError("Existing repository role manifest is invalid")
+    roles["workspace"]["profiles"] = list(topology.profiles)
+    roles["repos"] = [repo for repo in roles["repos"] if repo.get("name") not in OPTIONAL_REPOSITORY_FIELDS]
+    roles["repos"].extend(repo for repo in generated_roles["repos"] if repo["name"] in OPTIONAL_REPOSITORY_FIELDS)
+    for repo in selected:
+        path = _safe_path(root, root / repo.relative_path.replace("\\", "/"))
+        if path.exists():
+            if (Path(_git(path, "rev-parse", "--show-toplevel")).resolve() != path
+                    or _git(path, "remote", "get-url", "origin") != repo.url
+                    or _git(path, "branch", "--show-current") != repo.branch
+                    or _git(path, "status", "--porcelain")):
+                raise RuntimeError(f"Optional canonical repository has unexpected identity or local changes: {repo.name}")
+    for repo in selected:
+        ensure_repo_clone(root, repo)
+    install_workspace_hooks(root, topology, only_repos=frozenset(repo.name for repo in selected))
+    # Admission is last: interrupted clone/hook setup cannot make an unchecked
+    # optional repository available to workstream creation.
+    payload["workspace"]["profiles"] = list(topology.profiles)
+    payload["workspace"]["optional_repos"] = build_workspace_manifest(topology, workspace_name)["workspace"]["optional_repos"]
+    # Preserve unrelated role metadata, and publish admission atomically last.
+    for target, value in ((role_path, roles), (manifest_path, payload)):
+        temporary = _safe_path(root, target.with_name(f".{target.name}-{uuid4().hex}.tmp"))
+        try:
+            with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+                json.dump(value, stream, indent=2, ensure_ascii=False)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    log_line(root, "Optional repository sync complete; core sources unchanged.")
 
 
 def assert_materialize_bootstrap_root(root: Path) -> None:
@@ -287,7 +386,7 @@ def ensure_root_layout(root: Path, topology: WorkspaceTopology, workspace_name: 
 def ensure_repo_clone(root: Path, repo: ManagedRepo) -> Path:
     """Clones or fast-forwards one managed repository."""
 
-    repo_path = (root / repo.relative_path).resolve()
+    repo_path = (root / repo.relative_path.replace("\\", "/")).resolve()
     repo_path.parent.mkdir(parents=True, exist_ok=True)
     if not repo_path.exists():
         clone_args = ["git", "clone"]
@@ -596,15 +695,17 @@ def write_compare_launchers(root: Path, topology: WorkspaceTopology) -> None:
         )
 
 
-def install_workspace_hooks(root: Path, topology: WorkspaceTopology) -> None:
+def install_workspace_hooks(root: Path, topology: WorkspaceTopology, *, only_repos: frozenset[str] | None = None) -> None:
     """Configures workspace repos and worktrees to use the shared hook path."""
 
     hooks_path = root / "repos" / "emulebb-tooling" / "hooks"
     for hook in ("pre-commit", "pre-push"):
         if not (hooks_path / hook).is_file():
             raise RuntimeError(f"Shared hook is missing: {hooks_path / hook}")
-    targets = [root / repo.relative_path for repo in topology.repos if repo.name in SHARED_HOOK_REPO_NAMES]
-    targets.extend(root / worktree.relative_path for worktree in topology.app_repo.worktrees if worktree.active)
+    targets = [root / repo.relative_path.replace("\\", "/") for repo in topology.repos
+               if repo.name in SHARED_HOOK_REPO_NAMES and (only_repos is None or repo.name in only_repos)]
+    if only_repos is None:
+        targets.extend(root / worktree.relative_path.replace("\\", "/") for worktree in topology.app_repo.worktrees if worktree.active)
     for target in targets:
         if not target.is_dir():
             raise RuntimeError(f"Missing hook install target: {target}")

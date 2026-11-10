@@ -10,6 +10,130 @@ from emule_workspace.setup_commands import ComparePreset
 from emule_workspace.topology import AppRepo, ManagedRepo, WorkspaceTopology
 
 
+def optional_setup_fixture(tmp_path, monkeypatch):
+    import json
+    from contextlib import contextmanager
+    from emule_workspace import workstreams
+    from emule_workspace.topology import build_repo_role_manifest, build_workspace_manifest, canonical_topology
+
+    root = tmp_path / "source"
+    workspace = root / "workspaces/workspace"
+    workspace.mkdir(parents=True)
+    manifest = workspace / "deps.json"
+    payload = build_workspace_manifest(canonical_topology(), "workspace")
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    roles = build_repo_role_manifest(canonical_topology(), "workspace")
+    roles["repos"][0]["operator_note"] = "preserve unrelated role information"
+    (workspace / "repo-roles.json").write_text(json.dumps(roles), encoding="utf-8")
+    topology = canonical_topology(profiles=("public-presence",))
+    declared = {repo.name: repo for repo in topology.repos}
+    for name in workstreams.OPTIONAL_REPOSITORY_FIELDS:
+        (root / "repos" / name).mkdir(parents=True)
+    core = root / "repos/emulebb-rust/.git"
+    core.mkdir(parents=True)
+    for leaf in ("HEAD", "index", "config", "FETCH_HEAD"):
+        (core / leaf).write_text(f"unchanged {leaf}\n", encoding="utf-8")
+    calls = []
+    @contextmanager
+    def guard(*args):
+        calls.append("guard entered")
+        try:
+            yield
+        finally:
+            calls.append("guard released")
+    def git(path, *args, **kwargs):
+        assert path.name in workstreams.OPTIONAL_REPOSITORY_FIELDS
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(path)
+        if args == ("remote", "get-url", "origin"):
+            return declared[path.name].url
+        if args == ("branch", "--show-current"):
+            return "main"
+        return ""
+    monkeypatch.setattr(materialize, "resolve_setup_workspace_root", lambda value: root)
+    monkeypatch.setattr(materialize, "_setup_guard", guard)
+    monkeypatch.setattr(workstreams, "_git", git)
+    monkeypatch.setattr(materialize, "ensure_repo_clone", lambda root, repo: calls.append(repo.name))
+    monkeypatch.setattr(materialize, "install_workspace_hooks", lambda root, topology, **kwargs: calls.append(kwargs["only_repos"]))
+    monkeypatch.setattr(materialize, "log_line", lambda *args: None)
+    monkeypatch.setattr(materialize, "_sync_workspace_unlocked", lambda **kwargs: pytest.fail("Core setup must not run"))
+    return root, manifest, payload, calls, core
+
+
+def test_optional_only_setup_is_guarded_idempotent_and_preserves_core(tmp_path, monkeypatch):
+    import json
+    import os
+    root, manifest, before, calls, core = optional_setup_fixture(tmp_path, monkeypatch)
+    core_bytes = {path.name: path.read_bytes() for path in core.iterdir()}
+    environment = os.environ.copy()
+    for repeat in range(2):
+        materialize.sync_workspace(workspace_root=str(root), profiles=("public-presence",), optional_only=True)
+    after = json.loads(manifest.read_text())
+    assert after["workspace"]["profiles"] == ["core", "public-presence"]
+    assert set(after["workspace"]["optional_repos"]) == {"pages", "org_profile"}
+    assert after["workspace"]["repos"] == before["workspace"]["repos"]
+    assert after["workspace"]["app_repo"] == before["workspace"]["app_repo"]
+    roles = json.loads((manifest.parent / "repo-roles.json").read_text())
+    assert roles["repos"][0]["operator_note"] == "preserve unrelated role information"
+    assert core_bytes == {path.name: path.read_bytes() for path in core.iterdir()}
+    assert os.environ == environment
+    assert calls.count("emulebb-pages") == calls.count("emulebb-org-profile") == 2
+    assert calls[0] == "guard entered" and calls[-1] == "guard released"
+    assert frozenset({"emulebb-pages", "emulebb-org-profile"}) in calls
+
+
+def test_optional_hook_failure_cannot_publish_admission(tmp_path, monkeypatch):
+    root, manifest, before, calls, core = optional_setup_fixture(tmp_path, monkeypatch)
+    original = manifest.read_bytes()
+    def reject(*args, **kwargs):
+        raise RuntimeError("fixture hook conflict")
+    monkeypatch.setattr(materialize, "install_workspace_hooks", reject)
+    with pytest.raises(RuntimeError, match="hook conflict"):
+        materialize.sync_workspace(workspace_root=str(root), profiles=("public-presence",), optional_only=True)
+    assert manifest.read_bytes() == original
+    assert calls[-1] == "guard released"
+
+
+def test_optional_only_setup_refuses_dirty_identity_before_admission(tmp_path, monkeypatch):
+    from emule_workspace import workstreams
+    root, manifest, before, calls, core = optional_setup_fixture(tmp_path, monkeypatch)
+    original = workstreams._git
+    monkeypatch.setattr(workstreams, "_git", lambda path, *args, **kwargs:
+                        " M public.txt" if args == ("status", "--porcelain") else original(path, *args, **kwargs))
+    data = manifest.read_bytes()
+    with pytest.raises(RuntimeError, match="unexpected identity or local changes"):
+        materialize.sync_workspace(workspace_root=str(root), profiles=("public-presence",), optional_only=True)
+    assert manifest.read_bytes() == data
+    assert calls == ["guard entered", "guard released"]
+
+
+def test_optional_only_setup_requires_profile_and_existing_workspace(tmp_path):
+    with pytest.raises(ValueError, match="explicit optional profile"):
+        materialize._sync_optional_only(tmp_path, "workspace", ())
+    with pytest.raises(FileNotFoundError):
+        materialize._sync_optional_only(tmp_path, "workspace", ("public-presence",))
+
+
+def test_hook_target_filter_never_configures_core_or_app(tmp_path, monkeypatch):
+    hooks = tmp_path / "repos/emulebb-tooling/hooks"
+    hooks.mkdir(parents=True)
+    for hook in ("pre-commit", "pre-push"):
+        (hooks / hook).write_text("#!/bin/sh\n", encoding="utf-8")
+    pages = tmp_path / "repos/emulebb-pages"
+    pages.mkdir()
+    topology = SimpleNamespace(repos=[
+        SimpleNamespace(name="emulebb-pages", relative_path="repos\\emulebb-pages"),
+        SimpleNamespace(name="emulebb-rust", relative_path="repos\\emulebb-rust"),
+    ], app_repo=SimpleNamespace(worktrees=[SimpleNamespace(active=True, relative_path="app/untouched")]))
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=1 if "--get" in command else 0)
+    monkeypatch.setattr(materialize, "run_native", run)
+    materialize.install_workspace_hooks(tmp_path, topology, only_repos=frozenset({"emulebb-pages"}))
+    assert calls and all(command[2] == pages for command in calls)
+
+
 def test_hook_install_adopts_empty_default_directory_but_preserves_custom_hooks(tmp_path, monkeypatch):
     shared = tmp_path / "repos" / "emulebb-tooling" / "hooks"
     shared.mkdir(parents=True)
