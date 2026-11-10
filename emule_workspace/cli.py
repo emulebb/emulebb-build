@@ -378,6 +378,34 @@ def main() -> None:
     """Build, validate, test, and package an eMuleBB workspace."""
 
 
+@main.command("provision-ubuntu-dependencies-ci")
+@click.option("--profile", type=click.Choice(["rust-native-release", "rust-prepared-builder"]), required=True)
+@click.option("--deadline-seconds", type=click.IntRange(10, 900), default=300, show_default=True)
+@click.option("--network-timeout-seconds", type=click.IntRange(1, 60), default=20, show_default=True)
+@click.option("--attempts", type=click.IntRange(1, 5), default=3, show_default=True)
+@click.option("--report", type=click.Path(path_type=Path), default=None)
+def provision_ubuntu_dependencies_ci(profile, deadline_seconds, network_timeout_seconds, attempts, report):
+    """Provision signed Ubuntu dependencies before workspace materialization."""
+    import platform
+    from .ubuntu_ci import ProvisioningError, provision_dependencies, write_receipt
+
+    if os.environ.get("GITHUB_ACTIONS") != "true" or platform.system() != "Linux":
+        raise click.ClickException("Ubuntu CI provisioning requires GitHub Actions on Linux")
+    scratch = Path(os.environ.get("RUNNER_TEMP", ""))
+    source = Path(__file__).resolve().parents[1]
+    if (not scratch.is_absolute() or not scratch.is_dir() or scratch.resolve().is_relative_to(source)
+            or (report is not None and (not report.is_absolute() or report.resolve().is_relative_to(source)))):
+        raise click.ClickException("Provisioning scratch/report paths must be absolute and outside the checkout")
+    try:
+        receipt = provision_dependencies(profile=profile, deadline_seconds=deadline_seconds,
+                                         network_timeout_seconds=network_timeout_seconds,
+                                         attempts=attempts, scratch_root=scratch)
+    except ProvisioningError as error:
+        click.echo(write_receipt(error.receipt, report))
+        raise click.ClickException(str(error)) from error
+    click.echo(write_receipt(receipt, report))
+
+
 @main.group("workstream")
 def workstream() -> None:
     """Manage parent-assigned source checkouts; shared validation remains serialized."""
