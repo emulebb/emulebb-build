@@ -221,7 +221,8 @@ def create_emulebb_rust_package(
     if rust_root is None or not rust_root.is_dir():
         raise RuntimeError("package emulebb-rust requires repos/emulebb-rust in the workspace manifest.")
     _assert_emulebb_rust_version_matches(rust_root, package_options.release_version)
-    provenance = _emulebb_rust_package_provenance(layout, rust_root)
+    provenance = _emulebb_rust_package_provenance(layout, rust_root,
+        **({"prepared_image_receipt": package_options.prepared_image_receipt} if package_options.prepared_image_receipt else {}))
 
     if not package_options.skip_build:
         session = BuildSession(
@@ -305,7 +306,8 @@ def create_emulebb_rust_package(
     package_file_hashes = _zip_entry_hashes(zip_path)
     shutil.copy2(package_root / "SBOM.spdx.json", sbom_path)
     sbom_hash = _sha256(sbom_path)
-    _assert_emulebb_rust_package_provenance(layout, rust_root, provenance)
+    _assert_emulebb_rust_package_provenance(layout, rust_root, provenance,
+        **({"prepared_image_receipt": package_options.prepared_image_receipt} if package_options.prepared_image_receipt else {}))
     manifest = _build_emulebb_rust_manifest(
         layout=layout,
         rust_root=rust_root,
@@ -476,7 +478,8 @@ def _create_emulebb_rust_linux_packages(
         for selected, path in ((want_deb, deb_path), (want_appimage, appimage_path))
         if selected
     )
-    _assert_emulebb_rust_package_provenance(layout, rust_root, provenance)
+    _assert_emulebb_rust_package_provenance(layout, rust_root, provenance,
+        **({"prepared_image_receipt": package_options.prepared_image_receipt} if package_options.prepared_image_receipt else {}))
     manifests: list[Path] = []
     for asset in assets:
         sbom_path = sboms[asset]
@@ -603,7 +606,8 @@ def _create_emulebb_rust_macos_package(
     )
     sbom_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
     _run_packaging_tool(("hdiutil", "create", "-volname", "eMuleBB Rust", "-srcfolder", str(app_root), "-ov", "-format", "UDZO", str(dmg)), "hdiutil")
-    _assert_emulebb_rust_package_provenance(layout, rust_root, provenance)
+    _assert_emulebb_rust_package_provenance(layout, rust_root, provenance,
+        **({"prepared_image_receipt": package_options.prepared_image_receipt} if package_options.prepared_image_receipt else {}))
     manifest_path.write_text(json.dumps({
         **provenance,
         "package": "emulebb-rust",
@@ -935,13 +939,15 @@ def build_emulebb_rust_image_ci(
     version: str,
     control_rust_root: Path | None = None,
     variant: str = "ubuntu",
+    use_ci_image_mirrors: bool = False,
 ) -> Path:
     """Build the verified candidate archive; GitHub owns all publication."""
     from .rust_images import build_image
 
     return build_image(rust_root=rust_root, output_root=output_root, assets_dir=assets_dir,
                        version=version, image=f"ghcr.io/emulebb/emulebb-rust:{version}-{variant}",
-                       control_rust_root=control_rust_root, variant=variant)
+                       control_rust_root=control_rust_root, variant=variant,
+                       **({"use_ci_image_mirrors": True} if use_ci_image_mirrors else {}))
 
 
 def build_emulebb_rust_image_local(
@@ -1097,21 +1103,27 @@ def _assert_emulebb_rust_hosted_artifact(data: dict) -> None:
         raise RuntimeError("Artifact must originate from this GitHub run and workflow, at the current or an earlier attempt")
 
 
-def _emulebb_rust_package_provenance(layout: WorkspaceLayout, rust_root: Path) -> dict[str, object]:
+def _emulebb_rust_package_provenance(layout: WorkspaceLayout, rust_root: Path,
+                                   *, prepared_image_receipt: Path | None = None) -> dict[str, object]:
     """Capture the clean repositories that actually contribute package bytes."""
     _assert_clean_emulebb_rust_package_inputs(layout, rust_root)
     source = _emulebb_rust_source_provenance(layout, rust_root)
     if any(re.fullmatch(r"[0-9a-f]{40}", item.get("commit", "")) is None for item in source.values()):
         raise RuntimeError("Rust package provenance requires full source and support commit SHAs")
-    return {"schema": "emulebb.rust.package/2", "sourceDirty": False, "source": source,
-            **_emulebb_rust_artifact_origin()}
+    result = {"schema": "emulebb.rust.package/2", "sourceDirty": False, "source": source,
+              **_emulebb_rust_artifact_origin()}
+    if prepared_image_receipt is not None:
+        from .prepared_native_ci import load_environment
+        result["buildEnvironment"] = load_environment(prepared_image_receipt, layout.output_root)
+    return result
 
 
 def _assert_emulebb_rust_package_provenance(layout: WorkspaceLayout, rust_root: Path,
-                                          expected: dict[str, object]) -> None:
+                                          expected: dict[str, object], *, prepared_image_receipt: Path | None = None) -> None:
     # WHY: a checkout can move to another clean HEAD while a build is running;
     # cleanliness alone must not attribute old bytes to the new revision.
-    if _emulebb_rust_package_provenance(layout, rust_root) != expected:
+    if _emulebb_rust_package_provenance(layout, rust_root,
+            **({"prepared_image_receipt": prepared_image_receipt} if prepared_image_receipt else {})) != expected:
         raise RuntimeError("Rust package source or workflow identity changed during production")
 
 

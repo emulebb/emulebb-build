@@ -1911,6 +1911,7 @@ def package_emulebb_rust_linux(*, libc: str, architecture: str, webui_dist: Path
 
 
 @main.command("package-emulebb-rust-linux-ci")
+@click.option("--use-ci-image-mirrors", is_flag=True, help="Use verified exact-digest Build mirrors; never fall back to upstream.")
 @click.option("--libc", type=click.Choice(["gnu", "musl"]), required=True)
 @click.option("--architecture", type=click.Choice(["amd64", "arm64"]), required=True)
 @click.option("--webui-dist", type=click.Path(path_type=Path))
@@ -1921,7 +1922,7 @@ def package_emulebb_rust_linux(*, libc: str, architecture: str, webui_dist: Path
 @click.option("--test-scope", type=click.Choice(["portable", "full"]), default="portable", show_default=True)
 def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: Path | None,
                                  release_version: str, smoke: bool, smoke_report_path: Path | None,
-                                 test_scope: str) -> None:
+                                 test_scope: str, use_ci_image_mirrors: bool = False) -> None:
     """Use the local Linux container recipe on a minimal native CI checkout."""
     from .linux_containers import build_linux_artifacts, smoke_linux_archive
     from .release import _emulebb_rust_artifact_origin
@@ -1949,9 +1950,11 @@ def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: P
     try:
         archive = build_linux_artifacts(layout, libc=libc, architecture=architecture,
                                         webui_dist=webui_dist, release_version=release_version,
-                                        smoke=False, test_scope=test_scope)
+                                        smoke=False, test_scope=test_scope,
+                                        **({"use_ci_image_mirrors": True} if use_ci_image_mirrors else {}))
         if smoke:
-            receipt = smoke_linux_archive(layout, archive=archive, libc=libc, architecture=architecture)
+            receipt = smoke_linux_archive(layout, archive=archive, libc=libc, architecture=architecture,
+                                          **({"use_ci_image_mirrors": True} if use_ci_image_mirrors else {}))
             if report_target is not None:
                 if receipt.is_symlink() or not receipt.is_file() or not receipt.resolve().is_relative_to(layout.output_root):
                     raise click.ClickException("Lifecycle receipt must be a regular file below the output root")
@@ -2068,6 +2071,7 @@ def package_emulebb_rust_image_local(
 
 
 @main.command("package-emulebb-rust-ci")
+@click.option("--prepared-image-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None, hidden=True)
 @click.option(
     "--release-version",
     default="0.1.0-beta.1",
@@ -2077,7 +2081,8 @@ def package_emulebb_rust_image_local(
 @click.option("--clean", is_flag=True, help="Clean selected Rust build/staging outputs before building.")
 @click.option("--target-os", type=click.Choice(["windows", "linux", "macos"]), required=True)
 @click.option("--platform", type=click.Choice(["x64", "ARM64"]), required=True)
-def package_emulebb_rust_ci(*, release_version: str, clean: bool, target_os: str, platform: str) -> None:
+def package_emulebb_rust_ci(*, release_version: str, clean: bool, target_os: str, platform: str,
+                           prepared_image_receipt: Path | None = None) -> None:
     """Build Rust assets from fork checkouts on a clean native CI runner."""
 
     output_root_value = os.environ.get(WORKSPACE_OUTPUT_ROOT_ENV, "").strip()
@@ -2111,11 +2116,34 @@ def package_emulebb_rust_ci(*, release_version: str, clean: bool, target_os: str
         release_version=release_version,
         clean=clean,
         target_os=target_os,
+        prepared_image_receipt=prepared_image_receipt,
     )
+    if prepared_image_receipt:
+        from .prepared_native_ci import load_environment, seed_runtime
+        if target_os != "linux" or os.environ.get("GITHUB_ACTIONS") != "true":
+            raise click.ClickException("Prepared image evidence belongs only to hosted native Linux packages")
+        environment = load_environment(prepared_image_receipt, layout.output_root)
+        architecture = "amd64" if platform == "x64" else "arm64"
+        if environment.get("runtimeProbe", {}).get("architecture") != architecture:
+            raise click.ClickException("Prepared package evidence has the wrong native CPU")
+        seed_runtime(layout.output_root, "x86_64" if platform == "x64" else "aarch64")
     try:
         create_emulebb_rust_package(layout, options, package_options)
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+@main.command("package-emulebb-rust-prepared-ci")
+@click.option("--image", required=True)
+@click.option("--release-version", required=True)
+@click.option("--platform", type=click.Choice(["x64", "ARM64"]), required=True)
+def package_emulebb_rust_prepared_ci(image, release_version, platform):
+    """Run the unchanged native Linux package pipeline in the verified CI image."""
+    from .prepared_native_ci import package
+    try:
+        print(f"Prepared native package evidence: {package(image=image, release_version=release_version, target_platform=platform)}")
+    except Exception as error:
+        raise click.ClickException(str(error)) from error
 
 
 @main.command("assemble-emulebb-rust-release-ci")
@@ -2139,6 +2167,7 @@ def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path) 
 
 
 @main.command("package-emulebb-rust-image-ci")
+@click.option("--use-ci-image-mirrors", is_flag=True, help="Use exact-digest unpack-stage mirror; GHCR runtime bases stay unchanged.")
 @click.option("--variant", type=click.Choice(["ubuntu", "alpine"]), default="ubuntu", show_default=True)
 @click.option("--release-version", required=True)
 @click.option("--assets-dir", type=click.Path(path_type=Path), required=True)
@@ -2149,6 +2178,7 @@ def package_emulebb_rust_image_ci(
     release_version: str,
     assets_dir: Path,
     control_rust_repo: Path,
+    use_ci_image_mirrors: bool = False,
 ) -> None:
     """Build a verified multi-architecture Ubuntu or Alpine image."""
 
@@ -2170,6 +2200,7 @@ def package_emulebb_rust_image_ci(
             version=release_version,
             control_rust_root=control_rust_repo.resolve(),
             variant=variant,
+            **({"use_ci_image_mirrors": True} if use_ci_image_mirrors else {}),
         )
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc

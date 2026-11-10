@@ -354,6 +354,7 @@ class EmulebbRustPackageOptions(BaseModel):
     skip_build: bool = False
     target_os: RustTargetOs = "windows"
     linux_formats: tuple[RustLinuxPackageFormat, ...] = ("deb", "appimage")
+    prepared_image_receipt: Path | None = None
 
 
 class MiniupnpcPackageOptions(BaseModel):

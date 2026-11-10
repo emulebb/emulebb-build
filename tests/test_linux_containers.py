@@ -126,7 +126,8 @@ def test_builder_rejects_invalid_operator_identity_before_docker(monkeypatch, va
         linux_containers._builder_user(SimpleNamespace(prefix=[]))
 
 
-def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging_as_root(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mirrors", [False, True])
+def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging_as_root(tmp_path, monkeypatch, mirrors):
     from emule_workspace import release
 
     workspace, output = tmp_path / "workspace", tmp_path / "out"
@@ -193,7 +194,8 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
     old_archive.parent.mkdir(parents=True)
     old_archive.write_bytes(b"previous root-owned archive")
     archive = linux_containers._build_linux_artifacts(layout, Docker(), libc="musl", architecture="amd64",
-                                                      webui_dist=webui, release_version=None, test_scope="portable")
+                                                      webui_dist=webui, release_version=None, test_scope="portable",
+                                                      use_ci_image_mirrors=mirrors)
     assert cargo_calls
     for arguments in [*cargo_calls, *(args for args in calls if args[0] == "run")]:
         assert arguments[arguments.index("--user") + 1] == "1001:1002"
@@ -203,11 +205,15 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
     manifest = json.loads(archive.with_name(archive.name + ".manifest.json").read_text())
     assert manifest["buildUser"] == "1001:1002"
     assert manifest["pathMapping"]["cargoTarget"] == target_mapping
+    expected = linux_containers.select_image("rust-musl", linux_containers.RUST_IMAGES["musl"], mirrors)
+    assert manifest["builderBase"] == expected
+    assert "BASE_IMAGE=" + expected in next(args for args in calls if args[0] == "build")
 
 
 @pytest.mark.parametrize("producer_run", ["123", "999"])
 @pytest.mark.parametrize("host_uid", ["0", "1000"])
-def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypatch, tmp_path, hosted_context, producer_run, host_uid):
+@pytest.mark.parametrize("mirrors", [False, True])
+def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypatch, tmp_path, hosted_context, producer_run, host_uid, mirrors):
     output = tmp_path / "out"
     output.mkdir()
     archive = output / "emulebb-rust-v0.1.0-beta.2-linux-amd64-musl.tar.zst"
@@ -238,11 +244,13 @@ def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypat
     monkeypatch.setattr(linux_containers, "run_owned_container", lambda docker, arguments, *args, **kwargs: launches.append(arguments))
     if producer_run != "123":
         with pytest.raises(RuntimeError, match="this GitHub run and workflow"):
-            linux_containers.smoke_linux_archive(layout, archive=archive, libc="musl", architecture="amd64")
+            linux_containers.smoke_linux_archive(layout, archive=archive, libc="musl", architecture="amd64", use_ci_image_mirrors=mirrors)
         assert not calls and not launches
         return
-    linux_containers.smoke_linux_archive(layout, archive=archive, libc="musl", architecture="amd64")
+    linux_containers.smoke_linux_archive(layout, archive=archive, libc="musl", architecture="amd64", use_ci_image_mirrors=mirrors)
     assert calls[0][0] == "version"
+    expected = linux_containers.select_image("alpine-runtime", linux_containers.RUNTIME_IMAGES["musl"], mirrors)
+    assert "BASE_IMAGE=" + expected in next(args for args in calls if args[0] == "build")
     command = launches[0]
     image_index = command.index("local/emulebb-rust-runtime:musl-amd64")
     assert command[command.index("--user") + 1] == ("65534:65534" if host_uid == "0" else "1000:1000")

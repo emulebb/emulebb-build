@@ -8,10 +8,17 @@ on:
       - 'emule_workspace/ci_linux_image*.py'
       - 'emule_workspace/ci_linux_tools.py'
       - 'emule_workspace/ci_image_sources.py'
+      - 'emule_workspace/prepared_native_ci.py'
+      - 'emule_workspace/cli.py'
+      - 'emule_workspace/config.py'
+      - 'emule_workspace/release.py'
+      - 'emule_workspace/linux_containers.py'
+      - 'emule_workspace/rust_images.py'
       - 'emule_workspace/ubuntu_ci.py'
       - 'emule_workspace/release_assets/ci_linux/**'
       - 'tests/test_ci_linux_images.py'
       - 'tests/test_ci_linux_tools.py'
+      - 'tests/test_prepared_native_ci.py'
       - 'tests/test_ubuntu_ci.py'
   push:
     branches: [main]
@@ -20,10 +27,17 @@ on:
       - 'emule_workspace/ci_linux_image*.py'
       - 'emule_workspace/ci_linux_tools.py'
       - 'emule_workspace/ci_image_sources.py'
+      - 'emule_workspace/prepared_native_ci.py'
+      - 'emule_workspace/cli.py'
+      - 'emule_workspace/config.py'
+      - 'emule_workspace/release.py'
+      - 'emule_workspace/linux_containers.py'
+      - 'emule_workspace/rust_images.py'
       - 'emule_workspace/ubuntu_ci.py'
       - 'emule_workspace/release_assets/ci_linux/**'
       - 'tests/test_ci_linux_images.py'
       - 'tests/test_ci_linux_tools.py'
+      - 'tests/test_prepared_native_ci.py'
       - 'tests/test_ubuntu_ci.py'
 
 permissions:
@@ -52,7 +66,7 @@ jobs:
         run: python -m pip install click==8.4.1 pydantic==2.14.3 PyYAML==6.0.3 pytest==9.1.1
       - name: Verify source, graph and real process deadlines without APT or Docker
         run: >-
-          python -B -m pytest tests/test_ubuntu_ci.py tests/test_ci_linux_images.py tests/test_ci_linux_tools.py
+          python -B -m pytest tests/test_ubuntu_ci.py tests/test_ci_linux_images.py tests/test_ci_linux_tools.py tests/test_prepared_native_ci.py
           -p no:cacheprovider --basetemp "${{ runner.temp }}/ci-image-unit"
 
   mirrors:
