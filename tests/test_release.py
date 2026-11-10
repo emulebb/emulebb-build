@@ -190,6 +190,10 @@ def _stage_rust_package_inputs(layout: WorkspaceLayout) -> None:
     )
     (rust_root / "emulebb-rust-settings.example.toml").write_text("[rest]\n", encoding="utf-8", newline="\n")
     (rust_root / "LICENSE").write_text("GPL-2.0-only\n", encoding="utf-8", newline="\n")
+    icon_root = rust_root / "resources" / "icons"
+    icon_root.mkdir(parents=True)
+    for size in (16, 24, 32, 48, 64, 128, 256, 512):
+        (icon_root / f"donkey-{size}.png").write_bytes(f"sample-icon-{size}".encode("ascii"))
     scope = layout.tooling_repo_root / "docs" / "products" / "emulebb-rust" / "RELEASE-SCOPE.md"
     scope.parent.mkdir(parents=True, exist_ok=True)
     scope.write_text("# emulebb-rust Release Scope\n", encoding="utf-8", newline="\n")
@@ -200,6 +204,8 @@ def _stage_rust_package_inputs(layout: WorkspaceLayout) -> None:
     (staged_bin / "emulebb-rust-diagnostics.exe").write_bytes(_pe_payload(0x8664))
     (staged_bin / "webui" / "index.html").write_text("<div>webui</div>", encoding="utf-8", newline="\n")
     (staged_bin / "webui" / "assets.js").write_text("console.log('webui');\n", encoding="utf-8", newline="\n")
+    (staged_bin / "webui" / "favicon.ico").write_bytes(b"sample-favicon")
+    (staged_bin / "webui" / "apple-touch-icon.png").write_bytes(b"sample-touch-icon")
 
 
 def test_package_release_dirty_guard_reports_all_provenance_inputs(
@@ -1102,6 +1108,8 @@ def test_emulebb_rust_package_reuses_staged_regular_runtime(
     assert "emulebb-rust/emulebb-rust.exe" in names
     assert "emulebb-rust/webui/index.html" in names
     assert "emulebb-rust/webui/assets.js" in names
+    assert "emulebb-rust/webui/favicon.ico" in names
+    assert "emulebb-rust/webui/apple-touch-icon.png" in names
     assert "emulebb-rust/emulebb-rust-ui.exe" not in names
     assert "emulebb-rust/emulebb-rust-diagnostics.exe" not in names
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1267,6 +1275,25 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     appimage = release_root / f"emulebb-rust-v0.1.0-beta.1-linux-{image_arch}.AppImage"
     assert deb.is_file() == ("deb" in formats)
     assert appimage.is_file()
+    staging = release_root / "staging" / f"linux-{image_arch}"
+    appdir = staging / "AppDir"
+    assert not (appdir / "emulebb-rust.svg").exists()
+    assert (appdir / "emulebb-rust.png").read_bytes() == b"sample-icon-256"
+    assert (appdir / "emulebb-rust.desktop").read_bytes() == (
+        appdir / "usr/share/applications/emulebb-rust.desktop"
+    ).read_bytes()
+    for tree in (staging / "deb", appdir):
+        for size in (16, 24, 32, 48, 64, 128, 256, 512):
+            icon = tree / "usr/share/icons/hicolor" / f"{size}x{size}/apps/emulebb-rust.png"
+            assert icon.read_bytes() == f"sample-icon-{size}".encode("ascii")
+        desktop = configparser.ConfigParser(interpolation=None)
+        desktop.read(tree / "usr/share/applications/emulebb-rust.desktop", encoding="utf-8")
+        assert desktop["Desktop Entry"]["Icon"] == "emulebb-rust"
+        assert "eD2K" in desktop["Desktop Entry"]["Comment"]
+        assert "Kad;" in desktop["Desktop Entry"]["Keywords"]
+        assert (tree / "usr/lib/emulebb-rust/webui/favicon.ico").read_bytes() == b"sample-favicon"
+        assert (tree / "usr/lib/emulebb-rust/webui/apple-touch-icon.png").read_bytes() == b"sample-touch-icon"
+        assert "Slint" not in (tree / "usr/share/doc/emulebb-rust/README.md").read_text(encoding="utf-8")
     for asset in (deb, appimage) if "deb" in formats else (appimage,):
         sbom = asset.with_name(asset.name + ".sbom.spdx.json")
         manifest = json.loads(asset.with_name(asset.name + ".manifest.json").read_text())
