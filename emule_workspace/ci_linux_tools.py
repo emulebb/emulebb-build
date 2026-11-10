@@ -52,6 +52,9 @@ def install(destination: Path, *, downloader=download_verified, runner=subproces
     runtime_path = destination / ("runtime-" + arch)
     downloader(f"https://github.com/AppImage/type2-runtime/releases/download/{runtime['version']}/runtime-{arch}",
                runtime_path, runtime["sha256"][arch])
+    # WHY: verified downloads retain private temporary-file modes. Image users
+    # must read this immutable runtime without becoming its root owner.
+    runtime_path.chmod(0o644)
     receipt = {"schema": "emulebb.ci-packaging-tools/1", "architecture": arch, "inputs": inputs,
                "pythonRequirementsSha256": hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest(),
                "appimageRuntime": runtime, "status": "passed"}

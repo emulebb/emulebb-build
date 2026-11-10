@@ -1,6 +1,8 @@
 """The prepared package environment must contain the pipeline's actual tools."""
 import json
+import os
 import re
+import stat
 import tomllib
 
 import pytest
@@ -33,6 +35,10 @@ def test_image_installer_uses_verified_archives_and_locked_dependencies(tmp_path
     def download(url, destination, expected):
         downloaded.append((url, expected))
         destination.write_bytes(b"synthetic verified archive")
+        # Match download_verified's private temporary-file publication on POSIX.
+        destination.chmod(0o600)
+        if os.name == "posix":
+            assert stat.S_IMODE(destination.stat().st_mode) == 0o600
     def run(command, **kwargs):
         commands.append((command, kwargs))
     result = tools.install(tmp_path, downloader=download, runner=run)
@@ -48,6 +54,9 @@ def test_image_installer_uses_verified_archives_and_locked_dependencies(tmp_path
     assert all(options["env"]["PYYAML_FORCE_LIBYAML"] == "0" for _, options in commands)
     assert not (tmp_path / "npm.tgz").exists()
     assert (tmp_path / "inputs.json").is_file()
+    if os.name == "posix":
+        assert stat.S_IMODE((tmp_path / "appimagetool").stat().st_mode) == 0o755
+        assert stat.S_IMODE((tmp_path / f"runtime-{machine}").stat().st_mode) == 0o644
 
 
 def test_complete_recipe_copies_tool_stages_and_runs_verification():
