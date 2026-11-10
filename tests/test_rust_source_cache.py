@@ -34,7 +34,9 @@ def repository(path, files):
 
 
 @pytest.fixture
-def guarded(tmp_path, monkeypatch):
+def guarded(tmp_path_factory, monkeypatch):
+    # Keep real Git/Cargo fixtures below OUTPUT without Windows path-length noise.
+    tmp_path = tmp_path_factory.mktemp("rust-cache")
     workspace, output = tmp_path / "workspace", tmp_path / "output"
     workspace.mkdir()
     target = output / "builds/rust/target"
