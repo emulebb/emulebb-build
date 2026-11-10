@@ -480,6 +480,19 @@ def workstream_remove(*, workstream_id, owner, abandoned, workspace_options, lay
     _locked("workstream remove", execute)(workspace_options=workspace_options, layout=layout)
 
 
+@workstream.command("remove-repo")
+@click.argument("workstream_id")
+@click.option("--repo", required=True, type=click.Choice(tuple(REPOSITORY_FIELDS)))
+@click.option("--owner", required=True, help="Assigned parent owner; workers must not invoke removal.")
+@_common_options
+def workstream_remove_repo(*, workstream_id, repo, owner, workspace_options, layout) -> None:
+    """Retire one integrated companion; repeat outside the workstream to resume."""
+    from .workstreams import remove_repository
+    def execute(**kwargs):
+        _print_workstream(remove_repository(kwargs["layout"], workstream_id, repo, owner))
+    _locked("workstream remove-repo", execute)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("bootstrap-python")
 @click.option("--update-lock", is_flag=True, help="Explicitly regenerate the reviewed dependency lock")
 @click.option("--reinstall", is_flag=True, help="Reinstall only the private managed interpreter")
