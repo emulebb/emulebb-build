@@ -142,11 +142,17 @@ def _installer_checksum(staging: Path) -> None:
 
 def validate_public_presence(layout, *, repository: str) -> Path:
     """Run source-bound public checks with unique external staging and evidence."""
-    sources = public_presence_sources(layout, repository)
-    before = _snapshot(sources)
+    # WHY: public checks consume source and OUTPUT, not Cargo. Establish the
+    # inherited roots before creating even a failed-run receipt or scratch path.
+    inherited_root, inherited_output = resolve_required_workspace_roots()
     output = layout.output_root.resolve()
     if output.is_relative_to(layout.emule_workspace_root.resolve()):
         raise RuntimeError("Public output must be outside the source workspace")
+    if (inherited_root.resolve() != layout.emule_workspace_root.resolve()
+            or inherited_output.resolve() != output):
+        raise RuntimeError("Inherited workspace/OUTPUT roots must match public validation layout")
+    sources = public_presence_sources(layout, repository)
+    before = _snapshot(sources)
     run_id = uuid4().hex
     report_root = _safe_path(output, output / "reports/public-presence" / repository / run_id)
     staging = _safe_path(output, output / "artifacts/public-presence" / run_id / "site")
@@ -163,12 +169,6 @@ def validate_public_presence(layout, *, repository: str) -> Path:
                        PYTHONPYCACHEPREFIX=str(output / "cache/pycache"))
     print(f"Public presence evidence: {report_path}", flush=True)
     try:
-        # WHY: public checks consume source and OUTPUT, not Cargo. Validate the
-        # inherited roots without creating an unrelated Rust toolchain dependency.
-        inherited_root, inherited_output = resolve_required_workspace_roots()
-        if (inherited_root.resolve() != layout.emule_workspace_root.resolve()
-                or inherited_output.resolve() != output):
-            raise RuntimeError("Inherited workspace/OUTPUT roots must match public validation layout")
         if repository == "emulebb-pages":
             report["rendererCapabilities"] = _renderer_capabilities(sources[repository], environment)
         staging.parent.mkdir(parents=True)
