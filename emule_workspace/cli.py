@@ -79,6 +79,7 @@ from .test_runs import (
     invoke_test_runs,
 )
 from .topology import OPTIONAL_WORKSPACE_PROFILES
+from .workstreams import REPOSITORY_FIELDS, OPTIONAL_REPOSITORY_FIELDS
 from .validation import validate_workspace
 from .windows_vm_lab import (
     VmManualOptions,
@@ -421,7 +422,7 @@ def _print_workstream(value: Any) -> None:
 @click.option("--branch", required=True)
 @click.option("--owner", required=True, help="Accountable parent/coordinator identifier.")
 @click.option("--repo", "repositories", multiple=True, required=True,
-              type=click.Choice(["emulebb-rust", "emulebb-build", "emulebb-tooling", "emulebb-build-tests"]))
+              type=click.Choice(tuple(REPOSITORY_FIELDS)))
 @click.option("--issue", "issues", multiple=True)
 @click.option("--pull-request", "pull_requests", multiple=True)
 @_common_options
@@ -439,7 +440,7 @@ def workstream_create(*, workstream_id, branch, owner, repositories, issues, pul
 @workstream.command("add-repo")
 @click.argument("workstream_id")
 @click.option("--repo", required=True,
-              type=click.Choice(["emulebb-rust", "emulebb-build", "emulebb-tooling", "emulebb-build-tests"]))
+              type=click.Choice(tuple(REPOSITORY_FIELDS)))
 @_common_options
 def workstream_add_repo(*, workstream_id, repo, workspace_options, layout) -> None:
     """Add one previously unassigned repository to a workstream."""
@@ -725,17 +726,23 @@ def materialize(*, workspace_name: str | None, artifacts_seed_root: str | None, 
     type=click.Choice(OPTIONAL_WORKSPACE_PROFILES),
     help="Add an optional repository profile. The core profile is always synchronized.",
 )
-def sync(*, workspace_name: str | None, artifacts_seed_root: str | None, profiles: tuple[str, ...]) -> None:
+@click.option("--optional-only", is_flag=True,
+              help="Admit only explicit optional profiles in an existing workspace; leave core sources unchanged.")
+def sync(*, workspace_name: str | None, artifacts_seed_root: str | None, profiles: tuple[str, ...],
+         optional_only: bool = False) -> None:
     """Synchronize setup-owned workspace state."""
 
     try:
         workspace_root, _output_root = resolve_required_workspace_roots()
-        sync_workspace(
+        options = dict(
             workspace_root=str(workspace_root),
             workspace_name=workspace_name,
             artifacts_seed_root=artifacts_seed_root,
             profiles=profiles,
         )
+        if optional_only:
+            options["optional_only"] = True
+        sync_workspace(**options)
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -1596,6 +1603,18 @@ def test_certification(
     )(workspace_options=workspace_options, layout=layout)
 
 
+
+
+@test.command("public-presence")
+@_common_options
+@click.option("--repo", "repository", type=click.Choice(tuple(OPTIONAL_REPOSITORY_FIELDS)), required=True)
+def test_public_presence(*, repository: str, workspace_options: WorkspaceOptions, layout) -> None:
+    """Validate optional public sources using their selected Tooling authority."""
+    from .public_presence_checks import validate_public_presence
+
+    _locked("test public-presence", lambda **kwargs: validate_public_presence(
+        kwargs["layout"], repository=repository,
+    ))(workspace_options=workspace_options, layout=layout)
 
 
 @test.command("rust-unit")

@@ -20,7 +20,7 @@ jobs:
       repo_kind: emulebb-build
       extra_commands: |
         python -m pip install -e .[dev]
-        python -m pytest tests/test_ci_workflows.py tests/test_workstreams.py tests/test_local_checks.py tests/test_python_runtime.py tests/test_cli.py tests/test_linux_containers.py
+        python -m pytest tests/test_ci_workflows.py tests/test_workstreams.py tests/test_local_checks.py tests/test_python_runtime.py tests/test_cli.py tests/test_linux_containers.py tests/test_layout.py tests/test_materialize.py tests/test_public_presence_checks.py
       tooling_ref: 856e0499d12e281697618cc81a0b09805e96f59e
 
   lifecycle-linux:
@@ -46,4 +46,5 @@ jobs:
         run: >-
           python -B -m pytest
           tests/test_workstreams.py tests/test_locks.py tests/test_cli.py tests/test_ci_workflows.py
+          tests/test_public_presence_checks.py
           -p no:cacheprovider --basetemp "${{ runner.temp }}/workstream-tests"

@@ -65,6 +65,32 @@ def test_workspace_manifest_windows_paths_are_portable(tmp_path: Path) -> None:
     ).resolve()
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_optional_layout_uses_only_explicit_generated_topology(tmp_path, monkeypatch, enabled):
+    import json
+    from emule_workspace import layout as layout_module
+
+    build = tmp_path / "repos/emulebb-build"
+    build.mkdir(parents=True)
+    (build / "deps.json").write_text(json.dumps({"workspace": {
+        "name": "workspace", "dependencies": [], "toolchain": {},
+        "app_repo": {"test_targets": {"test_build_variant": "main", "test_run_variant": "main", "baseline_variant": "community"}},
+    }}), encoding="utf-8")
+    workspace = tmp_path / "workspaces/workspace"
+    workspace.mkdir(parents=True)
+    manifest = build_workspace_manifest(canonical_topology(profiles=("public-presence",) if enabled else ()))
+    (workspace / "deps.json").write_text(json.dumps(manifest), encoding="utf-8")
+    # Physical presence does not implicitly enable optional sources.
+    (tmp_path / "repos/emulebb-pages").mkdir()
+    monkeypatch.setattr(layout_module, "build_repo_root", lambda: build)
+    resolved = layout_module.load_layout(tmp_path)
+    assert resolved.emulebb_pages_repo_root == (tmp_path / "repos/emulebb-pages" if enabled else None)
+    assert resolved.emulebb_org_profile_repo_root == (tmp_path / "repos/emulebb-org-profile" if enabled else None)
+    ci_layout = layout_module.build_ci_layout(output_root=tmp_path / "output")
+    assert ci_layout.emulebb_pages_repo_root is None
+    assert ci_layout.emulebb_org_profile_repo_root is None
+
+
 def test_workspace_manifest_uses_json_contract_shape() -> None:
     manifest = build_workspace_manifest(canonical_topology(), "workspace")
 

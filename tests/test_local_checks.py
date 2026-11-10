@@ -421,6 +421,39 @@ def test_workstream_rust_push_selects_exact_rest_sources(tmp_path):
     assert gate[gate.index("--rest-openapi-contract") + 1] == str(tooling / "docs/products/emulebb-rust/api/REST-API-OPENAPI.yaml")
 
 
+@pytest.mark.parametrize("repository", ["emulebb-pages", "emulebb-org-profile"])
+def test_optional_push_uses_public_owner_without_product_builds(tmp_path, repository):
+    repo = tmp_path / "workspaces/agents/public" / repository
+    builder = tmp_path / "workspaces/agents/public/emulebb-build"
+    tooling = tmp_path / "workspaces/agents/public/emulebb-tooling"
+    plan = check_plan(repo, {"profile/README.md"}, "push", tmp_path, tmp_path / "output",
+                      {"emulebb-build": builder, "emulebb-tooling": tooling, repository: repo}, "public")
+    command = next(command for cwd, command in plan if "public-presence" in command)
+    assert command[-2:] == ["--workstream", "public"]
+    assert command[command.index("--repo") + 1] == repository
+    assert all(not any(token in " ".join(command) for token in ("cargo", "validate-rust-android", "validate-emulebb-rust-linux"))
+               for cwd, command in plan)
+    assert str(tooling / "ci/guard-tracked-files.py") in plan[0][1]
+
+
+def test_validation_inputs_are_consumers_not_the_lifecycle_catalog(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from emule_workspace import layout as layout_module, workstreams
+
+    fields = {field: tmp_path / "repos" / name for name, field in workstreams.REPOSITORY_FIELDS.items()}
+    layout = SimpleNamespace(**fields)
+    monkeypatch.setattr(layout_module, "load_layout", lambda *args, **kwargs: layout)
+    core = local_checks._workstream_sources(tmp_path, tmp_path / "output", None, "emulebb-rust")
+    assert set(core) == set(workstreams.CORE_REPOSITORY_FIELDS)
+    pages = local_checks._workstream_sources(tmp_path, tmp_path / "output", None, "emulebb-pages")
+    assert set(pages) == {"emulebb-pages", "emulebb-tooling", "emulebb-build"}
+    assert "emulebb-org-profile" not in pages
+    layout.emulebb_pages_repo_root = None
+    assert local_checks._workstream_sources(tmp_path, tmp_path / "output", None, "emulebb-rust") == core
+    with pytest.raises(RuntimeError, match="missing from topology"):
+        local_checks._workstream_sources(tmp_path, tmp_path / "output", None, "emulebb-pages")
+
+
 def test_each_commit_check_has_independent_inputs(tmp_path, monkeypatch):
     repo = tmp_path / "repos/emulebb-build"
     repo.mkdir(parents=True)

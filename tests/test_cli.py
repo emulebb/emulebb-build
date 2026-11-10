@@ -674,6 +674,40 @@ def test_sync_help_exposes_bootstrap_options() -> None:
     assert "--workspace-root" not in result.output
 
 
+def test_optional_lifecycle_and_validation_help_expose_bounded_choices():
+    runner = CliRunner()
+    for command in (["workstream", "create", "--help"], ["workstream", "add-repo", "--help"],
+                    ["test", "public-presence", "--help"]):
+        result = runner.invoke(cli.main, command)
+        assert result.exit_code == 0, result.output
+        assert "emulebb-pages" in result.output and "emulebb-org-profile" in result.output
+    assert "--optional-only" in runner.invoke(cli.main, ["sync", "--help"]).output
+
+
+def test_optional_only_sync_forwards_explicit_mode_without_environment_repair(tmp_path, monkeypatch):
+    import os
+    called = []
+    monkeypatch.setattr(cli, "resolve_required_workspace_roots", lambda: (tmp_path, tmp_path / "output"))
+    monkeypatch.setattr(cli, "sync_workspace", lambda **kwargs: called.append(kwargs))
+    before = os.environ.copy()
+    result = CliRunner().invoke(cli.main, ["sync", "--profile", "public-presence", "--optional-only"])
+    assert result.exit_code == 0, result.output
+    assert called[0]["optional_only"] is True
+    assert called[0]["profiles"] == ("public-presence",)
+    assert os.environ == before
+
+
+def test_public_checks_use_selected_workstream_and_existing_lock(tmp_path, monkeypatch):
+    from emule_workspace import workstreams, public_presence_checks
+    root, output, base, selected, received = _workstream_cli_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(workstreams, "resolve_workstream", lambda *args, **kwargs: {"id": "alpha"})
+    monkeypatch.setattr(public_presence_checks, "validate_public_presence",
+                        lambda layout, *, repository: received.append((layout, repository)))
+    result = CliRunner().invoke(cli.main, ["test", "public-presence", "--repo", "emulebb-pages", "--workstream", "alpha"])
+    assert result.exit_code == 0, result.output
+    assert received == [(selected, "emulebb-pages")]
+
+
 def test_setup_status_help_is_available() -> None:
     runner = CliRunner()
 

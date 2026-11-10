@@ -28,6 +28,8 @@ SHARED_HOOK_REPO_NAMES = frozenset(
         "emulebb-tooling",
         "emulebb-rust",
         "ed2k-server",
+        "emulebb-pages",
+        "emulebb-org-profile",
     }
 )
 

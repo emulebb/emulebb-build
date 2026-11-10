@@ -210,6 +210,9 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
                 "scripts/github-roadmap-check.py", "scripts/docs-publish-check.py",
             } for p in paths):
                 commands.append((repo, [py, "scripts/docs-publish-check.py"]))
+    if stage == "push" and repo.name in {"emulebb-pages", "emulebb-org-profile"}:
+        commands.append((builder, [py, "-B", "-m", "emule_workspace", "test", "public-presence",
+                                   "--repo", repo.name]))
     if workstream:
         for _cwd, command in commands:
             if "emule_workspace" in command:
@@ -237,14 +240,20 @@ def _source_snapshot(sources: dict[str, Path], *, clean: bool) -> dict:
     return snapshot
 
 
-def _workstream_sources(root: Path, output: Path, registration: dict) -> dict[str, Path]:
+def _workstream_sources(root: Path, output: Path, registration: dict | None,
+                        repo_name: str | None = None) -> dict[str, Path]:
     """Resolve supporting sources from generated topology before applying selection."""
     from .layout import load_layout
-    from .workstreams import REPOSITORY_FIELDS, apply_workstream_layout
-    layout = apply_workstream_layout(load_layout(root, output_root=output), registration)
+    from .workstreams import CORE_REPOSITORY_FIELDS, OPTIONAL_REPOSITORY_FIELDS, REPOSITORY_FIELDS, apply_workstream_layout
+    layout = load_layout(root, output_root=output)
+    if registration:
+        layout = apply_workstream_layout(layout, registration)
+    # Optional public repositories consume their own content and authority,
+    # never unrelated client sources or the other optional repository.
+    names = ("emulebb-build", "emulebb-tooling", repo_name) if repo_name in OPTIONAL_REPOSITORY_FIELDS else CORE_REPOSITORY_FIELDS
     sources = {}
-    for name, field in REPOSITORY_FIELDS.items():
-        source = getattr(layout, field)
+    for name in names:
+        source = getattr(layout, REPOSITORY_FIELDS[name])
         if source is None:
             raise RuntimeError(f"Required validation repository is missing from topology: {name}")
         sources[name] = Path(source).resolve()
@@ -266,8 +275,8 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
         raise RuntimeError("--repo must identify the repository root")
     registration = _resolve_registration(root, output, repo, workstream)
     source_paths = {repo.name: repo}
-    if registration:
-        source_paths = _workstream_sources(root, output, registration)
+    if registration or repo.name in {"emulebb-pages", "emulebb-org-profile"}:
+        source_paths = _workstream_sources(root, output, registration, repo.name)
         if source_paths.get(repo.name) != repo:
             raise RuntimeError("--repo is not the selected workstream checkout")
     checked_head = git(repo, "rev-parse", "HEAD") if stage == "push" else None

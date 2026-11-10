@@ -1,6 +1,6 @@
 """Exercise real Git worktree boundaries using local disposable repositories."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from contextlib import contextmanager
 import hashlib
 import json
@@ -25,6 +25,8 @@ class Layout:
     tooling_repo_root: Path
     tests_repo_root: Path
     emulebb_rust_repo_root: Path
+    emulebb_pages_repo_root: Path | None = None
+    emulebb_org_profile_repo_root: Path | None = None
 
     @property
     def output_tmp_root(self):
@@ -35,7 +37,7 @@ class Layout:
 def layout(tmp_path, monkeypatch):
     root = tmp_path / "source"
     anchors = {}
-    for name in ws.REPOSITORY_FIELDS:
+    for name in ws.CORE_REPOSITORY_FIELDS:
         remote = tmp_path / "remotes" / f"{name}.git"
         remote.mkdir(parents=True)
         ws._git(remote, "init", "--bare", "--initial-branch=main")
@@ -53,6 +55,95 @@ def layout(tmp_path, monkeypatch):
         anchors[ws.REPOSITORY_FIELDS[name]] = repo
     monkeypatch.setattr(ws, "_open_pull_requests", lambda entry: [])
     return Layout(root, tmp_path / "output", **anchors)
+
+
+def optional_anchor(layout, tmp_path, name):
+    repo = layout.emule_workspace_root / "repos" / name
+    remote = tmp_path / "remotes" / f"{name}.git"
+    remote.mkdir(parents=True)
+    ws._git(remote, "init", "--bare", "--initial-branch=main")
+    repo.mkdir(parents=True)
+    ws._git(repo, "init", "--initial-branch=main")
+    ws._git(repo, "config", "user.name", "Fixture Author")
+    ws._git(repo, "config", "user.email", "fixture@example.invalid")
+    ws._git(repo, "config", "core.hooksPath", str(tmp_path / "empty-hooks"))
+    (repo / "sample.txt").write_text("optional base\n", encoding="utf-8")
+    ws._git(repo, "add", "sample.txt")
+    ws._git(repo, "commit", "-m", "fixture optional base")
+    ws._git(repo, "remote", "add", "origin", str(remote))
+    ws._git(repo, "push", "-u", "origin", "main")
+    hooks = layout.tooling_repo_root / "hooks"
+    hooks.mkdir(exist_ok=True)
+    for hook in ("pre-commit", "pre-push"):
+        (hooks / hook).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    ws._git(repo, "config", "core.hooksPath", str(hooks))
+    return replace(layout, **{ws.OPTIONAL_REPOSITORY_FIELDS[name]: repo})
+
+
+@pytest.mark.parametrize("name", tuple(ws.OPTIONAL_REPOSITORY_FIELDS))
+def test_optional_creation_requires_topology_and_hooks_and_preserves_canonical(layout, tmp_path, name):
+    admitted = optional_anchor(layout, tmp_path, name)
+    anchor = getattr(admitted, ws.OPTIONAL_REPOSITORY_FIELDS[name])
+    before = {leaf: (anchor / ".git" / leaf).read_bytes() for leaf in ("HEAD", "index", "config")}
+    with pytest.raises(RuntimeError, match="Unsupported or unavailable"):
+        create(layout, repositories=(name,))
+    assert not (layout.output_root / "tmp/workstreams/alpha.json").exists()
+    ws._git(anchor, "config", "--unset", "core.hooksPath")
+    with pytest.raises(RuntimeError, match="shared-hook setup"):
+        create(admitted, repositories=(name,))
+    ws._git(anchor, "config", "core.hooksPath", str(layout.tooling_repo_root / "hooks"))
+    registration = create(admitted, repositories=(name,))
+    selected = ws.apply_workstream_layout(layout, registration)
+    assert getattr(selected, ws.OPTIONAL_REPOSITORY_FIELDS[name]) == Path(registration["repositories"][name]["path"])
+    assert before == {leaf: (anchor / ".git" / leaf).read_bytes() for leaf in before}
+    # Verified registrations remain diagnosable/removable if a later setup
+    # omits optional topology; the common-Git guard still covers their anchor.
+    assert ws.workstream_status(layout, "alpha")[0]["verification"] == "valid"
+    ws.remove_workstream(layout, "alpha", "parent")
+    assert not Path(registration["repositories"][name]["path"]).exists()
+    assert ws._git(anchor, "branch", "--show-current") == "main"
+    assert ws._git(anchor, "show-ref", "--verify", "refs/heads/chore/alpha")
+
+
+def test_optional_new_creation_can_overlap_a_heavy_owner(layout, tmp_path):
+    admitted = optional_anchor(layout, tmp_path, "emulebb-pages")
+    with lifecycle_child(admitted, tmp_path, "heavy"):
+        registration = create(admitted, repositories=("emulebb-pages",))
+        assert registration["state"] == "ready"
+
+
+def test_optional_addition_preserves_existing_committed_work_and_sources(layout, tmp_path):
+    admitted = optional_anchor(layout, tmp_path, "emulebb-org-profile")
+    original = create(admitted)
+    selected = Path(original["repositories"]["emulebb-rust"]["path"])
+    (selected / "sample.txt").write_text("independent committed work\n", encoding="utf-8")
+    ws._git(selected, "add", "sample.txt")
+    ws._git(selected, "commit", "-m", "fixture independent work")
+    head = ws._git(selected, "rev-parse", "HEAD")
+    canonical = admitted.emulebb_org_profile_repo_root
+    before = source_state(canonical)
+    extended = ws.add_repository(admitted, "alpha", "emulebb-org-profile")
+    assert ws._git(selected, "rev-parse", "HEAD") == head
+    assert extended["repositories"]["emulebb-rust"] == original["repositories"]["emulebb-rust"]
+    assert source_state(canonical) == before
+    with pytest.raises(RuntimeError, match="already registered"):
+        ws.add_repository(admitted, "alpha", "emulebb-org-profile")
+
+
+def test_setup_writer_obeys_heavy_and_lifecycle_owners(layout, tmp_path, monkeypatch):
+    from emule_workspace import materialize
+    layout.output_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(materialize, "resolve_required_workspace_roots", lambda: (layout.emule_workspace_root, layout.output_root))
+    with lifecycle_child(layout, tmp_path, "heavy"):
+        with pytest.raises(RuntimeError, match="Workspace busy"):
+            with materialize._setup_guard(layout.emule_workspace_root, "workspace", "fixture setup"):
+                pytest.fail("Setup entered during heavy validation")
+    with lifecycle_child(layout, tmp_path, "lifecycle"):
+        with pytest.raises(RuntimeError, match="lifecycle busy"):
+            with materialize._setup_guard(layout.emule_workspace_root, "workspace", "fixture setup"):
+                pytest.fail("Setup entered during lifecycle administration")
+    # A failed setup acquisition releases its heavyweight owner as well.
+    assert create(layout, "after-setup-contention")["state"] == "ready"
 
 
 def create(layout, selected="alpha", repositories=("emulebb-rust",)):
@@ -263,7 +354,7 @@ def lifecycle_child(layout, tmp_path, mode, *, crash=False):
     environment.pop("EMULEBB_WORKSPACE_LOCK_TOKEN", None)
     process = subprocess.Popen(
         [sys.executable, "-B", "-c", _LIFECYCLE_CHILD,
-         json.dumps({key: str(value) for key, value in vars(layout).items()}), str(ready), mode],
+         json.dumps({key: str(value) for key, value in vars(layout).items() if value is not None}), str(ready), mode],
         cwd=Path(ws.__file__).resolve().parents[1], env=environment,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
