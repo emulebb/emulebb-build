@@ -128,6 +128,9 @@ def test_builder_rejects_invalid_operator_identity_before_docker(monkeypatch, va
 
 @pytest.mark.parametrize("mirrors", [False, True])
 def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging_as_root(tmp_path, monkeypatch, mirrors):
+    guarded = []
+    monkeypatch.setattr("emule_workspace.rust_source_cache.ensure_rust_source_cache",
+                        lambda layout, **kwargs: guarded.append(kwargs))
     from emule_workspace import release
 
     workspace, output = tmp_path / "workspace", tmp_path / "out"
@@ -196,6 +199,10 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
     archive = linux_containers._build_linux_artifacts(layout, Docker(), libc="musl", architecture="amd64",
                                                       webui_dist=webui, release_version=None, test_scope="portable",
                                                       use_ci_image_mirrors=mirrors)
+    assert guarded[0]["target"] == target_directory
+    assert guarded[0]["execution_source"] == "/source"
+    assert guarded[0]["execution_target"] == target_mapping
+    assert guarded[0]["native_roots"] == (mini, pcp)
     assert cargo_calls
     for arguments in [*cargo_calls, *(args for args in calls if args[0] == "run")]:
         assert arguments[arguments.index("--user") + 1] == "1001:1002"

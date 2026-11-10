@@ -1981,10 +1981,13 @@ def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: P
                 or not report_target.is_relative_to(layout.output_root)):
             raise click.ClickException("Smoke report requires a new regular path below the inherited output root")
     try:
-        archive = build_linux_artifacts(layout, libc=libc, architecture=architecture,
-                                        webui_dist=webui_dist, release_version=release_version,
-                                        smoke=False, test_scope=test_scope,
-                                        **({"use_ci_image_mirrors": True} if use_ci_image_mirrors else {}))
+        options = WorkspaceOptions(workspace_root=layout.emule_workspace_root, output_root=layout.output_root,
+                                   workspace_name="ci")
+        archive = _locked("package emulebb-rust linux ci", lambda **kwargs: build_linux_artifacts(
+            kwargs["layout"], libc=libc, architecture=architecture, webui_dist=webui_dist,
+            release_version=release_version, smoke=False, test_scope=test_scope,
+            **({"use_ci_image_mirrors": True} if use_ci_image_mirrors else {})))(
+                workspace_options=options, layout=layout)
         if smoke:
             receipt = smoke_linux_archive(layout, archive=archive, libc=libc, architecture=architecture,
                                           **({"use_ci_image_mirrors": True} if use_ci_image_mirrors else {}))
@@ -2161,7 +2164,9 @@ def package_emulebb_rust_ci(*, release_version: str, clean: bool, target_os: str
             raise click.ClickException("Prepared package evidence has the wrong native CPU")
         seed_runtime(layout.output_root, "x86_64" if platform == "x64" else "aarch64")
     try:
-        create_emulebb_rust_package(layout, options, package_options)
+        _locked("package emulebb-rust native ci", lambda **kwargs: create_emulebb_rust_package(
+            kwargs["layout"], kwargs["workspace_options"], package_options))(
+                workspace_options=options, layout=layout)
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 

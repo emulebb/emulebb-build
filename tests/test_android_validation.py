@@ -100,6 +100,9 @@ def test_checks_remain_locked_offline_and_include_canonical_target_lints(tmp_pat
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_prefetch_covers_host_dependencies_and_failures_never_report_success(tmp_path, monkeypatch, fail):
+    guarded = []
+    monkeypatch.setattr("emule_workspace.rust_source_cache.ensure_rust_source_cache",
+                        lambda layout, **kwargs: guarded.append(kwargs))
     from emule_workspace import release
 
     output = tmp_path / "output"
@@ -142,6 +145,10 @@ def test_prefetch_covers_host_dependencies_and_failures_never_report_success(tmp
         android.validate_android(layout)
     assert commands[0][-3:] == ["cargo", "fetch", "--locked"]
     assert "--target" not in commands[0]
+    assert len(guarded) == (0 if fail else 1)
+    if guarded:
+        assert guarded[0]["execution_source"] == "/source"
+        assert guarded[0]["execution_target"].startswith("/output/builds/rust/target-android-")
     report = json.loads(next((output / "reports/rust-android").rglob("validation.json")).read_text())
     assert report["status"] == ("failed" if fail else "passed")
     assert report["runtimeExecution"] == "not-run"
@@ -149,6 +156,7 @@ def test_prefetch_covers_host_dependencies_and_failures_never_report_success(tmp
 
 
 def test_nightly_build_receives_identity_before_fresh_release_link(tmp_path, monkeypatch):
+    monkeypatch.setattr("emule_workspace.rust_source_cache.ensure_rust_source_cache", lambda *args, **kwargs: None)
     from emule_workspace import release
     from android_package_fixtures import VERSION
     output = tmp_path/"output"

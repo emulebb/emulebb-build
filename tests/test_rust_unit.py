@@ -35,6 +35,8 @@ def test_rust_unit_prunes_runnable_cargo_artifacts_even_after_failure(
             raise RuntimeError("test failure")
 
     monkeypatch.setattr(test_runs, "run_native", fake_run_native)
+    guarded = []
+    monkeypatch.setattr(test_runs, "ensure_rust_source_cache", lambda selected: guarded.append(selected))
     monkeypatch.setattr(test_runs, "_workspace_env", lambda _layout: {})
 
     if fail:
@@ -44,6 +46,7 @@ def test_rust_unit_prunes_runnable_cargo_artifacts_even_after_failure(
         test_runs.invoke_rust_unit_tests(layout, package="emulebb-core")
 
     assert calls == [["cargo", "test", "--locked", "-p", "emulebb-core"]]
+    assert guarded == [layout]
     assert not executable.exists()
 
 
@@ -59,6 +62,7 @@ def test_explicit_author_refresh_stays_offline_and_cannot_mask_a_failure(tmp_pat
         if refresh_fails:
             raise RuntimeError("offline workspace resolution failed")
     monkeypatch.setattr(test_runs, "run_native", invoke)
+    monkeypatch.setattr(test_runs, "ensure_rust_source_cache", lambda selected: None)
     monkeypatch.setattr(test_runs, "_workspace_env", lambda layout: {})
     if refresh_fails:
         with pytest.raises(RuntimeError, match="offline workspace resolution failed"):

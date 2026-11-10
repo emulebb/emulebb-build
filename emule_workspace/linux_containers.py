@@ -112,13 +112,19 @@ def _builder_user(docker) -> str:
     return ":".join(values)
 
 
-def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int, append: bool = False) -> None:
+def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int, append: bool = False,
+                        capture: bool = False) -> str:
     """@brief Retain failure output and stop only this invocation's container on interruption."""
     name = f"emulebb-linux-{uuid4().hex}"
     command = [*docker.prefix, "docker", "run", "--name", name, *arguments]
     try:
         with log.open("a" if append else "w", encoding="utf-8") as stream:
-            subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=timeout)
+            result = subprocess.run(command, stdout=subprocess.PIPE if capture else stream,
+                                    stderr=stream if capture else subprocess.STDOUT,
+                                    text=True, check=True, timeout=timeout)
+            if capture:
+                stream.write(result.stdout)
+            return result.stdout if capture else ""
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"Linux container check failed; inspect {log}") from exc
     finally:
@@ -421,6 +427,17 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     user_options = ["--user", user, "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
     cargo = ["--rm", "--platform", f"linux/{build_arch}", *user_options, *mounts, *environment,
              "--workdir", "/source", builder, "cargo"]
+    from .rust_source_cache import ensure_rust_source_cache
+    cache_invocation = 0
+    def cache_cargo(arguments):
+        nonlocal cache_invocation
+        cache_invocation += 1
+        return run_owned_container(docker, [*cargo, *arguments],
+                                   log_root / f"source-cache-{cache_invocation}.log", timeout=120, capture=True)
+    ensure_rust_source_cache(layout, target=target_directory, runner=cache_cargo,
+                             execution_source="/source", execution_target=target_root,
+                             native_roots=(miniupnp, pcpnatpmp),
+                             execution_identity={"base": base, "target": target, "buildArchitecture": build_arch})
     for label, arguments in quality_plan:
         print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
         run_owned_container(docker, [*cargo, *arguments], log_root / f"{label}.log", timeout=3600)

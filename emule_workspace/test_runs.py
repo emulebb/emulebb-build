@@ -31,6 +31,7 @@ from .layout import WorkspaceLayout, get_test_build_tag
 from .local_package_install import materialize_test_local_install
 from .network_context import LAN_IP_RESOLVED_ENV, TestNetwork, resolve_workspace_network_context
 from .process import find_tool, get_python_invocation, run_native
+from .rust_source_cache import ensure_rust_source_cache
 
 MATERIALIZED_ARR_SERVICE_WAIT_SECONDS = 120.0
 MATERIALIZED_ARR_SERVICE_POLL_SECONDS = 1.0
@@ -989,6 +990,7 @@ def invoke_rust_unit_tests(
                 cwd=layout.emulebb_rust_repo_root,
                 env=_workspace_env(layout),
             )
+        ensure_rust_source_cache(layout)
         run_native(
             args,
             label="eMuleBB Rust tests",

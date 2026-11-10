@@ -550,7 +550,7 @@ def build_emulebb_rust_client(
         wsl_workspace = wsl_path(session.layout.emule_workspace_root)
         wsl_output = wsl_path(session.layout.output_root)
         wsl_target = wsl_path(source_target_root)
-        wsl_repo = f"{wsl_workspace}/repos/emulebb-rust"
+        wsl_repo = wsl_path(repo_root)
         command = [
             "wsl.exe",
             "--",
@@ -571,6 +571,20 @@ def build_emulebb_rust_client(
         command = [cargo_command, *cargo_arguments]
     env = subprocess_os_environ()
     env.update({name: str(value) for name, value in session.layout.subprocess_environment().items()})
+    from .rust_source_cache import ensure_rust_source_cache
+    if use_wsl:
+        def cache_cargo(arguments):
+            script = " && ".join((
+                f"export EMULEBB_WORKSPACE_ROOT={shlex.quote(wsl_workspace)}",
+                f"export EMULEBB_WORKSPACE_OUTPUT_ROOT={shlex.quote(wsl_output)}",
+                f"export CARGO_TARGET_DIR={shlex.quote(wsl_target)}",
+                f"cd {shlex.quote(wsl_repo)}", f"cargo {shlex.join(arguments)}"))
+            return subprocess.run(["wsl.exe", "--", "bash", "-lc", script], env=env,
+                                  text=True, capture_output=True, check=True, timeout=120).stdout
+        ensure_rust_source_cache(session.layout, target=source_target_root, runner=cache_cargo,
+                                 execution_source=wsl_repo, execution_target=wsl_target)
+    else:
+        ensure_rust_source_cache(session.layout)
     started_at = time.monotonic()
     try:
         with log_path.open("w", encoding="utf-8", newline="\n") as stream:
