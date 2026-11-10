@@ -31,6 +31,7 @@ from .layout import WorkspaceLayout, get_test_build_tag
 from .local_package_install import materialize_test_local_install
 from .network_context import LAN_IP_RESOLVED_ENV, TestNetwork, resolve_workspace_network_context
 from .process import find_tool, get_python_invocation, run_native
+from .rust_source_cache import ensure_rust_source_cache
 
 MATERIALIZED_ARR_SERVICE_WAIT_SECONDS = 120.0
 MATERIALIZED_ARR_SERVICE_POLL_SECONDS = 1.0
@@ -968,6 +969,79 @@ def invoke_rust_network_proof(
     )
 
 
+def invoke_builder_unit_tests(layout: WorkspaceLayout, *, paths: tuple[str, ...]) -> Path:
+    """Run only explicit selected-Builder test files and retain source/JUnit proof."""
+    import hashlib
+    import re
+    import xml.etree.ElementTree as ET
+    from uuid import uuid4
+    from .git_environment import git_environment
+    from .workstreams import _safe_path, _git
+
+    def source_git(*arguments):
+        return _git(source, "--no-optional-locks", *arguments)
+
+    workspace, output = layout.emule_workspace_root.resolve(), layout.output_root.resolve()
+    source = _safe_path(workspace, layout.build_repo_root.absolute())
+    if output.is_relative_to(workspace):
+        raise RuntimeError("Builder unit output must remain outside source")
+    if (not paths or any(not re.fullmatch(r"tests/test_[a-zA-Z0-9_]+\.py", path) for path in paths)):
+        raise ValueError("Builder unit tests require explicit flat tests/test_NAME.py paths")
+    for name in paths:
+        if not _safe_path(source, source / name).is_file():
+            raise ValueError("Selected Builder test file does not exist")
+    if Path(source_git("rev-parse", "--show-toplevel")).resolve() != source:
+        raise RuntimeError("Builder tests must use the selected repository root")
+    head = source_git("rev-parse", "HEAD")
+    if source_git("status", "--porcelain"):
+        raise RuntimeError("Builder unit qualification requires committed clean source")
+    environment = git_environment()
+    environment.update({key: str(value) for key, value in layout.subprocess_environment().items()})
+    run_id = uuid4().hex[:12]
+    report = _safe_path(output, output / "reports/builder-unit" / run_id)
+    scratch = _safe_path(output, output / "tmp/builder-unit" / run_id)
+    report.mkdir(parents=True)
+    scratch.mkdir(parents=True)
+    environment.update(TEMP=str(scratch), TMP=str(scratch), TMPDIR=str(scratch),
+                       PYTHONPYCACHEPREFIX=str(output / "cache/pycache"))
+    junit, log = report / "junit.xml", report / "stdout.log"
+    command = get_python_invocation().command([
+        "-B", "-m", "pytest", *dict.fromkeys(paths), "-q", "-p", "no:cacheprovider",
+        "--basetemp", str(scratch / "t"), "--junitxml", str(junit)])
+    value = {"schema": "emulebb.builder-unit/1", "source": {"path": str(source), "head": head},
+             "command": command, "status": "failed", "exitCode": None}
+    started = time.monotonic()
+    print(f"Builder unit evidence: {report}", flush=True)
+    try:
+        with log.open("w", encoding="utf-8", newline="\n") as stream:
+            result = subprocess.run(command, cwd=source, env=environment, stdout=stream, stderr=subprocess.STDOUT)
+        value["exitCode"] = result.returncode
+        if result.returncode:
+            raise RuntimeError(f"Builder unit tests failed ({result.returncode}); inspect {log}")
+        root = ET.parse(junit).getroot()
+        suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+        counts = {name: sum(int(suite.get(name, "0")) for suite in suites)
+                  for name in ("tests", "failures", "errors", "skipped")}
+        value["junit"] = counts
+        if not counts["tests"] or any(counts[name] for name in ("skipped", "failures", "errors")):
+            raise RuntimeError("Builder unit JUnit does not prove a passing nonempty suite without skips")
+        if source_git("rev-parse", "HEAD") != head or source_git("status", "--porcelain"):
+            raise RuntimeError("Selected Builder source changed during unit qualification")
+        value["status"] = "passed"
+        return report
+    except BaseException as error:
+        value["error"] = str(error)
+        raise
+    finally:
+        value["elapsedSeconds"] = round(time.monotonic() - started, 3)
+        for name, path in (("stdoutSha256", log), ("junitSha256", junit)):
+            if path.is_file():
+                with path.open("rb") as stream:
+                    value[name] = hashlib.file_digest(stream, "sha256").hexdigest()
+        (report / "results.json").write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+        print(f"Builder unit {value['status']}; evidence: {report}", flush=True)
+
+
 def invoke_rust_unit_tests(
     layout: WorkspaceLayout, *, package: str | None = None, refresh_workspace_lock: bool = False,
 ) -> None:
@@ -979,6 +1053,15 @@ def invoke_rust_unit_tests(
     else:
         args.append("--workspace")
     try:
+        from uuid import uuid4
+        from .workstreams import _safe_path
+        environment = dict(_workspace_env(layout))
+        output = layout.output_root.resolve()
+        scratch = _safe_path(output, output / "tmp/rust-unit" / uuid4().hex)
+        scratch.mkdir(parents=True)
+        # WHY: metadata unit fixtures use Rust's std::env::temp_dir(). Confine
+        # only this child's temporary files; operator environment remains intact.
+        environment.update(TEMP=str(scratch), TMP=str(scratch), TMPDIR=str(scratch))
         if refresh_workspace_lock:
             # WHY: adding a workspace crate needs a lockfile update, but ordinary
             # CI must never rewrite it. Cargo's workspace-only offline update
@@ -987,13 +1070,14 @@ def invoke_rust_unit_tests(
                 ["cargo", "update", "--workspace", "--offline"],
                 label="eMuleBB Rust workspace lock refresh",
                 cwd=layout.emulebb_rust_repo_root,
-                env=_workspace_env(layout),
+                env=environment,
             )
+        ensure_rust_source_cache(layout, prefetch=True)
         run_native(
             args,
             label="eMuleBB Rust tests",
             cwd=layout.emulebb_rust_repo_root,
-            env=_workspace_env(layout),
+            env=environment,
         )
     finally:
         # `cargo test` can materialize binary targets even when the selected

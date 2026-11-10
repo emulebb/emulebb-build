@@ -67,6 +67,7 @@ from .release_campaign_runner import invoke_release_campaign
 from .setup_commands import run_compare, write_dependency_update_report, write_materialization_status
 from .status import write_dependency_status, write_workspace_repo_status, write_workspace_summary
 from .test_runs import (
+    invoke_builder_unit_tests,
     invoke_community_core_coverage,
     invoke_fake_kad_trust_soak,
     invoke_rust_network_proof,
@@ -1219,6 +1220,16 @@ def test_python(
     )(workspace_options=workspace_options, layout=layout)
 
 
+@test.command("builder-unit")
+@_common_options
+@click.option("--path", "paths", multiple=True, required=True,
+              help="Selected Builder tests/test_NAME.py file; repeat for a scoped suite.")
+def test_builder_unit(*, paths: tuple[str, ...], workspace_options: WorkspaceOptions, layout) -> None:
+    """Run scoped Builder unit regressions with external evidence and one owner."""
+    _locked("test builder-unit", lambda **kwargs: invoke_builder_unit_tests(
+        kwargs["layout"], paths=paths))(workspace_options=workspace_options, layout=layout)
+
+
 @test.command("native")
 @_common_options
 @click.option("--test-run-variant", default=None, help=TEST_RUN_VARIANT_HELP)
@@ -1981,10 +1992,13 @@ def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: P
                 or not report_target.is_relative_to(layout.output_root)):
             raise click.ClickException("Smoke report requires a new regular path below the inherited output root")
     try:
-        archive = build_linux_artifacts(layout, libc=libc, architecture=architecture,
-                                        webui_dist=webui_dist, release_version=release_version,
-                                        smoke=False, test_scope=test_scope,
-                                        **({"use_ci_image_mirrors": True} if use_ci_image_mirrors else {}))
+        options = WorkspaceOptions(workspace_root=layout.emule_workspace_root, output_root=layout.output_root,
+                                   workspace_name="ci")
+        archive = _locked("package emulebb-rust linux ci", lambda **kwargs: build_linux_artifacts(
+            kwargs["layout"], libc=libc, architecture=architecture, webui_dist=webui_dist,
+            release_version=release_version, smoke=False, test_scope=test_scope,
+            **({"use_ci_image_mirrors": True} if use_ci_image_mirrors else {})))(
+                workspace_options=options, layout=layout)
         if smoke:
             receipt = smoke_linux_archive(layout, archive=archive, libc=libc, architecture=architecture,
                                           **({"use_ci_image_mirrors": True} if use_ci_image_mirrors else {}))
@@ -2161,7 +2175,9 @@ def package_emulebb_rust_ci(*, release_version: str, clean: bool, target_os: str
             raise click.ClickException("Prepared package evidence has the wrong native CPU")
         seed_runtime(layout.output_root, "x86_64" if platform == "x64" else "aarch64")
     try:
-        create_emulebb_rust_package(layout, options, package_options)
+        _locked("package emulebb-rust native ci", lambda **kwargs: create_emulebb_rust_package(
+            kwargs["layout"], kwargs["workspace_options"], package_options))(
+                workspace_options=options, layout=layout)
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
 

@@ -308,6 +308,17 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
     results = []
     plan = check_plan(repo, paths, stage, root, output, source_paths,
                       registration["id"] if registration else None, paths_file)
+    if repo.name == "emulebb-rust" and stage == "push" and any(
+            not (path.endswith(".md") or path.startswith("docs/")) for path in paths):
+        # WHY: the delegated Rust gate invokes Cargo directly. Fence its selected
+        # checkout before the first Cargo freshness decision, under this owner.
+        from .layout import load_layout
+        from .workstreams import apply_workstream_layout
+        from .rust_source_cache import ensure_rust_source_cache
+        cargo_layout = load_layout(root, output_root=output)
+        if registration:
+            cargo_layout = apply_workstream_layout(cargo_layout, registration)
+        ensure_rust_source_cache(cargo_layout, prefetch=True)
     for index, (cwd, command) in enumerate(plan):
         print(f"Local {stage}: {' '.join(command)}", flush=True)
         log_path = reports / f"{index:02d}.log"

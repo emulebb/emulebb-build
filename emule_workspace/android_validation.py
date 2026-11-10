@@ -210,6 +210,15 @@ def validate_android(layout, *, abis: tuple[str, ...] = ("arm64-v8a", "x86_64"),
                     "--workdir", "/source"]
             image = "local/emulebb-android-toolchain:reviewed"
 
+            from .rust_source_cache import ensure_rust_source_cache
+            cache_invocation = 0
+            def cache_cargo(arguments):
+                nonlocal cache_invocation
+                cache_invocation += 1
+                return run_owned_container(docker, [*base, image, "cargo", *arguments],
+                                           report.parent / f"source-cache-{cache_invocation}.log",
+                                           timeout=120, capture=True)
+
             def check(label: str, command: list[str], *, abi: str | None = None) -> None:
                 log = report.parent / (label + ".log")
                 check_value = {"label": label, "command": command, "status": "failed", "log": str(log)}
@@ -228,6 +237,10 @@ def validate_android(layout, *, abis: tuple[str, ...] = ("arm64-v8a", "x86_64"),
             # Cargo also compiles host build dependencies and procedural macros.
             # Fetch the complete lockfile before disabling network access.
             check("fetch-locked", ["fetch", "--locked"])
+            ensure_rust_source_cache(layout, target=target_dir, runner=cache_cargo,
+                                     execution_source="/source", execution_target=child["CARGO_TARGET_DIR"],
+                                     native_roots=(miniupnp, pcpnatpmp),
+                                     execution_identity={"image": image, "inputs": tool_inputs()})
             for abi in abis:
                 binary = target_dir / TARGETS[abi][0] / "release/emulebb-rust"
                 if release_version is not None:

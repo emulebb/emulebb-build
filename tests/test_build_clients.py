@@ -172,6 +172,7 @@ def test_build_clients_passes_emulebb_rust_diagnostics_flag(
 def test_build_emulebb_rust_client_runs_cargo_and_stages_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr("emule_workspace.rust_source_cache.ensure_rust_source_cache", lambda *args, **kwargs: None)
     layout = make_layout(tmp_path, monkeypatch)
     repo_root = layout.emulebb_rust_repo_root
     assert repo_root is not None
@@ -330,6 +331,7 @@ def test_rust_runtime_artifact_operation_names_persistent_lock(
 def test_build_emulebb_rust_client_can_enable_packet_diagnostics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr("emule_workspace.rust_source_cache.ensure_rust_source_cache", lambda *args, **kwargs: None)
     layout = make_layout(tmp_path, monkeypatch)
     repo_root = layout.emulebb_rust_repo_root
     assert repo_root is not None
@@ -409,6 +411,7 @@ def test_stage_emulebb_rust_linux_runtime_uses_extensionless_binary(tmp_path: Pa
 def test_build_emulebb_rust_linux_client_uses_native_wsl_cargo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr("emule_workspace.rust_source_cache.ensure_rust_source_cache", lambda *args, **kwargs: None)
     layout = make_layout(tmp_path, monkeypatch)
     repo_root = layout.emulebb_rust_repo_root
     assert repo_root is not None
