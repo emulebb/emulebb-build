@@ -403,19 +403,8 @@ def _create_emulebb_rust_linux_packages(
         encoding="utf-8",
         newline="\n",
     )
-    (appdir / "emulebb-rust.desktop").write_text(
-        "[Desktop Entry]\nType=Application\nName=eMuleBB Rust\nExec=emulebb-rust-launch\n"
-        "Icon=emulebb-rust\nCategories=Network;FileTransfer;\nTerminal=true\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    (appdir / "emulebb-rust.svg").write_text(
-        '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">'
-        '<rect width="128" height="128" rx="22" fill="#2457c5"/>'
-        '<path d="M28 36h72v16H48v12h44v15H48v13h54v16H28z" fill="white"/></svg>\n',
-        encoding="utf-8",
-        newline="\n",
-    )
+    shutil.copy2(appdir / "usr/share/applications/emulebb-rust.desktop", appdir / "emulebb-rust.desktop")
+    shutil.copy2(appdir / "usr/share/icons/hicolor/256x256/apps/emulebb-rust.png", appdir / "emulebb-rust.png")
     for executable_path in (
         deb_root / "usr" / "bin" / "emulebb-rust",
         deb_root / "usr" / "bin" / "emulebb-rust-launch",
@@ -665,7 +654,7 @@ def _stage_emulebb_rust_linux_tree(
     shutil.copy2(rust_root / "LICENSE", doc_root)
     shutil.copy2(tooling_root / "docs" / "products" / "emulebb-rust" / "RELEASE-SCOPE.md", doc_root)
     (doc_root / "README.md").write_text(
-        f"# eMuleBB Rust {version}\n\nUnsigned Linux {arch} beta package. The native Slint UI is not included.\n"
+        f"# eMuleBB Rust {version}\n\nUnsigned Linux {arch} beta package.\n"
         "Run `emulebb-rust` for the platform-default profile, or pass `--profile <profile-dir>`; "
         "the daemon serves the packaged WebUI beside its binary.\n",
         encoding="utf-8",
@@ -682,11 +671,19 @@ def _stage_emulebb_rust_linux_tree(
         newline="\n",
     )
     (applications_root / "emulebb-rust.desktop").write_text(
-        "[Desktop Entry]\nType=Application\nName=eMuleBB Rust\nExec=emulebb-rust-launch\n"
-        "Icon=emulebb-rust\nCategories=Network;FileTransfer;\nTerminal=true\n",
+        "[Desktop Entry]\nVersion=1.0\nType=Application\nName=eMuleBB Rust\n"
+        "Comment=Search, download and share files over eD2K and Kad\n"
+        "Exec=emulebb-rust-launch\nIcon=emulebb-rust\nCategories=Network;FileTransfer;\n"
+        "Keywords=eD2K;Kad;P2P;download;sharing;\nTerminal=true\n",
         encoding="utf-8",
         newline="\n",
     )
+    # WHY: install the same approved raster set for desktop lookup and AppImage
+    # extraction; a desktop Icon name alone leaves Debian launchers unbranded.
+    for size in (16, 24, 32, 48, 64, 128, 256, 512):
+        icon_root = destination / "share" / "icons" / "hicolor" / f"{size}x{size}" / "apps"
+        icon_root.mkdir(parents=True)
+        shutil.copy2(rust_root / "resources" / "icons" / f"donkey-{size}.png", icon_root / "emulebb-rust.png")
     (lib_root / "launch").write_text(
         '#!/bin/sh\nBIN="$1"\nshift\n"$BIN" "$@" &\nPID=$!\n'
         'trap \'kill -TERM "$PID" 2>/dev/null || true\' INT TERM HUP\n'
@@ -1150,8 +1147,7 @@ def _write_emulebb_rust_readme(package_root: Path, version: str, arch: str) -> N
         "- `webui/` - packaged embedded SPA WebUI static assets.\n"
         "- `emulebb-rust-settings.example.toml` - local settings example.\n"
         "- `RELEASE-SCOPE.md` - beta scope, omissions, and platform support.\n"
-        "- `SBOM.spdx.json` - package file inventory and provenance.\n\n"
-        "The native Slint UI is not shipped in this package.\n"
+        "- `SBOM.spdx.json` - package file inventory and provenance.\n"
     )
     readme_path.write_text(readme, encoding="utf-8", newline="\n")
 
