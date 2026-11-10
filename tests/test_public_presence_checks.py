@@ -118,12 +118,31 @@ def test_org_checks_do_not_read_pages_or_product_sources(public_layout, monkeypa
     assert (Path(result["staging"]) / "README.md").read_text() == "# Synthetic organization profile\n"
 
 
-def test_inherited_root_mismatch_prevents_public_commands(public_layout, monkeypatch):
-    monkeypatch.setattr(checks, "resolve_required_workspace_roots", lambda:
-                        (public_layout.emule_workspace_root, public_layout.output_root.parent))
+@pytest.mark.parametrize("invalid", ["output", "workspace", "missing"])
+def test_inherited_root_preflight_precedes_every_output_write(public_layout, monkeypatch, invalid):
+    import os
+    wrong_output = public_layout.output_root.parent / "unapproved-output"
+    wrong_output.mkdir()
+    inherited_root, inherited_output = public_layout.emule_workspace_root, public_layout.output_root
+    public_layout.output_root = wrong_output
+    def roots():
+        if invalid == "missing":
+            raise ValueError("EMULEBB_WORKSPACE_OUTPUT_ROOT is required")
+        if invalid == "workspace":
+            return inherited_root.parent, wrong_output
+        return inherited_root, inherited_output
+    monkeypatch.setattr(checks, "resolve_required_workspace_roots", roots)
     monkeypatch.setattr(checks, "_run", lambda *args, **kwargs: pytest.fail("Invalid roots must block checks"))
-    with pytest.raises(RuntimeError, match="roots must match"):
+    monkeypatch.setattr(checks, "_capture", lambda *args, **kwargs: pytest.fail("Invalid roots must block probes"))
+    environment = os.environ.copy()
+    with pytest.raises((RuntimeError, ValueError), match="roots must match|required"):
         checks.validate_public_presence(public_layout, repository="emulebb-org-profile")
+    assert not list(wrong_output.iterdir())
+    assert not list(inherited_output.iterdir())
+    assert os.environ == environment
+    assert not (public_layout.emule_workspace_root / "reports").exists()
+    assert not (public_layout.emule_workspace_root / "tmp").exists()
+    assert not (public_layout.emule_workspace_root / "artifacts").exists()
 
 
 def test_consumed_authority_head_change_cannot_receive_a_pass(public_layout, monkeypatch):
