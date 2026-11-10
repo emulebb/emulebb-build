@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 from contextlib import contextmanager
 from dataclasses import replace
@@ -15,7 +16,8 @@ from uuid import uuid4
 from .config import WorkspaceOptions, resolve_required_workspace_roots
 from .layout import build_ci_layout, build_repo_root
 from .locks import WorkspaceLock
-from .process import find_tool, run_captured, run_native
+from .git_environment import git_environment
+from .process import find_tool
 from .topology import (
     AppRepo,
     SETUP_LOG_FILE_NAME,
@@ -33,6 +35,29 @@ from .topology import (
     write_json,
 )
 from .topology import ManagedRepo
+
+
+def _git_process(command, *, label: str, cwd: Path, capture: bool, allow_failure: bool = False):
+    """Run setup Git against its explicit checkout, never a hook's foreign index."""
+    if str(command[0]) != "git":
+        raise ValueError("Setup Git runner accepts only Git commands")
+    # WHY: overlaying a cleaned mapping onto os.environ restores the bindings
+    # it removed. Pass the complete copied/sanitized environment at this boundary.
+    result = subprocess.run([str(part) for part in command], cwd=cwd, env=git_environment(),
+                            text=True, check=False, stdout=subprocess.PIPE if capture else None,
+                            stderr=subprocess.PIPE if capture else None)
+    if result.returncode and not allow_failure:
+        detail = (result.stderr.strip() or result.stdout.strip()) if capture else ""
+        raise RuntimeError(f"{label} failed with exit code {result.returncode}.\n{detail}")
+    return result
+
+
+def _run_git(command, *, label: str, cwd: Path, allow_failure: bool = False):
+    return _git_process(command, label=label, cwd=cwd, capture=False, allow_failure=allow_failure)
+
+
+def _capture_git(command, *, label: str, cwd: Path) -> str:
+    return _git_process(command, label=label, cwd=cwd, capture=True).stdout
 
 ROOT_AGENTS_CONTENT = """Read `EMULEBB_WORKSPACE_ROOT\\repos\\emulebb-tooling\\docs\\WORKSPACE-POLICY.md`
 once before making workspace decisions. It is the compact core and routes to
@@ -277,7 +302,7 @@ def assert_materialize_bootstrap_root(root: Path) -> None:
 def assert_clean_repo(repo_path: Path, repo_name: str, root: Path) -> None:
     """Fails before managed sync would overwrite local repository work."""
 
-    status_output = run_captured(["git", "-C", repo_path, "status", "--short"], label=f"status {repo_name}", cwd=root)
+    status_output = _capture_git(["git", "-C", repo_path, "status", "--short"], label=f"status {repo_name}", cwd=root)
     if status_output.strip():
         raise RuntimeError(
             f"Managed repository '{repo_name}' has local changes and cannot be fast-forwarded safely: {repo_path}"
@@ -287,7 +312,7 @@ def assert_clean_repo(repo_path: Path, repo_name: str, root: Path) -> None:
 def branch_ref_exists(repo_path: Path, ref: str, root: Path, repo_name: str) -> bool:
     """Returns whether a Git ref exists in a managed repository."""
 
-    result = run_native(
+    result = _run_git(
         ["git", "-C", repo_path, "show-ref", "--verify", "--quiet", ref],
         label=f"check {repo_name} ref {ref}",
         cwd=root,
@@ -299,8 +324,8 @@ def branch_ref_exists(repo_path: Path, ref: str, root: Path, repo_name: str) -> 
 def print_repo_provenance(root: Path, repo_path: Path, repo_name: str) -> None:
     """Prints the checked-out commit for CI materialization logs."""
 
-    head = run_captured(["git", "-C", repo_path, "rev-parse", "HEAD"], label=f"provenance {repo_name}", cwd=root)
-    branch = run_captured(
+    head = _capture_git(["git", "-C", repo_path, "rev-parse", "HEAD"], label=f"provenance {repo_name}", cwd=root)
+    branch = _capture_git(
         ["git", "-C", repo_path, "branch", "--show-current"],
         label=f"provenance branch {repo_name}",
         cwd=root,
@@ -321,9 +346,9 @@ def ensure_managed_repo_branch(root: Path, repo_path: Path, repo: ManagedRepo) -
     if not local_exists and not remote_exists:
         raise RuntimeError(f"Managed repository '{repo.name}' is missing required branch '{repo.branch}'.")
     assert_clean_repo(repo_path, repo.name, root)
-    run_native(["git", "-C", repo_path, "checkout", repo.branch], label=f"checkout {repo.name}", cwd=root)
+    _run_git(["git", "-C", repo_path, "checkout", repo.branch], label=f"checkout {repo.name}", cwd=root)
     if remote_exists:
-        run_native(
+        _run_git(
             ["git", "-C", repo_path, "merge", "--ff-only", remote_ref],
             label=f"fast-forward {repo.name}",
             cwd=root,
@@ -337,12 +362,12 @@ def ensure_managed_repo_tag(root: Path, repo_path: Path, repo: ManagedRepo) -> N
     if not branch_ref_exists(repo_path, tag_ref, root, repo.name):
         raise RuntimeError(f"Managed repository '{repo.name}' is missing required tag '{repo.branch}'.")
     assert_clean_repo(repo_path, repo.name, root)
-    run_native(
+    _run_git(
         ["git", "-C", repo_path, "checkout", "--detach", tag_ref],
         label=f"checkout {repo.name} tag {repo.branch}",
         cwd=root,
     )
-    revision = run_captured(
+    revision = _capture_git(
         ["git", "-C", repo_path, "rev-parse", "HEAD"],
         label=f"verify {repo.name} tag revision",
         cwd=root,
@@ -395,7 +420,7 @@ def ensure_repo_clone(root: Path, repo: ManagedRepo) -> Path:
         if not repo.branch_optional:
             clone_args.extend(["--branch", repo.branch])
         clone_args.extend([repo.url, str(repo_path)])
-        run_native(clone_args, label=f"clone {repo.name}", cwd=root)
+        _run_git(clone_args, label=f"clone {repo.name}", cwd=root)
         ensure_repo_additional_remotes(repo_path, repo)
         if not isinstance(repo, AppRepo) and repo.checkout_mode == "tag":
             ensure_managed_repo_tag(root, repo_path, repo)
@@ -405,13 +430,13 @@ def ensure_repo_clone(root: Path, repo: ManagedRepo) -> Path:
     fetch_args = ["git", "-C", repo_path, "fetch", "origin", "--prune"]
     if repo.checkout_mode == "tag":
         fetch_args.append("--tags")
-    run_native(fetch_args, label=f"fetch {repo.name}", cwd=root)
+    _run_git(fetch_args, label=f"fetch {repo.name}", cwd=root)
     ensure_repo_additional_remotes(repo_path, repo)
     if not isinstance(repo, AppRepo):
         ensure_managed_repo_checkout(root, repo_path, repo)
         print_repo_provenance(root, repo_path, repo.name)
     if repo.has_submodules:
-        run_native(
+        _run_git(
             ["git", "-C", repo_path, "submodule", "update", "--init", "--recursive"],
             label=f"submodules {repo.name}",
             cwd=root,
@@ -422,17 +447,17 @@ def ensure_repo_clone(root: Path, repo: ManagedRepo) -> Path:
 def ensure_repo_additional_remotes(repo_path: Path, repo: ManagedRepo) -> None:
     """Adds or updates configured secondary remotes."""
 
-    existing = run_captured(["git", "-C", repo_path, "remote"], label=f"list remotes {repo.name}", cwd=repo_path)
+    existing = _capture_git(["git", "-C", repo_path, "remote"], label=f"list remotes {repo.name}", cwd=repo_path)
     existing_names = {line.strip() for line in existing.splitlines() if line.strip()}
     for remote in repo.additional_remotes:
         if remote.name in existing_names:
-            run_native(
+            _run_git(
                 ["git", "-C", repo_path, "remote", "set-url", remote.name, remote.url],
                 label=f"set remote {repo.name}/{remote.name}",
                 cwd=repo_path,
             )
         else:
-            run_native(
+            _run_git(
                 ["git", "-C", repo_path, "remote", "add", remote.name, remote.url],
                 label=f"add remote {repo.name}/{remote.name}",
                 cwd=repo_path,
@@ -443,18 +468,18 @@ def ensure_app_worktrees(root: Path, topology: WorkspaceTopology) -> None:
     """Ensures all active app worktrees exist and match their managed branches."""
 
     repo_path = (root / topology.app_repo.relative_path).resolve()
-    run_native(["git", "-C", repo_path, "fetch", "origin", "--prune"], label="fetch app repo", cwd=root)
+    _run_git(["git", "-C", repo_path, "fetch", "origin", "--prune"], label="fetch app repo", cwd=root)
     for worktree in topology.app_repo.worktrees:
         if not worktree.active:
             continue
-        branch_exists = run_native(
+        branch_exists = _run_git(
             ["git", "-C", repo_path, "show-ref", "--verify", "--quiet", f"refs/heads/{worktree.branch}"],
             label=f"check app branch {worktree.branch}",
             cwd=root,
             allow_failure=True,
         )
         if branch_exists.returncode != 0:
-            run_native(
+            _run_git(
                 [
                     "git",
                     "-C",
@@ -466,18 +491,18 @@ def ensure_app_worktrees(root: Path, topology: WorkspaceTopology) -> None:
                 label=f"fetch app branch {worktree.branch}",
                 cwd=root,
             )
-            run_native(
+            _run_git(
                 ["git", "-C", repo_path, "branch", "--track", worktree.branch, f"origin/{worktree.branch}"],
                 label=f"track app branch {worktree.branch}",
                 cwd=root,
             )
-    current_branch = run_captured(
+    current_branch = _capture_git(
         ["git", "-C", repo_path, "branch", "--show-current"],
         label="current app anchor branch",
         cwd=root,
     ).strip()
     if current_branch == topology.app_repo.branch:
-        run_native(
+        _run_git(
             ["git", "-C", repo_path, "checkout", "--detach", f"refs/remotes/origin/{topology.app_repo.branch}"],
             label="detach app anchor",
             cwd=root,
@@ -493,27 +518,27 @@ def ensure_app_worktree(root: Path, repo_path: Path, relative_path: str, branch:
     target_path = (root / relative_path).resolve()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if not target_path.exists():
-        run_native(
+        _run_git(
             ["git", "-C", repo_path, "worktree", "add", str(target_path), branch],
             label=f"add app worktree {branch}",
             cwd=root,
         )
         return
-    run_native(["git", "-C", target_path, "fetch", "origin", "--prune"], label=f"fetch worktree {branch}", cwd=root)
-    run_native(["git", "-C", target_path, "checkout", branch], label=f"checkout worktree {branch}", cwd=root)
-    status = run_captured(["git", "-C", target_path, "status", "--short"], label=f"status worktree {branch}", cwd=root)
+    _run_git(["git", "-C", target_path, "fetch", "origin", "--prune"], label=f"fetch worktree {branch}", cwd=root)
+    _run_git(["git", "-C", target_path, "checkout", branch], label=f"checkout worktree {branch}", cwd=root)
+    status = _capture_git(["git", "-C", target_path, "status", "--short"], label=f"status worktree {branch}", cwd=root)
     if status.strip():
         print(f"WARNING: Worktree '{target_path}' is dirty; skipping fast-forward for managed branch '{branch}'.")
         return
     remote_ref = f"refs/remotes/origin/{branch}"
-    remote_exists = run_native(
+    remote_exists = _run_git(
         ["git", "-C", target_path, "show-ref", "--verify", "--quiet", remote_ref],
         label=f"check remote {branch}",
         cwd=root,
         allow_failure=True,
     )
     if remote_exists.returncode == 0:
-        run_native(["git", "-C", target_path, "merge", "--ff-only", remote_ref], label=f"fast-forward {branch}", cwd=root)
+        _run_git(["git", "-C", target_path, "merge", "--ff-only", remote_ref], label=f"fast-forward {branch}", cwd=root)
 
 
 def remove_legacy_app_dependency_links(root: Path, topology: WorkspaceTopology) -> None:
@@ -709,13 +734,13 @@ def install_workspace_hooks(root: Path, topology: WorkspaceTopology, *, only_rep
     for target in targets:
         if not target.is_dir():
             raise RuntimeError(f"Missing hook install target: {target}")
-        configured = run_native(
+        configured = _run_git(
             ["git", "-C", target, "config", "--local", "--get", "core.hooksPath"],
             label=f"read hooks path {target}",
             cwd=root,
             allow_failure=True,
         )
-        current = run_captured(
+        current = _capture_git(
             ["git", "-C", target, "config", "--local", "--get", "core.hooksPath"],
             label=f"hooks path {target}",
             cwd=root,
@@ -723,7 +748,7 @@ def install_workspace_hooks(root: Path, topology: WorkspaceTopology, *, only_rep
         if current:
             current_path = (target / current).resolve() if not Path(current).is_absolute() else Path(current).resolve()
             if current_path != hooks_path.resolve():
-                default_hooks = Path(run_captured(
+                default_hooks = Path(_capture_git(
                     ["git", "-C", target, "rev-parse", "--path-format=absolute", "--git-path", "hooks"],
                     label=f"default hooks path {target}", cwd=root,
                 ).strip()).resolve()
@@ -731,8 +756,8 @@ def install_workspace_hooks(root: Path, topology: WorkspaceTopology, *, only_rep
                     path.is_file() and not path.name.endswith(".sample") for path in current_path.iterdir()
                 ):
                     raise RuntimeError(f"Refusing to replace unmanaged core.hooksPath for '{target}'.")
-        run_native(["git", "-C", target, "config", "--local", "core.hooksPath", str(hooks_path)], label=f"install hooks {target}", cwd=root)
-        run_native(["git", "-C", target, "config", "--local", "core.autocrlf", "false"], label=f"configure autocrlf {target}", cwd=root)
+        _run_git(["git", "-C", target, "config", "--local", "core.hooksPath", str(hooks_path)], label=f"install hooks {target}", cwd=root)
+        _run_git(["git", "-C", target, "config", "--local", "core.autocrlf", "false"], label=f"configure autocrlf {target}", cwd=root)
 
 
 def set_workspace_root_environment(root: Path) -> None:
