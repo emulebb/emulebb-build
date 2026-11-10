@@ -129,7 +129,7 @@ def test_hook_target_filter_never_configures_core_or_app(tmp_path, monkeypatch):
     def run(command, **kwargs):
         calls.append(command)
         return SimpleNamespace(returncode=1 if "--get" in command else 0)
-    monkeypatch.setattr(materialize, "run_native", run)
+    monkeypatch.setattr(materialize, "_run_git", run)
     materialize.install_workspace_hooks(tmp_path, topology, only_repos=frozenset({"emulebb-pages"}))
     assert calls and all(command[2] == pages for command in calls)
 
@@ -150,8 +150,8 @@ def test_hook_install_adopts_empty_default_directory_but_preserves_custom_hooks(
         calls.append(command)
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(materialize, "run_native", run)
-    monkeypatch.setattr(materialize, "run_captured", lambda *args, **kwargs: str(default))
+    monkeypatch.setattr(materialize, "_run_git", run)
+    monkeypatch.setattr(materialize, "_capture_git", lambda *args, **kwargs: str(default))
     materialize.install_workspace_hooks(tmp_path, topology)
     assert any(command[-2:] == ["core.hooksPath", str(shared)] for command in calls)
     (default / "pre-push").write_text("custom\n")
@@ -185,7 +185,7 @@ def test_bootstrap_root_rejects_unexpected_top_level_path(tmp_path: Path, monkey
 
 
 def test_assert_clean_repo_rejects_local_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(materialize, "run_captured", lambda *args, **kwargs: " M README.md\n")
+    monkeypatch.setattr(materialize, "_capture_git", lambda *args, **kwargs: " M README.md\n")
 
     with pytest.raises(RuntimeError, match="local changes"):
         materialize.assert_clean_repo(tmp_path / "repo", "demo", tmp_path)
@@ -225,10 +225,10 @@ def test_tag_checkout_is_detached_and_revision_verified(tmp_path: Path, monkeypa
     monkeypatch.setattr(materialize, "assert_clean_repo", lambda *args: clean_calls.append(args))
     monkeypatch.setattr(
         materialize,
-        "run_native",
+        "_run_git",
         lambda command, **_kwargs: native_calls.append(tuple(str(part) for part in command)),
     )
-    monkeypatch.setattr(materialize, "run_captured", lambda *_args, **_kwargs: expected_revision)
+    monkeypatch.setattr(materialize, "_capture_git", lambda *_args, **_kwargs: expected_revision)
 
     materialize.ensure_managed_repo_tag(tmp_path, repo_path, repo)
 
@@ -247,8 +247,8 @@ def test_tag_checkout_rejects_unexpected_revision(tmp_path: Path, monkeypatch: p
     )
     monkeypatch.setattr(materialize, "branch_ref_exists", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(materialize, "assert_clean_repo", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(materialize, "run_native", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(materialize, "run_captured", lambda *_args, **_kwargs: "0" * 40)
+    monkeypatch.setattr(materialize, "_run_git", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(materialize, "_capture_git", lambda *_args, **_kwargs: "0" * 40)
 
     with pytest.raises(RuntimeError, match="expected 02db0d7"):
         materialize.ensure_managed_repo_tag(tmp_path, tmp_path / "repos" / "amule-stable", repo)
@@ -262,7 +262,7 @@ def test_print_repo_provenance_reports_head_and_branch(tmp_path: Path, monkeypat
         calls.append(tuple(str(part) for part in command))
         return "abc123\n" if command[-1] == "HEAD" else "main\n"
 
-    monkeypatch.setattr(materialize, "run_captured", fake_run_captured)
+    monkeypatch.setattr(materialize, "_capture_git", fake_run_captured)
 
     materialize.print_repo_provenance(tmp_path, repo, "emulebb-build-tests")
 

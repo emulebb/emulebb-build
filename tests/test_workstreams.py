@@ -146,6 +146,59 @@ def test_setup_writer_obeys_heavy_and_lifecycle_owners(layout, tmp_path, monkeyp
     assert create(layout, "after-setup-contention")["state"] == "ready"
 
 
+def test_real_optional_sync_cannot_mutate_foreign_hook_repository(layout, tmp_path, monkeypatch):
+    from emule_workspace import materialize
+    from emule_workspace.topology import build_workspace_manifest, canonical_topology
+
+    pages = optional_anchor(layout, tmp_path, "emulebb-pages")
+    admitted = optional_anchor(pages, tmp_path, "emulebb-org-profile")
+    urls = {name: ws._git(getattr(admitted, field), "remote", "get-url", "origin")
+            for name, field in ws.OPTIONAL_REPOSITORY_FIELDS.items()}
+    topology = canonical_topology(profiles=("public-presence",))
+    # No app worktrees are needed by this optional-only fixture. Keeping that
+    # list empty also makes its generated manifest independent of host syntax.
+    topology = topology.model_copy(update={
+        "app_repo": topology.app_repo.model_copy(update={"worktrees": ()}),
+        "repos": tuple(repo.model_copy(update={"url": urls[repo.name]})
+                       if repo.name in urls else repo for repo in topology.repos),
+    })
+    workspace = layout.emule_workspace_root / "workspaces/workspace"
+    workspace.mkdir(parents=True)
+    manifest_path = workspace / "deps.json"
+    payload = build_workspace_manifest(topology, "workspace")
+    payload["workspace"]["profiles"] = ["core"]
+    payload["workspace"]["optional_repos"] = {}
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    # Exercise both an existing optional fetch/merge and a missing optional clone.
+    admitted.emulebb_org_profile_repo_root.rename(tmp_path / "org-profile-seed")
+    foreign = layout.emulebb_rust_repo_root
+    ws._git(foreign, "fetch", "origin", "main")
+    before = {name: source_state(getattr(layout, field)) for name, field in ws.CORE_REPOSITORY_FIELDS.items()}
+    hostile = {"GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign),
+               "GIT_INDEX_FILE": str(foreign / ".git/index")}
+    for name, value in hostile.items():
+        monkeypatch.setenv(name, value)
+    environment = os.environ.copy()
+    monkeypatch.setattr(materialize, "canonical_topology", lambda **kwargs: topology)
+    monkeypatch.setattr(materialize, "build_repo_root", lambda: layout.build_repo_root)
+    monkeypatch.setattr(materialize, "resolve_required_workspace_roots", lambda:
+                        (layout.emule_workspace_root, layout.output_root))
+    materialize.sync_workspace(workspace_root=str(layout.emule_workspace_root),
+                               profiles=("public-presence",), optional_only=True)
+    assert os.environ == environment
+    assert before == {name: source_state(getattr(layout, field)) for name, field in ws.CORE_REPOSITORY_FIELDS.items()}
+    after = json.loads(manifest_path.read_text())
+    assert set(after["workspace"]["optional_repos"]) == {"pages", "org_profile"}
+    assert after["workspace"]["repos"] == payload["workspace"]["repos"]
+    assert after["workspace"]["app_repo"] == payload["workspace"]["app_repo"]
+    hooks = str(layout.tooling_repo_root / "hooks")
+    for name, field in ws.OPTIONAL_REPOSITORY_FIELDS.items():
+        path = getattr(admitted, field)
+        assert ws._git(path, "config", "--local", "--get", "core.hooksPath") == hooks
+        assert ws._git(path, "remote", "get-url", "origin") == urls[name]
+        assert ws._git(path, "branch", "--show-current") == "main"
+
+
 def create(layout, selected="alpha", repositories=("emulebb-rust",)):
     return ws.create_workstream(layout, selected, f"chore/{selected}", "parent", repositories)
 
