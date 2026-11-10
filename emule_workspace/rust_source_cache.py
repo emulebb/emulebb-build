@@ -206,7 +206,8 @@ def ensure_rust_source_cache(layout, *, target: Path | None = None, runner=None,
                     and any((child / profile).is_dir() for profile in profile_directories)):
                 _safe_path(output, child)
                 targets.append(child.name)
-    clean = ["clean", *[part for name in names for part in ("--package", name)]]
+    clean = ["clean", "--locked", "--offline",
+             *[part for name in names for part in ("--package", name)]]
     for target_name in (None, *targets):
         arguments = clean + (["--target", target_name] if target_name else [])
         # Packaging uses release and explicit triples. Never rely on Cargo's

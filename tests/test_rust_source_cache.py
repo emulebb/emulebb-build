@@ -90,10 +90,10 @@ def test_unqualified_cache_cleans_workspace_host_and_target_then_reuses_binding(
     runner = fake_runner(layout, calls)
     cache.ensure_rust_source_cache(layout, runner=runner, native_roots=(layout.emulebb_rust_repo_root,))
     assert calls == [["metadata", "--offline", "--locked", "--no-deps", "--format-version", "1"],
-                     ["clean", "--package", "source-cache-sample", "--profile", "dev"],
-                     ["clean", "--package", "source-cache-sample", "--profile", "release"],
-                     ["clean", "--package", "source-cache-sample", "--target", "aarch64-unknown-linux-gnu", "--profile", "dev"],
-                     ["clean", "--package", "source-cache-sample", "--target", "aarch64-unknown-linux-gnu", "--profile", "release"]]
+                     ["clean", "--locked", "--offline", "--package", "source-cache-sample", "--profile", "dev"],
+                     ["clean", "--locked", "--offline", "--package", "source-cache-sample", "--profile", "release"],
+                     ["clean", "--locked", "--offline", "--package", "source-cache-sample", "--target", "aarch64-unknown-linux-gnu", "--profile", "dev"],
+                     ["clean", "--locked", "--offline", "--package", "source-cache-sample", "--target", "aarch64-unknown-linux-gnu", "--profile", "release"]]
     calls.clear()
     cache.ensure_rust_source_cache(layout, runner=runner, native_roots=(layout.emulebb_rust_repo_root,))
     assert calls == [["metadata", "--offline", "--locked", "--no-deps", "--format-version", "1"]]
@@ -114,7 +114,7 @@ def test_dirty_older_source_bytes_invalidate_without_touching_dependencies(guard
     calls.clear()
     after = cache.ensure_rust_source_cache(layout, runner=runner, native_roots=(layout.emulebb_rust_repo_root,))
     assert before["sources"] != after["sources"]
-    assert calls[1] == ["clean", "--package", "source-cache-sample", "--profile", "dev"]
+    assert calls[1] == ["clean", "--locked", "--offline", "--package", "source-cache-sample", "--profile", "dev"]
     assert dependency.read_text() == "keep"
 
 
@@ -150,7 +150,7 @@ def test_native_material_change_invalidates_even_with_older_timestamp(guarded):
     os.utime(native / "source.c", (1, 1))
     calls.clear()
     cache.ensure_rust_source_cache(layout, runner=runner, native_roots=(native,))
-    assert calls[1] == ["clean", "--package", "source-cache-sample", "--profile", "dev"]
+    assert calls[1] == ["clean", "--locked", "--offline", "--package", "source-cache-sample", "--profile", "dev"]
 
 
 def test_source_change_during_clean_cannot_publish_new_binding(guarded):
