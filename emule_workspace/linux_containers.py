@@ -311,6 +311,19 @@ class WslValidationSession:
         self.evidence.mkdir(parents=True, exist_ok=True)
         (self.evidence / "wsl-session.json").write_text(json.dumps(self.receipt, indent=2) + "\n", encoding="utf-8")
 
+    def _shared_pid_path(self) -> Path:
+        """Give the existing Harness translator access through an owned DrvFS alias."""
+        pid_path = self.evidence / "wsl-session.pid"
+        if not self.docker.prefix:
+            return pid_path
+        mapped = self.docker.path(self.evidence)
+        self.receipt["pathMapping"] = {"evidence": mapped}
+        if any(self.evidence.resolve().is_relative_to(host) for host, _mount in self.docker.aliases):
+            # WHY: wslpath alone cannot traverse every Windows volume mount.
+            # A UNC view preserves both Windows PID reads and the Linux alias.
+            return Path(f"//wsl.localhost/{self.docker.distro}{mapped}/wsl-session.pid")
+        return pid_path
+
     def __enter__(self):
         self.api, material = _load_wsl_process_api(self.harness)
         self.sources = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in material}
@@ -323,7 +336,7 @@ class WslValidationSession:
             executable = Path(f"//wsl.localhost/{self.docker.distro}/usr/bin/sleep")
             self.process = self.api.start_wsl_managed_executable(
                 executable, [str(self.seconds)], self.evidence / "wsl-session.log",
-                self.evidence / "wsl-session.pid", distribution=self.docker.distro)
+                self._shared_pid_path(), distribution=self.docker.distro)
             ready_deadline = min(self.deadline, time.monotonic() + 30)
             while not self.process.pid_path.is_file():
                 if self.process.poll() is not None or time.monotonic() >= ready_deadline:
@@ -367,6 +380,14 @@ class WslValidationSession:
 
     def _stop(self) -> None:
         if self.process is None:
+            try:
+                self.docker.cleanup.close()
+                self.receipt.update(status="stopped", linuxCleanup="not-started")
+            except BaseException as error:
+                self.receipt.update(status="cleanup-failed", cleanupError=str(error))
+                raise
+            finally:
+                self._write_receipt()
             return
         failure = None
         try:
@@ -411,6 +432,12 @@ class WslValidationSession:
                     except subprocess.TimeoutExpired:
                         proxy.kill()
                         proxy.wait(timeout=10)
+            except BaseException as error:
+                failure = failure or error
+            try:
+                # The PID file remains reachable until the owned Linux process
+                # and Windows proxy have finished. Never unmount it sooner.
+                self.docker.cleanup.close()
             except BaseException as error:
                 failure = failure or error
             self.receipt["status"] = "cleanup-failed" if failure else "stopped"

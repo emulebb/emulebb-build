@@ -611,6 +611,8 @@ def owned_wsl_lifetime(tmp_path, monkeypatch):
     api = SimpleNamespace(start_wsl_managed_executable=start, stop_process=stop)
     monkeypatch.setattr(linux_containers, "_load_wsl_process_api", lambda path: (api, (helper,)))
     session = linux_containers.WslValidationSession(harness, tmp_path / "evidence")
+    # This fixture models identities and real host proxies without launching WSL.
+    session.docker.prefix = []
 
     def read(path):
         if path.endswith("boot_id"):
@@ -781,3 +783,59 @@ def test_changed_pid_file_cannot_redirect_teardown_to_an_unrelated_pid(owned_wsl
     assert stopped == [children[0].pid]
     assert children[0].poll() is not None
     assert (session.evidence / "wsl-owned-stop.pid").read_text(encoding="ascii") == "73\n"
+
+
+@pytest.mark.parametrize("requires_alias", [False, True])
+def test_wsl_pid_path_preserves_regular_output_and_maps_owned_mount_alias(owned_wsl_lifetime, monkeypatch, requires_alias):
+    session, _state, _stopped, _children, _helper = owned_wsl_lifetime
+    session.docker.prefix = ["wsl.exe", "-d", "Ubuntu", "--"]
+    mapped = "/mnt/owned-output" if requires_alias else "/mnt/c/output"
+    def map_directory(path):
+        assert path == session.evidence
+        if requires_alias:
+            session.docker.aliases.append((path.resolve(), mapped))
+        return mapped
+    monkeypatch.setattr(session.docker, "path", map_directory)
+    result = session._shared_pid_path()
+    expected = (f"//wsl.localhost/Ubuntu{mapped}/wsl-session.pid" if requires_alias
+                else (session.evidence / "wsl-session.pid").as_posix())
+    assert result.as_posix() == expected
+    assert session.receipt["pathMapping"]["evidence"] == mapped
+
+
+def test_wsl_owned_alias_closes_after_child_and_proxy_teardown(owned_wsl_lifetime):
+    session, _state, _stopped, children, _helper = owned_wsl_lifetime
+    events = []
+    # Load the same selected fixture API once before replacing only its stop hook.
+    with session:
+        stop = session.api.stop_process
+        def stop_child(process):
+            events.append("stop-child")
+            stop(process)
+        session.api.stop_process = stop_child
+        def close_alias():
+            assert children[0].poll() is not None
+            events.append("close-alias")
+        session.docker.cleanup.callback(close_alias)
+    assert events == ["stop-child", "close-alias"]
+
+
+def test_wsl_alias_is_closed_when_launch_fails_before_a_process_is_returned(owned_wsl_lifetime, monkeypatch):
+    session, _state, _stopped, children, _helper = owned_wsl_lifetime
+    session.docker.prefix = ["wsl.exe", "-d", "Ubuntu", "--"]
+    events = []
+    def map_directory(path):
+        session.docker.aliases.append((path.resolve(), "/mnt/owned-output"))
+        session.docker.cleanup.callback(lambda: events.append("close-alias"))
+        return "/mnt/owned-output"
+    monkeypatch.setattr(session.docker, "path", map_directory)
+    api, _material = linux_containers._load_wsl_process_api(session.harness)
+    def failed_start(*args, **kwargs):
+        raise RuntimeError("Synthetic launch failure")
+    api.start_wsl_managed_executable = failed_start
+    with pytest.raises(RuntimeError, match="Synthetic launch failure"):
+        with session:
+            pytest.fail("The check plan must not start")
+    assert not children and events == ["close-alias"]
+    assert session.receipt["planOutcome"] == "startup-failed"
+    assert session.receipt["linuxCleanup"] == "not-started"
