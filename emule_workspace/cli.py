@@ -67,6 +67,7 @@ from .release_campaign_runner import invoke_release_campaign
 from .setup_commands import run_compare, write_dependency_update_report, write_materialization_status
 from .status import write_dependency_status, write_workspace_repo_status, write_workspace_summary
 from .test_runs import (
+    invoke_builder_unit_tests,
     invoke_community_core_coverage,
     invoke_fake_kad_trust_soak,
     invoke_rust_network_proof,
@@ -1217,6 +1218,16 @@ def test_python(
         "test python",
         lambda **kwargs: invoke_python_tests(kwargs["layout"], test_options),
     )(workspace_options=workspace_options, layout=layout)
+
+
+@test.command("builder-unit")
+@_common_options
+@click.option("--path", "paths", multiple=True, required=True,
+              help="Selected Builder tests/test_NAME.py file; repeat for a scoped suite.")
+def test_builder_unit(*, paths: tuple[str, ...], workspace_options: WorkspaceOptions, layout) -> None:
+    """Run scoped Builder unit regressions with external evidence and one owner."""
+    _locked("test builder-unit", lambda **kwargs: invoke_builder_unit_tests(
+        kwargs["layout"], paths=paths))(workspace_options=workspace_options, layout=layout)
 
 
 @test.command("native")

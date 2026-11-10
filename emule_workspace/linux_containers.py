@@ -433,11 +433,13 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         nonlocal cache_invocation
         cache_invocation += 1
         return run_owned_container(docker, [*cargo, *arguments],
-                                   log_root / f"source-cache-{cache_invocation}.log", timeout=120, capture=True)
+                                   log_root / f"source-cache-{cache_invocation}.log",
+                                   timeout=600 if arguments[0] == "fetch" else 120, capture=True)
     ensure_rust_source_cache(layout, target=target_directory, runner=cache_cargo,
                              execution_source="/source", execution_target=target_root,
                              native_roots=(miniupnp, pcpnatpmp),
-                             execution_identity={"base": base, "target": target, "buildArchitecture": build_arch})
+                             execution_identity={"base": base, "target": target, "buildArchitecture": build_arch},
+                             prefetch=True)
     for label, arguments in quality_plan:
         print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
         run_owned_container(docker, [*cargo, *arguments], log_root / f"{label}.log", timeout=3600)

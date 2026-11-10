@@ -318,7 +318,7 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
         cargo_layout = load_layout(root, output_root=output)
         if registration:
             cargo_layout = apply_workstream_layout(cargo_layout, registration)
-        ensure_rust_source_cache(cargo_layout)
+        ensure_rust_source_cache(cargo_layout, prefetch=True)
     for index, (cwd, command) in enumerate(plan):
         print(f"Local {stage}: {' '.join(command)}", flush=True)
         log_path = reports / f"{index:02d}.log"

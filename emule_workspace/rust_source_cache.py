@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import tomllib
 from uuid import uuid4
@@ -60,7 +61,7 @@ def _host_runner(source: Path, environment: dict[str, str]):
     def run(arguments: list[str]) -> str:
         completed = subprocess.run(
             ["cargo", *arguments], cwd=source, env=environment,
-            text=True, capture_output=True, timeout=120, check=True,
+            text=True, capture_output=True, timeout=600 if arguments[0] == "fetch" else 120, check=True,
         )
         if len(completed.stdout) > 8 * 1024 * 1024:
             raise RuntimeError("Cargo source-cache response exceeds its bound")
@@ -76,7 +77,8 @@ def ensure_rust_source_cache(layout, *, target: Path | None = None, runner=None,
                              execution_source: str | None = None,
                              execution_target: str | None = None,
                              native_roots: tuple[Path, ...] = (),
-                             execution_identity: dict | None = None) -> dict:
+                             execution_identity: dict | None = None,
+                             prefetch: bool = False) -> dict:
     """Fence workspace artifacts under the existing lock; never clear registry caches.
 
     Container/WSL owners supply a Cargo executor and its literal mapped paths.
@@ -106,11 +108,31 @@ def ensure_rust_source_cache(layout, *, target: Path | None = None, runner=None,
         raise RuntimeError("Host Cargo cache must use the inherited target directory")
     lock = WorkspaceLock(layout, "Cargo source-cache fence", WorkspaceOptions(
         workspace_root=workspace, output_root=output, workspace_name=layout.workspace_name))
-    if not lock._can_reenter(os.environ.get(WORKSPACE_LOCK_TOKEN_ENV, "")):
+    if _safe_path(output, lock.metadata_path.absolute()) != output / "tmp/active-command-lock.json":
+        raise RuntimeError("Cargo source-cache lock must belong to the inherited OUTPUT")
+    token = os.environ.get(WORKSPACE_LOCK_TOKEN_ENV, "")
+    try:
+        if lock.metadata_path.stat().st_size > 65536:
+            raise ValueError("owner record exceeds bound")
+        owner = json.loads(lock.metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError("Cargo source-cache fence requires the active workspace lock") from error
+    if (not token or not isinstance(owner, dict)
+            or not isinstance(owner.get("delegation_token"), str) or not owner["delegation_token"]
+            or type(owner.get("pid")) is not int or owner["pid"] <= 0
+            or not isinstance(owner.get("machine_name"), str)
+            or owner["machine_name"].lower() != socket.gethostname().lower()
+            or owner.get("workspace_name") != layout.workspace_name
+            or not isinstance(owner.get("workspace_root"), str)
+            or Path(owner["workspace_root"]) != layout.emule_workspace_root
+            or not lock._can_reenter(token)):
         raise RuntimeError("Cargo source-cache fence requires the active workspace lock")
     if not native_roots:
-        native_roots = tuple(Path(os.environ[name]) for name in ("MINIUPNP_ROOT", "PCPNATPMP_ROOT")
-                             if os.environ.get(name))
+        from .release import _emulebb_rust_native_source_roots
+        for name in ("MINIUPNP_ROOT", "PCPNATPMP_ROOT"):
+            if name in os.environ and not Path(os.environ[name]).is_absolute():
+                raise RuntimeError("Native Cargo input roots must be inherited absolute paths")
+        native_roots = _emulebb_rust_native_source_roots(layout)
     if any(not path.is_absolute() for path in native_roots):
         raise RuntimeError("Native Cargo input roots must be inherited absolute paths")
     roots = (source, *(_safe_path(workspace, path.absolute()) for path in native_roots))
@@ -128,16 +150,11 @@ def ensure_rust_source_cache(layout, *, target: Path | None = None, runner=None,
         if (not isinstance(previous, dict) or previous.get("schema") != SCHEMA
                 or previous.get("target") != str(target) or not isinstance(previous.get("packages"), list)):
             raise RuntimeError("Cargo source-cache receipt has an ambiguous identity")
-        if previous.get("sources") == identity and previous.get("execution") == effective:
-            return previous
-    # Cargo must never clean redirected artifact directories. Only a source
-    # change pays this bounded directory inventory; warm reuse reads no artifacts.
-    for count, (directory, children, _files) in enumerate(os.walk(target, followlinks=False)):
-        if count >= 10000:
-            raise RuntimeError("Cargo artifact directory inventory exceeds its bound")
-        for name in children:
-            _safe_path(output, Path(directory) / name)
     execute = runner or _host_runner(source, git_environment())
+    # Network policy belongs to the existing compile owner. Fetch is explicit,
+    # never an implicit retry of a failed offline metadata/preflight operation.
+    if prefetch:
+        execute(["fetch", "--locked"])
     metadata = json.loads(execute(["metadata", "--offline", "--locked", "--no-deps", "--format-version", "1"]))
     expected_source = execution_source or str(source)
     expected_target = execution_target or str(target)
@@ -157,6 +174,18 @@ def ensure_rust_source_cache(layout, *, target: Path | None = None, runner=None,
     names = sorted(package["name"] for package in selected)
     if any(not re.fullmatch(r"[A-Za-z0-9_-]+", name) for name in names):
         raise RuntimeError("Cargo workspace package name is invalid")
+    if (previous and previous.get("sources") == identity and previous.get("execution") == effective
+            and previous["packages"] == names):
+        if _source_identity(roots) != identity:
+            raise RuntimeError("Cargo material source inputs changed during cache validation")
+        return previous
+    # Cargo must never clean redirected artifact directories. Only a source
+    # change pays this bounded directory inventory; warm reuse reads no artifacts.
+    for count, (directory, children, _files) in enumerate(os.walk(target, followlinks=False)):
+        if count >= 10000:
+            raise RuntimeError("Cargo artifact directory inventory exceeds its bound")
+        for name in children:
+            _safe_path(output, Path(directory) / name)
     if previous and set(previous["packages"]).difference(names):
         raise RuntimeError("Cargo workspace removed packages require explicit scoped cache recovery")
     # WHY: a missing receipt cannot qualify already-populated shared output.

@@ -969,6 +969,77 @@ def invoke_rust_network_proof(
     )
 
 
+def invoke_builder_unit_tests(layout: WorkspaceLayout, *, paths: tuple[str, ...]) -> Path:
+    """Run only explicit selected-Builder test files and retain source/JUnit proof."""
+    import hashlib
+    import re
+    import xml.etree.ElementTree as ET
+    from uuid import uuid4
+    from .git import git_output
+    from .git_environment import git_environment
+    from .workstreams import _safe_path
+
+    workspace, output = layout.emule_workspace_root.resolve(), layout.output_root.resolve()
+    source = _safe_path(workspace, layout.build_repo_root.absolute())
+    if output.is_relative_to(workspace):
+        raise RuntimeError("Builder unit output must remain outside source")
+    if (not paths or any(not re.fullmatch(r"tests/test_[a-zA-Z0-9_]+\.py", path) for path in paths)):
+        raise ValueError("Builder unit tests require explicit flat tests/test_NAME.py paths")
+    for name in paths:
+        if not _safe_path(source, source / name).is_file():
+            raise ValueError("Selected Builder test file does not exist")
+    if Path(git_output(source, "rev-parse", "--show-toplevel").strip()).resolve() != source:
+        raise RuntimeError("Builder tests must use the selected repository root")
+    head = git_output(source, "rev-parse", "HEAD").strip()
+    if git_output(source, "status", "--porcelain").strip():
+        raise RuntimeError("Builder unit qualification requires committed clean source")
+    environment = git_environment()
+    environment.update({key: str(value) for key, value in layout.subprocess_environment().items()})
+    run_id = uuid4().hex[:12]
+    report = _safe_path(output, output / "reports/builder-unit" / run_id)
+    scratch = _safe_path(output, output / "tmp/builder-unit" / run_id)
+    report.mkdir(parents=True)
+    scratch.mkdir(parents=True)
+    environment.update(TEMP=str(scratch), TMP=str(scratch), TMPDIR=str(scratch),
+                       PYTHONPYCACHEPREFIX=str(output / "cache/pycache"))
+    junit, log = report / "junit.xml", report / "stdout.log"
+    command = get_python_invocation().command([
+        "-B", "-m", "pytest", *dict.fromkeys(paths), "-q", "-p", "no:cacheprovider",
+        "--basetemp", str(scratch / "t"), "--junitxml", str(junit)])
+    value = {"schema": "emulebb.builder-unit/1", "source": {"path": str(source), "head": head},
+             "command": command, "status": "failed", "exitCode": None}
+    started = time.monotonic()
+    print(f"Builder unit evidence: {report}", flush=True)
+    try:
+        with log.open("w", encoding="utf-8", newline="\n") as stream:
+            result = subprocess.run(command, cwd=source, env=environment, stdout=stream, stderr=subprocess.STDOUT)
+        value["exitCode"] = result.returncode
+        if result.returncode:
+            raise RuntimeError(f"Builder unit tests failed ({result.returncode}); inspect {log}")
+        root = ET.parse(junit).getroot()
+        suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+        counts = {name: sum(int(suite.get(name, "0")) for suite in suites)
+                  for name in ("tests", "failures", "errors", "skipped")}
+        value["junit"] = counts
+        if counts["tests"] <= counts["skipped"] or counts["failures"] or counts["errors"]:
+            raise RuntimeError("Builder unit JUnit does not prove a passing nonempty suite")
+        if git_output(source, "rev-parse", "HEAD").strip() != head or git_output(source, "status", "--porcelain").strip():
+            raise RuntimeError("Selected Builder source changed during unit qualification")
+        value["status"] = "passed"
+        return report
+    except BaseException as error:
+        value["error"] = str(error)
+        raise
+    finally:
+        value["elapsedSeconds"] = round(time.monotonic() - started, 3)
+        for name, path in (("stdoutSha256", log), ("junitSha256", junit)):
+            if path.is_file():
+                with path.open("rb") as stream:
+                    value[name] = hashlib.file_digest(stream, "sha256").hexdigest()
+        (report / "results.json").write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+        print(f"Builder unit {value['status']}; evidence: {report}", flush=True)
+
+
 def invoke_rust_unit_tests(
     layout: WorkspaceLayout, *, package: str | None = None, refresh_workspace_lock: bool = False,
 ) -> None:
@@ -990,7 +1061,7 @@ def invoke_rust_unit_tests(
                 cwd=layout.emulebb_rust_repo_root,
                 env=_workspace_env(layout),
             )
-        ensure_rust_source_cache(layout)
+        ensure_rust_source_cache(layout, prefetch=True)
         run_native(
             args,
             label="eMuleBB Rust tests",

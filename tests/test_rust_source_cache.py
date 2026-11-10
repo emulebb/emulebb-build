@@ -91,7 +91,7 @@ def test_unqualified_cache_cleans_workspace_host_and_target_then_reuses_binding(
                      ["clean", "--package", "source-cache-sample", "--target", "aarch64-unknown-linux-gnu"]]
     calls.clear()
     cache.ensure_rust_source_cache(layout, runner=runner, native_roots=(layout.emulebb_rust_repo_root,))
-    assert calls == []
+    assert calls == [["metadata", "--offline", "--locked", "--no-deps", "--format-version", "1"]]
 
 
 def test_dirty_older_source_bytes_invalidate_without_touching_dependencies(guarded):
@@ -176,6 +176,104 @@ def test_malformed_binding_fails_closed_without_clean(guarded):
     assert path.read_text() == "invalid json\n"
 
 
+def test_default_native_roots_and_inherited_override_are_material_inputs(guarded, monkeypatch):
+    layout = guarded
+    layout.emulebb_rust_repo_root = source(layout)
+    mini = repository(layout.emule_workspace_root / "repos/third_party/emulebb-miniupnp", {"source.c": "one\n"})
+    pcp = repository(layout.emule_workspace_root / "repos/third_party/emulebb-libpcpnatpmp", {"source.c": "two\n"})
+    monkeypatch.delenv("MINIUPNP_ROOT", raising=False)
+    monkeypatch.delenv("PCPNATPMP_ROOT", raising=False)
+    calls = []
+    runner = fake_runner(layout, calls)
+    before = cache.ensure_rust_source_cache(layout, runner=runner)
+    assert [item["root"] for item in before["sources"]] == [str(layout.emulebb_rust_repo_root), str(mini), str(pcp)]
+    (mini / "source.c").write_text("older changed native source\n", encoding="utf-8")
+    os.utime(mini / "source.c", (1, 1))
+    calls.clear()
+    cache.ensure_rust_source_cache(layout, runner=runner)
+    assert calls[1][0] == "clean"
+    override = repository(layout.emule_workspace_root / "override", {"source.c": "override\n"})
+    monkeypatch.setenv("MINIUPNP_ROOT", str(override))
+    after = cache.ensure_rust_source_cache(layout, runner=runner)
+    assert [item["root"] for item in after["sources"]][1:] == [str(override), str(pcp)]
+
+
+def test_explicit_prefetch_precedes_offline_metadata_without_retry(guarded):
+    layout = guarded
+    layout.emulebb_rust_repo_root = source(layout)
+    calls = []
+    cache.ensure_rust_source_cache(layout, runner=fake_runner(layout, calls),
+                                   native_roots=(layout.emulebb_rust_repo_root,), prefetch=True)
+    assert calls[:2] == [["fetch", "--locked"],
+                         ["metadata", "--offline", "--locked", "--no-deps", "--format-version", "1"]]
+
+
+def test_matching_receipt_still_rejects_actual_wrong_target(guarded):
+    layout = guarded
+    layout.emulebb_rust_repo_root = source(layout)
+    cache.ensure_rust_source_cache(layout, runner=fake_runner(layout, []),
+                                   native_roots=(layout.emulebb_rust_repo_root,))
+    path = layout.output_rust_target_root / cache.RECEIPT
+    before = path.read_bytes()
+    calls = []
+    with pytest.raises(RuntimeError, match="selected source and target"):
+        cache.ensure_rust_source_cache(layout, runner=fake_runner(layout, calls, target=layout.output_root / "wrong"),
+                                       native_roots=(layout.emulebb_rust_repo_root,))
+    assert len(calls) == 1 and calls[0][0] == "metadata"
+    assert path.read_bytes() == before
+
+
+def test_source_mutation_during_warm_metadata_is_not_accepted(guarded):
+    layout = guarded
+    layout.emulebb_rust_repo_root = source(layout)
+    invoke = fake_runner(layout, [])
+    cache.ensure_rust_source_cache(layout, runner=invoke, native_roots=(layout.emulebb_rust_repo_root,))
+    def changing(arguments):
+        result = invoke(arguments)
+        if arguments[0] == "metadata":
+            (layout.emulebb_rust_repo_root / "sample/src/lib.rs").write_text("changed during metadata\n", encoding="utf-8")
+        return result
+    with pytest.raises(RuntimeError, match="changed during cache validation"):
+        cache.ensure_rust_source_cache(layout, runner=changing, native_roots=(layout.emulebb_rust_repo_root,))
+
+
+@pytest.mark.parametrize("invalid", ["tokenless", "missing-pid", "foreign-owner", "bool-pid",
+                                    "wrong-root", "wrong-workspace", "empty-stored-token", "missing-record"])
+def test_malformed_lock_owner_cannot_authorize_cargo_clean(guarded, monkeypatch, invalid):
+    layout = guarded
+    layout.emulebb_rust_repo_root = source(layout)
+    path = layout.output_tmp_root / "active-command-lock.json"
+    original = path.read_bytes()
+    owner = json.loads(original)
+    if invalid == "tokenless":
+        owner = {"workspace_root": str(layout.emule_workspace_root)}
+        monkeypatch.delenv(WORKSPACE_LOCK_TOKEN_ENV)
+    elif invalid == "missing-pid":
+        owner.pop("pid")
+    elif invalid == "foreign-owner":
+        owner["machine_name"] = "synthetic-foreign-owner"
+    elif invalid == "bool-pid":
+        owner["pid"] = True
+    elif invalid == "wrong-root":
+        owner["workspace_root"] = str(layout.emule_workspace_root / "wrong")
+    elif invalid == "wrong-workspace":
+        owner["workspace_name"] = "another-workspace"
+    elif invalid == "empty-stored-token":
+        owner["delegation_token"] = ""
+    if invalid == "missing-record":
+        path.unlink()
+    else:
+        path.write_text(json.dumps(owner), encoding="utf-8")
+    calls = []
+    try:
+        with pytest.raises(RuntimeError, match="active workspace lock"):
+            cache.ensure_rust_source_cache(layout, runner=fake_runner(layout, calls))
+        assert calls == []
+        assert not (layout.output_rust_target_root / cache.RECEIPT).exists()
+    finally:
+        path.write_bytes(original)
+
+
 def test_real_cargo_rebuilds_older_other_checkout_and_keeps_nonworkspace_dependency(guarded):
     """Execute distinct A/B tests, not a command-plan assertion or a fake compiler."""
     layout = guarded
@@ -197,10 +295,13 @@ def test_real_cargo_rebuilds_older_other_checkout_and_keeps_nonworkspace_depende
             os.utime(item, (1, 1))
     environment = git_environment()
     environment["CARGO_TARGET_DIR"] = str(layout.output_rust_target_root)
+    cold_home = layout.output_root / "cache/synthetic-cargo-home"
+    cold_home.mkdir(parents=True)
+    environment["CARGO_HOME"] = str(cold_home)
     original_environment = os.environ.copy()
     layout.emulebb_rust_repo_root = roots[0]
     first = cache._host_runner(roots[0], environment)
-    cache.ensure_rust_source_cache(layout, runner=first, native_roots=(dependency,))
+    cache.ensure_rust_source_cache(layout, runner=first, native_roots=(dependency,), prefetch=True)
     assert "from_first_checkout ... ok" in first(["test", "--locked", "--offline"])
     dependency_artifacts = list((layout.output_rust_target_root / "debug/deps").glob("*synthetic_dependency*.rlib"))
     assert dependency_artifacts

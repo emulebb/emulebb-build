@@ -580,11 +580,12 @@ def build_emulebb_rust_client(
                 f"export CARGO_TARGET_DIR={shlex.quote(wsl_target)}",
                 f"cd {shlex.quote(wsl_repo)}", f"cargo {shlex.join(arguments)}"))
             return subprocess.run(["wsl.exe", "--", "bash", "-lc", script], env=env,
-                                  text=True, capture_output=True, check=True, timeout=120).stdout
+                                  text=True, capture_output=True, check=True,
+                                  timeout=600 if arguments[0] == "fetch" else 120).stdout
         ensure_rust_source_cache(session.layout, target=source_target_root, runner=cache_cargo,
-                                 execution_source=wsl_repo, execution_target=wsl_target)
+                                 execution_source=wsl_repo, execution_target=wsl_target, prefetch=True)
     else:
-        ensure_rust_source_cache(session.layout)
+        ensure_rust_source_cache(session.layout, prefetch=True)
     started_at = time.monotonic()
     try:
         with log_path.open("w", encoding="utf-8", newline="\n") as stream:
