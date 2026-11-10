@@ -186,6 +186,9 @@ def test_real_optional_sync_cannot_mutate_foreign_hook_repository(layout, tmp_pa
     materialize.sync_workspace(workspace_root=str(layout.emule_workspace_root),
                                profiles=("public-presence",), optional_only=True)
     assert os.environ == environment
+    assert not (layout.emule_workspace_root / materialize.SETUP_LOG_FILE_NAME).exists()
+    log = layout.output_root / "logs/setup/workspace" / materialize.SETUP_LOG_FILE_NAME
+    assert "Optional repository sync complete" in log.read_text()
     assert before == {name: source_state(getattr(layout, field)) for name, field in ws.CORE_REPOSITORY_FIELDS.items()}
     after = json.loads(manifest_path.read_text())
     assert set(after["workspace"]["optional_repos"]) == {"pages", "org_profile"}

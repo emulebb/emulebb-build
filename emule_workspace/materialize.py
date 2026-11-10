@@ -224,6 +224,12 @@ def _sync_optional_only(root: Path, workspace_name: str, profiles: tuple[str, ..
 
     if not profiles or set(profiles).difference(OPTIONAL_WORKSPACE_PROFILES):
         raise ValueError("Optional-only sync requires an explicit optional profile")
+    inherited_root, output = resolve_required_workspace_roots()
+    if inherited_root.resolve() != root.resolve() or output.resolve().is_relative_to(root.resolve()):
+        raise RuntimeError("Optional setup requires the inherited workspace and external OUTPUT")
+    # WHY: this bounded setup path must not reuse the legacy source-root log.
+    # Validate the OUTPUT destination before cloning, configuring or admitting.
+    log_path = _safe_path(output, output / "logs/setup" / workspace_name / SETUP_LOG_FILE_NAME)
     manifest_path = _safe_path(root, root / "workspaces" / workspace_name / WORKSPACE_MANIFEST_NAME)
     payload = load_json(manifest_path)
     contract = WorkspaceManifestContract.model_validate(payload)
@@ -267,7 +273,9 @@ def _sync_optional_only(root: Path, workspace_name: str, profiles: tuple[str, ..
             os.replace(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
-    log_line(root, "Optional repository sync complete; core sources unchanged.")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write("Optional repository sync complete; core sources unchanged.\n")
 
 
 def assert_materialize_bootstrap_root(root: Path) -> None:
