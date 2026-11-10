@@ -1,5 +1,6 @@
 """Provisioning failures must be bounded and must never weaken APT trust."""
 from pathlib import Path
+import json
 import os
 import signal
 import subprocess
@@ -11,6 +12,34 @@ import pytest
 from click.testing import CliRunner
 
 from emule_workspace import cli, ubuntu_ci
+
+
+@pytest.mark.parametrize("status", ["passed", "failed"])
+def test_image_entrypoint_publishes_receipt_and_preserves_failure(tmp_path, monkeypatch, capsys, status):
+    monkeypatch.setattr(ubuntu_ci.os, "geteuid", lambda: 0, raising=False)
+    receipt = {"status": status, "operations": [{"operation": "install", "attempt": 1,
+                                               "returncode": 100 if status == "failed" else 0}]}
+    if status == "failed":
+        receipt["diagnostic"] = "Synthetic public APT install failure"
+    failure = ubuntu_ci.ProvisioningError("Synthetic Ubuntu install failure", receipt)
+    calls = []
+    def provision(**kwargs):
+        calls.append(kwargs)
+        if status == "failed":
+            raise failure
+        return receipt
+    monkeypatch.setattr(ubuntu_ci, "provision_dependencies", provision)
+    report = tmp_path / "provisioning.json"
+    arguments = ["--image-build", "--report", str(report)]
+    if status == "failed":
+        with pytest.raises(ubuntu_ci.ProvisioningError) as raised:
+            ubuntu_ci.image_build_main(arguments)
+        assert raised.value is failure
+    else:
+        ubuntu_ci.image_build_main(arguments)
+    assert calls == [{"profile": "rust-prepared-builder", "deadline_seconds": 600}]
+    assert json.loads(capsys.readouterr().out) == receipt
+    assert json.loads(report.read_text(encoding="utf-8")) == receipt
 
 
 class AptHost:
