@@ -1053,6 +1053,15 @@ def invoke_rust_unit_tests(
     else:
         args.append("--workspace")
     try:
+        from uuid import uuid4
+        from .workstreams import _safe_path
+        environment = dict(_workspace_env(layout))
+        output = layout.output_root.resolve()
+        scratch = _safe_path(output, output / "tmp/rust-unit" / uuid4().hex)
+        scratch.mkdir(parents=True)
+        # WHY: metadata unit fixtures use Rust's std::env::temp_dir(). Confine
+        # only this child's temporary files; operator environment remains intact.
+        environment.update(TEMP=str(scratch), TMP=str(scratch), TMPDIR=str(scratch))
         if refresh_workspace_lock:
             # WHY: adding a workspace crate needs a lockfile update, but ordinary
             # CI must never rewrite it. Cargo's workspace-only offline update
@@ -1061,14 +1070,14 @@ def invoke_rust_unit_tests(
                 ["cargo", "update", "--workspace", "--offline"],
                 label="eMuleBB Rust workspace lock refresh",
                 cwd=layout.emulebb_rust_repo_root,
-                env=_workspace_env(layout),
+                env=environment,
             )
         ensure_rust_source_cache(layout, prefetch=True)
         run_native(
             args,
             label="eMuleBB Rust tests",
             cwd=layout.emulebb_rust_repo_root,
-            env=_workspace_env(layout),
+            env=environment,
         )
     finally:
         # `cargo test` can materialize binary targets even when the selected
