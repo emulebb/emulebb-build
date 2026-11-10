@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import hashlib
 import importlib
+import inspect
 import os
 import platform
 import re
@@ -26,6 +27,7 @@ ALPINE_IMAGE = UPSTREAM_ALPINE
 RUST_IMAGES = dict(UPSTREAM_RUST)
 MUSL_CROSS_IMAGE = "ghcr.io/rust-cross/rust-musl-cross:aarch64-musl@sha256:02e790506c5f15a533bc05b3af8719b16a8a2314480f6f0fdc0166432035d9b4"
 RUNTIME_IMAGES = dict(UPSTREAM_RUNTIME)
+_WSL_STOP_TIMEOUT = 10
 
 
 def _hosted_linux_environment(architecture: str, engine_arch: str) -> list[str]:
@@ -259,6 +261,10 @@ def _load_wsl_process_api(harness: Path):
         code = getattr(function, "__code__", None)
         if code is None or not Path(code.co_filename).resolve().is_relative_to(harness):
             raise RuntimeError(f"Selected Harness is missing its WSL lifecycle API: {name}")
+    stdin_parameter = inspect.signature(module.start_wsl_managed_executable).parameters.get("stdin")
+    if stdin_parameter is None or stdin_parameter.kind not in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+        raise RuntimeError("Selected Harness lacks owned-stdin WSL lifecycle support; qualify the matching Harness first")
     return module, tuple(sorted(material))
 
 
@@ -325,23 +331,22 @@ class WslValidationSession:
         return pid_path
 
     def __enter__(self):
-        self.api, material = _load_wsl_process_api(self.harness)
-        self.sources = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in material}
-        self.receipt["helperSources"] = {path.relative_to(self.harness).as_posix(): digest
-                                         for path, digest in self.sources.items()}
         self.evidence.mkdir(parents=True, exist_ok=True)
         try:
+            self.api, material = _load_wsl_process_api(self.harness)
+            self.sources = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in material}
+            self.receipt["helperSources"] = {path.relative_to(self.harness).as_posix(): digest
+                                             for path, digest in self.sources.items()}
             self.boot_id = self._boot()
             self.deadline = time.monotonic() + self.seconds
-            executable = Path(f"//wsl.localhost/{self.docker.distro}/usr/bin/sleep")
+            executable = Path(f"//wsl.localhost/{self.docker.distro}/usr/bin/timeout")
             self.process = self.api.start_wsl_managed_executable(
-                executable, [str(self.seconds)], self.evidence / "wsl-session.log",
-                self._shared_pid_path(), distribution=self.docker.distro)
-            ready_deadline = min(self.deadline, time.monotonic() + 30)
-            while not self.process.pid_path.is_file():
-                if self.process.poll() is not None or time.monotonic() >= ready_deadline:
-                    raise RuntimeError("WSL lifetime process failed before its PID was ready")
-                time.sleep(0.05)
+                executable, ["--signal=TERM", "--kill-after=5", str(self.seconds), "/usr/bin/cat"],
+                self.evidence / "wsl-session.log", self._shared_pid_path(),
+                distribution=self.docker.distro, stdin=subprocess.PIPE)
+            if self.process.proxy.stdin is None:
+                raise RuntimeError("Selected Harness did not provide the required owned WSL input pipe")
+            self._wait_for_pid()
             self.pid = self._read_pid()
             self.birth = self._pid_birth(self.pid)
             self.receipt.update(status="running", bootId=self.boot_id, linuxPid=self.pid,
@@ -353,10 +358,18 @@ class WslValidationSession:
             self._write_receipt()
             print(f"Owned WSL validation lifetime: {self.seconds}s; evidence: {self.evidence}", flush=True)
             return self
-        except BaseException:
-            self.receipt["planOutcome"] = "startup-failed"
+        except BaseException as error:
+            self.receipt["planOutcome"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "startup-failed"
+            self.receipt["startupError"] = str(error)
             self._stop()
             raise
+
+    def _wait_for_pid(self) -> None:
+        ready_deadline = min(self.deadline, time.monotonic() + 30)
+        while not self.process.pid_path.is_file():
+            if self.process.poll() is not None or time.monotonic() >= ready_deadline:
+                raise RuntimeError("WSL lifetime process failed before its PID was ready")
+            time.sleep(0.05)
 
     def _read_pid(self) -> int:
         with self.process.pid_path.open(encoding="ascii") as source:
@@ -391,35 +404,29 @@ class WslValidationSession:
             return
         failure = None
         try:
-            same_boot = self._boot() == self.boot_id
-            same_process = False
-            if same_boot and self.pid is not None and self.birth is not None:
-                try:
-                    same_process = self._pid_birth(self.pid) == self.birth
-                except subprocess.CalledProcessError:
-                    if self._pid_exists(self.pid):
-                        raise RuntimeError("Cannot read the existing owned WSL process identity")
-                    self.receipt["linuxCleanup"] = "owned-process-absent"
-            if same_process:
-                # The live helper PID file is diagnostic input, not signalling
-                # authority after it changes. Supply the verified owned PID.
-                stop_pid = self.evidence / "wsl-owned-stop.pid"
-                with stop_pid.open("x", encoding="ascii") as target:
-                    target.write(f"{self.pid}\n")
-                original_pid = self.process.pid_path
-                try:
-                    self.process.pid_path = stop_pid
-                    self.api.stop_process(self.process)
-                finally:
-                    self.process.pid_path = original_pid
-                if self._boot() == self.boot_id and self._pid_exists(self.pid):
-                    if self._pid_birth(self.pid) == self.birth:
-                        raise RuntimeError("Owned WSL lifetime process survived teardown")
-                self.receipt["linuxCleanup"] = "owned-process-stopped"
-            elif "linuxCleanup" not in self.receipt:
-                # WHY: a PID file from an older boot is not authority to send a
-                # signal in a new kernel, even when that integer exists there.
-                self.receipt["linuxCleanup"] = "identity-lost-no-linux-signals"
+            proxy = self.process.proxy
+            if proxy.stdin is None:
+                raise RuntimeError("Owned WSL input pipe is missing; Linux teardown cannot be verified")
+            # WHY: EOF is an owned control channel even before the PID file and
+            # start-time identity are ready. Killing wsl.exe alone can orphan Linux.
+            try:
+                proxy.stdin.close()
+            except BrokenPipeError:
+                pass
+            try:
+                completed = proxy.wait(timeout=_WSL_STOP_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                completed = None
+            if completed == 0:
+                self.receipt["linuxCleanup"] = "stdin-eof-stopped"
+            elif self._boot() != self.boot_id:
+                self.receipt["linuxCleanup"] = "previous-kernel-ended-no-linux-signals"
+            elif self.pid is None or self.birth is None:
+                raise RuntimeError("Owned WSL startup identity is incomplete; Linux teardown cannot be verified")
+            elif not self._pid_exists(self.pid) or self._pid_birth(self.pid) != self.birth:
+                self.receipt["linuxCleanup"] = "owned-identity-ended-no-linux-signals"
+            else:
+                self._stop_verified_pid()
         except BaseException as error:
             failure = error
         finally:
@@ -428,10 +435,10 @@ class WslValidationSession:
                 if proxy.poll() is None:
                     proxy.terminate()
                     try:
-                        proxy.wait(timeout=10)
+                        proxy.wait(timeout=_WSL_STOP_TIMEOUT)
                     except subprocess.TimeoutExpired:
                         proxy.kill()
-                        proxy.wait(timeout=10)
+                        proxy.wait(timeout=_WSL_STOP_TIMEOUT)
             except BaseException as error:
                 failure = failure or error
             try:
@@ -446,6 +453,22 @@ class WslValidationSession:
             self._write_receipt()
         if failure:
             raise RuntimeError("WSL lifetime cleanup failed; inspect its session receipt") from failure
+
+    def _stop_verified_pid(self) -> None:
+        """Use the existing group teardown only after same-boot birth verification."""
+        stop_pid = self.evidence / "wsl-owned-stop.pid"
+        with stop_pid.open("x", encoding="ascii") as target:
+            target.write(f"{self.pid}\n")
+        original_pid = self.process.pid_path
+        try:
+            self.process.pid_path = stop_pid
+            self.api.stop_process(self.process)
+        finally:
+            self.process.pid_path = original_pid
+        if self._boot() == self.boot_id and self._pid_exists(self.pid):
+            if self._pid_birth(self.pid) == self.birth:
+                raise RuntimeError("Owned WSL lifetime process survived teardown")
+        self.receipt["linuxCleanup"] = "verified-owned-process-stopped"
 
     def __exit__(self, exc_type, exc, traceback):
         self.receipt["planOutcome"] = ("completed" if exc_type is None else

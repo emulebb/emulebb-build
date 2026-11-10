@@ -343,7 +343,7 @@ Rust eD2K index-server build example:
 Windows local validation owns one bounded WSL session when the push plan
 requires Linux or Android checks. It keeps that session through the source-cache
 fence, host checks, platform stages and final source verification. The selected
-Harness process helper supplies PID-backed launch and teardown; its source
+Harness process helper supplies PID-backed launch and caller-owned stdin; its source
 revision and material helper hashes are retained with the local-check evidence.
 Cached Harness imports are refused rather than silently replaced.
 Folder-mounted output paths use the existing owned DrvFS mapping; its alias
@@ -355,9 +355,14 @@ gate. That stage registers only the pinned ARM64 emulator and proves real ARM64
 execution. Ordinary native-musl and Android-only plans check Docker readiness
 without requesting ARM registration. Later platform preflights still run.
 
-The session has a six-hour ceiling, verifies boot and owned-process identity
-between stages, and stops only its own process and proxy on completion or
-interruption. Receipts are below
+The session uses a six-hour `timeout` around a stdin consumer, with a five-second
+termination grace. Closing its owned pipe lets that process finish even when
+startup is interrupted before PID capture. It verifies boot and owned-process
+identity between stages; any signal fallback requires the original kernel and
+start-time identity. It stops only its own process and proxy on completion or
+interruption and fails if teardown cannot be verified. This requires the selected
+Harness launcher's optional `stdin` API; an older helper fails before launch.
+Receipts are below
 `EMULEBB_WORKSPACE_OUTPUT_ROOT/reports/local-check/<repo>/<run>/wsl-session.json`.
 Commit checks, documentation-only pushes and native Linux validation do not
 create a WSL session. Inherited environment, Cargo build-job limits, normal

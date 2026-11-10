@@ -591,15 +591,20 @@ def owned_wsl_lifetime(tmp_path, monkeypatch):
     harness.mkdir()
     helper = harness / "helper.py"
     helper.write_text("# Synthetic selected lifecycle input.\n")
-    state = {"boot": "00000000-0000-4000-8000-000000000001", "birth": "1234"}
+    state = {"boot": "00000000-0000-4000-8000-000000000001", "birth": "1234",
+             "ignore_eof": False, "pid_ready": True}
     children, stopped = [], []
 
     def start(executable, arguments, log_path, pid_path, **kwargs):
-        assert executable.name == "sleep" and arguments == ["21600"]
-        proxy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+        assert executable.name == "timeout"
+        assert arguments == ["--signal=TERM", "--kill-after=5", "21600", "/usr/bin/cat"]
+        assert kwargs["stdin"] == subprocess.PIPE
+        program = "import time; time.sleep(60)" if state["ignore_eof"] else "import sys; sys.stdin.buffer.read()"
+        proxy = subprocess.Popen([sys.executable, "-c", program], stdin=kwargs["stdin"],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         children.append(proxy)
-        pid_path.write_text("73\n", encoding="ascii")
+        if state["pid_ready"]:
+            pid_path.write_text("73\n", encoding="ascii")
         return SimpleNamespace(proxy=proxy, pid_path=pid_path, poll=proxy.poll)
 
     def stop(process):
@@ -646,7 +651,7 @@ def test_wsl_lifetime_reaps_only_its_owned_proxy_on_every_plan_exit(owned_wsl_li
             with pytest.raises(error):
                 with session:
                     raise error("Synthetic check interruption")
-        assert stopped == [children[0].pid]
+        assert stopped == []
         assert children[0].poll() is not None
         assert foreign.poll() is None
         receipt = json.loads((session.evidence / "wsl-session.json").read_text())
@@ -659,15 +664,18 @@ def test_wsl_lifetime_reaps_only_its_owned_proxy_on_every_plan_exit(owned_wsl_li
 
 
 @pytest.mark.parametrize("change", ["boot", "birth"])
-def test_wsl_restart_or_pid_reuse_never_signals_the_new_linux_identity(owned_wsl_lifetime, change):
+def test_wsl_restart_or_pid_reuse_never_signals_the_new_linux_identity(owned_wsl_lifetime, monkeypatch, change):
     session, state, stopped, children, _helper = owned_wsl_lifetime
+    state["ignore_eof"] = True
+    monkeypatch.setattr(linux_containers, "_WSL_STOP_TIMEOUT", 0.05)
     with pytest.raises(RuntimeError, match="restarted|identity changed"):
         with session:
             state[change] = "00000000-0000-4000-8000-000000000002" if change == "boot" else "9999"
             session.check("before-linux")
     assert stopped == []
     assert children[0].poll() is not None
-    assert session.receipt["linuxCleanup"] == "identity-lost-no-linux-signals"
+    assert session.receipt["linuxCleanup"] == ("previous-kernel-ended-no-linux-signals" if change == "boot"
+                                               else "owned-identity-ended-no-linux-signals")
 
 
 def test_wsl_deadline_blocks_the_next_stage_and_tears_down(owned_wsl_lifetime):
@@ -676,7 +684,7 @@ def test_wsl_deadline_blocks_the_next_stage_and_tears_down(owned_wsl_lifetime):
         with session:
             session.deadline = time.monotonic() - 1
             session.check("before-linux")
-    assert stopped == [children[0].pid] and children[0].poll() is not None
+    assert stopped == [] and children[0].poll() is not None
 
 
 def test_wsl_early_docker_failure_reaps_lifetime_before_host_work(owned_wsl_lifetime, monkeypatch):
@@ -687,7 +695,7 @@ def test_wsl_early_docker_failure_reaps_lifetime_before_host_work(owned_wsl_life
     with pytest.raises(RuntimeError, match="Docker unavailable"):
         with session:
             pytest.fail("Host work must not start")
-    assert stopped == [children[0].pid] and children[0].poll() is not None
+    assert stopped == [] and children[0].poll() is not None
 
 
 def test_wsl_selected_helper_bytes_cannot_change_during_the_plan(owned_wsl_lifetime):
@@ -696,7 +704,7 @@ def test_wsl_selected_helper_bytes_cannot_change_during_the_plan(owned_wsl_lifet
         with session:
             helper.write_text("# Changed selected helper.\n")
             session.check("before-linux")
-    assert stopped == [children[0].pid]
+    assert stopped == []
 
 
 @pytest.mark.parametrize("name,relative", [
@@ -727,12 +735,14 @@ def test_wsl_loader_refuses_same_path_cached_function_objects(tmp_path, monkeypa
     assert sys.modules["emule_test_harness"] is cached
 
 
-@pytest.mark.parametrize("foreign_dependency", [False, True])
-def test_wsl_loader_binds_all_new_material_modules_and_restores_search_path(tmp_path, monkeypatch, foreign_dependency):
+@pytest.mark.parametrize("foreign_dependency,owned_stdin", [(False, True), (True, True), (False, False)])
+def test_wsl_loader_binds_all_new_material_modules_and_restores_search_path(tmp_path, monkeypatch,
+                                                                         foreign_dependency, owned_stdin):
     selected = tmp_path / "selected"
     api_path = selected / "emule_test_harness/rust_ed2k.py"
     api_path.parent.mkdir(parents=True)
-    source = "def start_wsl_managed_executable(): pass\ndef stop_process(): pass\n"
+    parameters = "*, stdin=None" if owned_stdin else ""
+    source = f"def start_wsl_managed_executable({parameters}): pass\ndef stop_process(): pass\n"
     api_path.write_text(source)
     (api_path.parent / "wsl_managed_process.sh").write_text("#!/bin/sh\nexec \"$@\"\n")
     api = ModuleType("emule_test_harness.rust_ed2k")
@@ -755,6 +765,9 @@ def test_wsl_loader_binds_all_new_material_modules_and_restores_search_path(tmp_
     if foreign_dependency:
         with pytest.raises(RuntimeError, match="foreign"):
             linux_containers._load_wsl_process_api(selected)
+    elif not owned_stdin:
+        with pytest.raises(RuntimeError, match="lacks owned-stdin"):
+            linux_containers._load_wsl_process_api(selected)
     else:
         loaded, material = linux_containers._load_wsl_process_api(selected)
         assert loaded is api
@@ -762,11 +775,12 @@ def test_wsl_loader_binds_all_new_material_modules_and_restores_search_path(tmp_
     assert sys.path == original_path
 
 
-def test_failed_linux_teardown_still_reaps_the_owned_windows_proxy(owned_wsl_lifetime):
-    session, _state, _stopped, children, _helper = owned_wsl_lifetime
+def test_failed_linux_teardown_still_reaps_the_owned_windows_proxy(owned_wsl_lifetime, monkeypatch):
+    session, state, _stopped, children, _helper = owned_wsl_lifetime
+    state["ignore_eof"] = True
+    monkeypatch.setattr(linux_containers, "_WSL_STOP_TIMEOUT", 0.05)
     def failed_stop(process):
         raise RuntimeError("Synthetic Linux cleanup failure")
-    session.api = None
     with pytest.raises(RuntimeError, match="lifetime cleanup failed"):
         with session:
             session.api.stop_process = failed_stop
@@ -774,8 +788,10 @@ def test_failed_linux_teardown_still_reaps_the_owned_windows_proxy(owned_wsl_lif
     assert session.receipt["status"] == "cleanup-failed"
 
 
-def test_changed_pid_file_cannot_redirect_teardown_to_an_unrelated_pid(owned_wsl_lifetime):
-    session, _state, stopped, children, _helper = owned_wsl_lifetime
+def test_changed_pid_file_cannot_redirect_teardown_to_an_unrelated_pid(owned_wsl_lifetime, monkeypatch):
+    session, state, stopped, children, _helper = owned_wsl_lifetime
+    state["ignore_eof"] = True
+    monkeypatch.setattr(linux_containers, "_WSL_STOP_TIMEOUT", 0.05)
     with pytest.raises(RuntimeError, match="identity changed"):
         with session:
             session.process.pid_path.write_text("999\n", encoding="ascii")
@@ -806,18 +822,12 @@ def test_wsl_pid_path_preserves_regular_output_and_maps_owned_mount_alias(owned_
 def test_wsl_owned_alias_closes_after_child_and_proxy_teardown(owned_wsl_lifetime):
     session, _state, _stopped, children, _helper = owned_wsl_lifetime
     events = []
-    # Load the same selected fixture API once before replacing only its stop hook.
     with session:
-        stop = session.api.stop_process
-        def stop_child(process):
-            events.append("stop-child")
-            stop(process)
-        session.api.stop_process = stop_child
         def close_alias():
             assert children[0].poll() is not None
             events.append("close-alias")
         session.docker.cleanup.callback(close_alias)
-    assert events == ["stop-child", "close-alias"]
+    assert events == ["close-alias"]
 
 
 def test_wsl_alias_is_closed_when_launch_fails_before_a_process_is_returned(owned_wsl_lifetime, monkeypatch):
@@ -839,3 +849,41 @@ def test_wsl_alias_is_closed_when_launch_fails_before_a_process_is_returned(owne
     assert not children and events == ["close-alias"]
     assert session.receipt["planOutcome"] == "startup-failed"
     assert session.receipt["linuxCleanup"] == "not-started"
+
+
+@pytest.mark.parametrize("phase", ["pid-readiness", "birth-capture"])
+def test_startup_cancellation_closes_owned_input_before_identity_is_ready(owned_wsl_lifetime, monkeypatch, phase):
+    session, state, stopped, children, _helper = owned_wsl_lifetime
+    state["pid_ready"] = phase != "pid-readiness"
+    def cancel(*args):
+        raise KeyboardInterrupt("Synthetic startup cancellation")
+    monkeypatch.setattr(session, "_wait_for_pid" if phase == "pid-readiness" else "_pid_birth", cancel)
+    foreign = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        with pytest.raises(KeyboardInterrupt, match="startup cancellation"):
+            with session:
+                pytest.fail("The plan must not run after startup cancellation")
+        assert children[0].stdin.closed and children[0].poll() == 0
+        assert foreign.poll() is None and stopped == []
+        assert session.receipt["status"] == "stopped"
+        assert session.receipt["linuxCleanup"] == "stdin-eof-stopped"
+        assert session.receipt["planOutcome"] == "interrupted"
+    finally:
+        foreign.terminate()
+        foreign.wait(timeout=5)
+
+
+def test_unverifiable_startup_teardown_is_failed_even_after_proxy_reaping(owned_wsl_lifetime, monkeypatch):
+    session, state, stopped, children, _helper = owned_wsl_lifetime
+    state.update(ignore_eof=True, pid_ready=False)
+    monkeypatch.setattr(linux_containers, "_WSL_STOP_TIMEOUT", 0.05)
+    def cancel():
+        raise KeyboardInterrupt("Synthetic startup cancellation")
+    monkeypatch.setattr(session, "_wait_for_pid", cancel)
+    with pytest.raises(RuntimeError, match="lifetime cleanup failed"):
+        with session:
+            pytest.fail("The plan must not run")
+    assert children[0].stdin.closed and children[0].poll() is not None
+    assert stopped == [] and session.receipt["status"] == "cleanup-failed"
+    assert "identity is incomplete" in session.receipt["cleanupError"]
