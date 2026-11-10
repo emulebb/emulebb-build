@@ -516,6 +516,9 @@ def test_workstream_push_rejects_changes_to_supporting_sources(tmp_path, monkeyp
     monkeypatch.setattr(local_checks.subprocess, "run", check)
     with pytest.raises(RuntimeError, match="Participating sources changed|clean worktree"):
         local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=root, output=output)
+    evidence = json.loads(next((output / "reports").rglob("sources.json")).read_text())
+    assert evidence["sources"]["emulebb-tooling"]["revision"] == "a" * 40
+    assert evidence["sources"]["emulebb-build"]["path"] == str(repo)
 
 
 def test_windows_full_plan_prepares_arm_explicitly_before_host_gate(tmp_path, monkeypatch):
@@ -641,6 +644,3 @@ def test_owned_wsl_lifetime_spans_source_fence_host_and_final_identity_check(tmp
     assert events.index("enter") < events.index("source-fence") < events.index("host")
     assert events[-2:] == ["plan-complete", "stop"]
     assert len(snapshots) == 2 and all("emulebb-build-tests" in sources for sources in snapshots)
-    evidence = json.loads(next((output / "reports").rglob("sources.json")).read_text())
-    assert evidence["sources"]["emulebb-tooling"]["revision"] == "a" * 40
-    assert evidence["sources"]["emulebb-build"]["path"] == str(repo)
