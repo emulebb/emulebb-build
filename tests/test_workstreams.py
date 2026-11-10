@@ -364,6 +364,172 @@ def test_cleanup_preserves_ignored_operator_files(layout):
     assert state.read_text(encoding="utf-8") == "operator state\n"
 
 
+def companion(layout):
+    return create(layout, repositories=("emulebb-rust", "emulebb-build"))
+
+
+def test_retire_integrated_companion_preserves_active_work_and_canonical_fallback(layout):
+    registration = companion(layout)
+    target = Path(registration["repositories"]["emulebb-build"]["path"])
+    rust = Path(registration["repositories"]["emulebb-rust"]["path"])
+    (rust / "sample.txt").write_text("independent unpublished work\n", encoding="utf-8")
+    ws._git(rust, "add", "sample.txt")
+    ws._git(rust, "commit", "-m", "fixture independent outcome")
+    (rust / "untracked.txt").write_text("keep operator work\n", encoding="utf-8")
+    registration["coordination"] = {"reservations": ["independent.rs"]}
+    registration["issues"] = ["https://github.com/example/project/issues/1"]
+    ws._write(layout.emule_workspace_root, layout.output_root, registration)
+    before = source_state(rust)
+    branch_head = ws._git(target, "rev-parse", "HEAD")
+    (layout.build_repo_root / "new-main.txt").write_text("new canonical producer\n", encoding="utf-8")
+    ws._git(layout.build_repo_root, "add", "new-main.txt")
+    ws._git(layout.build_repo_root, "commit", "-m", "fixture newer canonical producer")
+    ws._git(layout.build_repo_root, "push", "origin", "main")
+    result = ws.remove_repository(layout, "alpha", "emulebb-build", "parent")
+    assert result == {**registration, "repositories": {"emulebb-rust": registration["repositories"]["emulebb-rust"]}}
+    assert source_state(rust) == before and not target.exists()
+    assert ws._git(layout.build_repo_root, "rev-parse", "refs/heads/chore/alpha") == branch_head
+    verified = ws.resolve_workstream(layout.emule_workspace_root, layout.output_root, workstream_id="alpha")
+    selected = ws.apply_workstream_layout(layout, verified)
+    assert selected.build_repo_root == layout.build_repo_root
+    assert selected.emulebb_rust_repo_root == rust
+    # Selection records the actual fallback, rather than treating the retired
+    # feature commit or an old producer image as the new canonical revision.
+    assert ws._git(selected.build_repo_root, "rev-parse", "HEAD") == ws._git(layout.build_repo_root, "rev-parse", "HEAD")
+    assert ws._git(selected.build_repo_root, "rev-parse", "HEAD") != branch_head
+
+
+@pytest.mark.parametrize("blocker", ["owner", "dirty", "untracked", "ignored", "unpublished", "unmerged", "open-pr", "unknown-pr"])
+def test_retirement_refuses_unsafe_target_without_changing_registration(layout, monkeypatch, blocker):
+    registration = companion(layout)
+    target = Path(registration["repositories"]["emulebb-build"]["path"])
+    owner = "worker" if blocker == "owner" else "parent"
+    expected = {"owner": "assigned parent", "dirty": "Dirty", "untracked": "Dirty", "ignored": "Dirty",
+                "unpublished": "Unpublished", "unmerged": "Unmerged", "open-pr": "Open pull", "unknown-pr": "Cannot establish"}[blocker]
+    if blocker in {"dirty", "unpublished", "unmerged"}:
+        (target / "sample.txt").write_text("unmerged outcome\n", encoding="utf-8")
+        if blocker != "dirty":
+            ws._git(target, "add", "sample.txt")
+            ws._git(target, "commit", "-m", "fixture unmerged outcome")
+        if blocker == "unmerged":
+            ws._git(target, "push", "-u", "origin", "chore/alpha")
+    elif blocker in {"untracked", "ignored"}:
+        if blocker == "ignored":
+            exclude = Path(ws._git(target, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"))
+            exclude.write_text("operator.txt\n", encoding="utf-8")
+        (target / "operator.txt").write_text("operator data\n", encoding="utf-8")
+    elif blocker == "open-pr":
+        monkeypatch.setattr(ws, "_open_pull_requests", lambda entry: [{"number": 1}])
+    elif blocker == "unknown-pr":
+        def unknown(entry):
+            raise RuntimeError("Cannot establish PR state")
+        monkeypatch.setattr(ws, "_open_pull_requests", unknown)
+    manifest = layout.output_root / "tmp/workstreams/alpha.json"
+    before = manifest.read_bytes()
+    with pytest.raises(RuntimeError, match=expected):
+        ws.remove_repository(layout, "alpha", "emulebb-build", owner)
+    assert target.exists() and manifest.read_bytes() == before
+
+
+def test_retirement_refuses_last_repository_and_checkout_cwd(layout, monkeypatch):
+    registration = create(layout)
+    with pytest.raises(RuntimeError, match="last repository.*workstream remove"):
+        ws.remove_repository(layout, "alpha", "emulebb-rust", "parent")
+    ws.add_repository(layout, "alpha", "emulebb-build")
+    monkeypatch.chdir(Path(registration["repositories"]["emulebb-rust"]["path"]))
+    with pytest.raises(RuntimeError, match="outside the checkout"):
+        ws.remove_repository(layout, "alpha", "emulebb-rust", "parent")
+
+
+def test_retirement_of_previously_admitted_optional_companion_does_not_readmit_it(layout, tmp_path):
+    admitted = optional_anchor(layout, tmp_path, "emulebb-pages")
+    registration = create(admitted, repositories=("emulebb-rust", "emulebb-pages"))
+    path = Path(registration["repositories"]["emulebb-pages"]["path"])
+    result = ws.remove_repository(layout, "alpha", "emulebb-pages", "parent")
+    assert list(result["repositories"]) == ["emulebb-rust"] and not path.exists()
+    assert ws.apply_workstream_layout(layout, result).emulebb_pages_repo_root is None
+
+
+def test_retirement_accepts_rebase_integration_and_retains_original_history(layout):
+    registration = companion(layout)
+    path = Path(registration["repositories"]["emulebb-build"]["path"])
+    (path / "sample.txt").write_text("integrated change\n", encoding="utf-8")
+    ws._git(path, "add", "sample.txt")
+    ws._git(path, "commit", "-m", "fixture integrated feature")
+    original = ws._git(path, "rev-parse", "HEAD")
+    canonical = layout.build_repo_root
+    (canonical / "other.txt").write_text("independent main\n", encoding="utf-8")
+    ws._git(canonical, "add", "other.txt")
+    ws._git(canonical, "commit", "-m", "fixture independent main")
+    ws._git(canonical, "cherry-pick", original)
+    ws._git(canonical, "push", "origin", "main")
+    assert ws._git(canonical, "rev-parse", "HEAD") != original
+    ws.remove_repository(layout, "alpha", "emulebb-build", "parent")
+    assert ws._git(canonical, "rev-parse", "refs/heads/chore/alpha") == original
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("after_removal", [False, True])
+def test_retirement_journal_resumes_before_or_after_git_removal(layout, monkeypatch, after_removal):
+    registration = companion(layout)
+    target = Path(registration["repositories"]["emulebb-build"]["path"])
+    original_git = ws._git
+    def interrupt(repo, *args, **kwargs):
+        if args[:2] == ("worktree", "remove"):
+            if after_removal:
+                original_git(repo, *args, **kwargs)
+            raise RuntimeError("fixture interrupted removal")
+        return original_git(repo, *args, **kwargs)
+    monkeypatch.setattr(ws, "_git", interrupt)
+    with pytest.raises(RuntimeError, match="interrupted removal"):
+        ws.remove_repository(layout, "alpha", "emulebb-build", "parent")
+    assert target.exists() is not after_removal
+    with pytest.raises(RuntimeError, match="rerun workstream remove-repo"):
+        ws.resolve_workstream(layout.emule_workspace_root, layout.output_root, workstream_id="alpha")
+    assert ws.workstream_status(layout, "alpha")[0]["verification"] == "invalid"
+    with pytest.raises(RuntimeError, match="conflicting.*journal"):
+        ws.remove_repository(layout, "alpha", "emulebb-rust", "parent")
+    with pytest.raises(RuntimeError, match="assigned parent"):
+        ws.remove_repository(layout, "alpha", "emulebb-build", "worker")
+    monkeypatch.setattr(ws, "_git", original_git)
+    result = ws.remove_repository(layout, "alpha", "emulebb-build", "parent")
+    assert result["state"] == "ready" and "retirement" not in result
+    assert list(result["repositories"]) == ["emulebb-rust"] and not target.exists()
+    assert ws._git(layout.build_repo_root, "rev-parse", "refs/heads/chore/alpha") == registration["repositories"]["emulebb-build"]["base_revision"]
+
+
+def test_retirement_retry_refuses_changed_branch_and_dangling_git_administration(layout, monkeypatch):
+    registration = companion(layout)
+    target = Path(registration["repositories"]["emulebb-build"]["path"])
+    original_write = ws._write
+    def interrupt_final(root, output, value, **kwargs):
+        if value["state"] == "ready":
+            raise RuntimeError("fixture final write interrupted")
+        original_write(root, output, value, **kwargs)
+    monkeypatch.setattr(ws, "_write", interrupt_final)
+    with pytest.raises(RuntimeError, match="final write interrupted"):
+        ws.remove_repository(layout, "alpha", "emulebb-build", "parent")
+    monkeypatch.setattr(ws, "_write", original_write)
+    assert not target.exists()
+    head = ws._git(layout.build_repo_root, "rev-parse", "HEAD")
+    (layout.build_repo_root / "other.txt").write_text("new canonical work\n", encoding="utf-8")
+    ws._git(layout.build_repo_root, "add", "other.txt")
+    ws._git(layout.build_repo_root, "commit", "-m", "fixture new main")
+    ws._git(layout.build_repo_root, "push", "origin", "main")
+    ws._git(layout.build_repo_root, "update-ref", "refs/heads/chore/alpha", "HEAD")
+    with pytest.raises(RuntimeError, match="branch changed"):
+        ws.remove_repository(layout, "alpha", "emulebb-build", "parent")
+    ws._git(layout.build_repo_root, "update-ref", "refs/heads/chore/alpha", head)
+    # A folder removed outside Git is not the successful removal recorded by
+    # our journal; keep its administration and refuse implicit pruning.
+    ws._git(layout.build_repo_root, "worktree", "add", str(target), "chore/alpha")
+    moved = target.with_name("operator-moved-checkout")
+    target.rename(moved)
+    with pytest.raises(RuntimeError, match="administration remains"):
+        ws.remove_repository(layout, "alpha", "emulebb-build", "parent")
+    assert moved.is_dir()
+
+
 # These subprocesses use only disposable fixture roots. A separate process is
 # essential: a same-process lock mock cannot prove Windows/POSIX exclusion or
 # release after an abrupt exit.
@@ -400,6 +566,19 @@ elif mode == 'create':
         return original(repo, *args, **kwargs)
     ws._git = pause
     ws.create_workstream(layout, 'contended', 'chore/contended', 'parent', ('emulebb-rust',))
+elif mode in ('retire-before', 'retire-after'):
+    original = ws._git
+    def pause(repo, *args, **kwargs):
+        if args[:2] == ('worktree', 'remove'):
+            if mode == 'retire-after':
+                result = original(repo, *args, **kwargs)
+                wait()
+                return result
+            wait()
+        return original(repo, *args, **kwargs)
+    ws._git = pause
+    ws._open_pull_requests = lambda entry: []
+    ws.remove_repository(layout, 'alpha', 'emulebb-build', 'parent')
 """
 
 
@@ -455,6 +634,32 @@ def source_state(repo):
     }
 
 
+@pytest.mark.parametrize("mode", ["retire-before", "retire-after"])
+def test_crashed_retirement_releases_guards_and_resumes_with_supported_cli(layout, tmp_path, monkeypatch, mode):
+    from click.testing import CliRunner
+    from emule_workspace import cli
+    from emule_workspace.config import WorkspaceOptions
+
+    original = companion(layout)
+    rust = Path(original["repositories"]["emulebb-rust"]["path"])
+    rust_before = source_state(rust)
+    options = WorkspaceOptions(workspace_root=layout.emule_workspace_root, output_root=layout.output_root)
+    monkeypatch.chdir(layout.build_repo_root)
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: layout)
+    with lifecycle_child(layout, tmp_path, mode, crash=True):
+        receipt = (layout.output_root / "tmp/workstreams/alpha.json").read_bytes()
+        assert json.loads(receipt)["state"] == "retiring-repository"
+        with pytest.raises(RuntimeError, match="lifecycle busy"):
+            ws.remove_repository(layout, "alpha", "emulebb-build", "parent")
+    result = CliRunner().invoke(cli.main, ["workstream", "remove-repo", "alpha",
+                                          "--repo", "emulebb-build", "--owner", "parent"])
+    assert result.exit_code == 0, result.output
+    assert list(json.loads(result.output)["repositories"]) == ["emulebb-rust"]
+    assert source_state(rust) == rust_before
+    assert not (layout.output_root / "tmp/active-command-lock.json").exists()
+
+
 def test_cli_creates_during_real_heavy_lock_without_changing_active_sources(layout, tmp_path, monkeypatch):
     from click.testing import CliRunner
     from emule_workspace import cli
@@ -498,7 +703,8 @@ def test_cli_creates_during_real_heavy_lock_without_changing_active_sources(layo
         assert registration_path.read_bytes() == registration_before
         assert {str(repo): source_state(repo) for repo in [*ws._sources(layout).values(), active_repo]} == before
         for arguments in (["add-repo", "alpha", "--repo", "emulebb-tooling"],
-                          ["remove", "alpha", "--owner", "parent"]):
+                          ["remove", "alpha", "--owner", "parent"],
+                          ["remove-repo", "alpha", "--repo", "emulebb-rust", "--owner", "parent"]):
             blocked = CliRunner().invoke(cli.main, ["workstream", *arguments])
             assert blocked.exit_code != 0 and "Workspace busy" in blocked.output
         assert registration_path.read_bytes() == registration_before
@@ -518,6 +724,8 @@ def test_concurrent_real_creator_cannot_replace_reserved_id_or_branch(layout, tm
             ws.add_repository(layout, "alpha", "emulebb-tooling")
         with pytest.raises(RuntimeError, match="lifecycle busy"):
             ws.remove_workstream(layout, "alpha", "parent")
+        with pytest.raises(RuntimeError, match="lifecycle busy"):
+            ws.remove_repository(layout, "alpha", "emulebb-rust", "parent")
         assert path.read_bytes() == reserved
     completed = path.read_bytes()
     with pytest.raises(RuntimeError, match="already registered"):

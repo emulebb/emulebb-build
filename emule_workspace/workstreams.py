@@ -194,6 +194,9 @@ def resolve_workstream(root: Path, output: Path, repo: Path | None = None,
         return None
     registration = _read(root, output, workstream_id)
     if registration.get("state") != "ready" or not registration.get("repositories"):
+        if registration.get("state") == "retiring-repository":
+            raise RuntimeError("Repository retirement is incomplete; rerun workstream remove-repo "
+                               "with the recorded repository and parent owner from outside this workstream")
         raise RuntimeError("Workstream registration is incomplete; parent recovery is required")
     for name, entry in registration["repositories"].items():
         _check_entry(root, workstream_id, name, entry)
@@ -385,6 +388,131 @@ def _open_pull_requests(entry: dict[str, Any]) -> list[dict[str, Any]]:
     return json.loads(result.stdout)
 
 
+def _removal_preflight(entry: dict[str, Any], *, abandoned: bool = False,
+                       checkout_present: bool = True) -> str:
+    """Verify cleanup eligibility without discarding a branch or checkout."""
+    path, canonical = Path(entry["path"]), Path(entry["canonical_path"])
+    if checkout_present and _git(path, "status", "--porcelain", "--ignored"):
+        raise RuntimeError("Dirty worktree; cleanup refused")
+    _git(canonical, "fetch", "origin", "main")
+    if _open_pull_requests(entry):
+        raise RuntimeError("Open pull request; cleanup refused")
+    ref = "refs/heads/" + entry["branch"]
+    head = _git(canonical, "rev-parse", "--verify", ref + "^{commit}")
+    merged = bool(_git(canonical, "branch", "-r", "--contains", head, "origin/main"))
+    if not merged:
+        # WHY: a rebase merge rewrites commit identities. Git's patch comparison
+        # recognizes equivalent published outcomes without deleting history.
+        merged = not any(line.startswith("+") for line in
+                         _git(canonical, "cherry", "origin/main", head).splitlines())
+    if not merged:
+        upstream_ref = entry["branch"] + "@{upstream}"
+        upstream = _git(canonical, "rev-parse", "--verify", upstream_ref, check=False)
+        if not upstream or _git(canonical, "rev-list", "--count", f"{upstream}..{head}") != "0":
+            raise RuntimeError("Unpublished work; cleanup refused")
+        if not abandoned:
+            raise RuntimeError("Unmerged branch; explicit parent abandonment is required")
+    return head
+
+
+def _retirement_identity(layout, registration: dict[str, Any], name: str,
+                         entry: dict[str, Any]) -> bool:
+    """Verify either the exact live checkout or its cleanly removed Git identity."""
+    root = layout.emule_workspace_root.resolve()
+    expected = _safe_path(root, root / "workspaces" / "agents" / _id(registration["id"]) / name)
+    canonical = _sources(layout).get(name)
+    if canonical is None and name in OPTIONAL_REPOSITORY_FIELDS:
+        # Retire a previously admitted optional checkout even if a subsequent
+        # setup omitted that profile. The declaration still fixes its anchor;
+        # this does not admit it as a new consumed source.
+        from .topology import canonical_topology
+        declared = canonical_topology(profiles=("public-presence",))
+        canonical = next((_safe_path(root, root / repo.relative_path.replace("\\", "/"))
+                          for repo in declared.repos if repo.name == name), None)
+    if (canonical is None or Path(entry["path"]).absolute() != expected
+            or Path(entry["canonical_path"]).absolute() != canonical
+            or entry.get("status") != "ready" or entry["branch"] != registration["branch"]
+            or _common_dir(canonical) != entry["common_dir"]
+            or _git(canonical, "remote", "get-url", "origin") != entry["origin"]):
+        raise RuntimeError("Repository retirement identity changed")
+    if expected.exists():
+        _check_entry(root, registration["id"], name, entry)
+        if Path.cwd().resolve().is_relative_to(expected):
+            raise RuntimeError("Run remove-repo from outside the checkout being retired")
+        return True
+    # WHY: a missing folder alone is not proof of a successful Git removal.
+    # Never prune dangling administration or adopt a replacement on retry.
+    records = _git(canonical, "worktree", "list", "--porcelain", "-z").split("\0")
+    if any(field.startswith("worktree ") and Path(field[9:]).absolute() == expected for field in records):
+        raise RuntimeError("Checkout is missing but Git worktree administration remains; retirement refused")
+    return False
+
+
+@_lifecycle_operation
+def remove_repository(layout, workstream_id: str, name: str, owner: str) -> dict[str, Any]:
+    """Retire one integrated companion, resuming only its exact atomic journal.
+
+    The CLI holds the heavy workspace lock before lifecycle/common-Git guards.
+    Interrupted retirement blocks all source selection until this command is
+    repeated from outside the workstream. Branches and unrelated entries remain.
+    """
+    root, output = layout.emule_workspace_root.resolve(), layout.output_root.resolve()
+    registration = _read(root, output, workstream_id)
+    if owner != registration.get("owner"):
+        raise RuntimeError("Removal must identify the assigned parent owner")
+    if name not in REPOSITORY_FIELDS or name not in registration["repositories"]:
+        raise RuntimeError("Repository is not registered in this workstream")
+    if len(registration["repositories"]) <= 1:
+        raise RuntimeError("Cannot retire the last repository; use workstream remove")
+    entry = registration["repositories"][name]
+    state = registration.get("state")
+    journal = registration.get("retirement")
+    if state == "ready":
+        if journal is not None:
+            raise RuntimeError("Ambiguous repository retirement registration")
+        resolve_workstream(root, output, workstream_id=workstream_id)
+    elif state == "retiring-repository":
+        if (not isinstance(journal, dict) or journal.get("repository") != name
+                or journal.get("entry") != entry
+                or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", str(journal.get("head", "")))):
+            raise RuntimeError("Incomplete or conflicting repository retirement journal")
+    else:
+        raise RuntimeError("Workstream registration is incomplete; retirement refused")
+    for remaining, value in registration["repositories"].items():
+        if remaining != name:
+            _check_entry(root, workstream_id, remaining, value)
+    present = _retirement_identity(layout, registration, name, entry)
+    if state == "ready" and not present:
+        raise RuntimeError("Missing checkout without a retirement journal; refusing adoption")
+    head = _removal_preflight(entry, checkout_present=present)
+    if journal is not None and head != journal["head"]:
+        raise RuntimeError("Retained branch changed during repository retirement")
+    if journal is None:
+        journal = {"repository": name, "entry": dict(entry), "head": head}
+        registration["state"], registration["retirement"] = "retiring-repository", journal
+        _write(root, output, registration)
+    if present:
+        # Recheck after network probes and the durable transition; Git's normal
+        # removal is an additional dirty/untracked guard, never a force removal.
+        _check_entry(root, workstream_id, name, entry)
+        if (_git(Path(entry["path"]), "status", "--porcelain", "--ignored")
+                or _git(Path(entry["path"]), "rev-parse", "HEAD") != head):
+            raise RuntimeError("Checkout changed during repository retirement")
+        _git(Path(entry["canonical_path"]), "worktree", "remove", entry["path"])
+    if _retirement_identity(layout, registration, name, entry):
+        raise RuntimeError("Checkout still exists after Git removal; retirement incomplete")
+    if _git(Path(entry["canonical_path"]), "rev-parse", "refs/heads/" + entry["branch"]) != head:
+        raise RuntimeError("Retained branch changed during repository retirement")
+    for remaining, value in registration["repositories"].items():
+        if remaining != name:
+            _check_entry(root, workstream_id, remaining, value)
+    del registration["repositories"][name]
+    del registration["retirement"]
+    registration["state"] = "ready"
+    _write(root, output, registration)
+    return registration
+
+
 @_lifecycle_operation
 def remove_workstream(layout, workstream_id: str, owner: str, *, abandoned: bool = False) -> None:
     """Parent-only cleanup refuses dirty, unpublished or open-PR work; never force-removes."""
@@ -392,25 +520,7 @@ def remove_workstream(layout, workstream_id: str, owner: str, *, abandoned: bool
     if owner != registration["owner"]:
         raise RuntimeError("Removal must identify the assigned parent owner")
     for entry in registration["repositories"].values():
-        path, canonical = Path(entry["path"]), Path(entry["canonical_path"])
-        if _git(path, "status", "--porcelain", "--ignored"):
-            raise RuntimeError("Dirty worktree; cleanup refused")
-        _git(canonical, "fetch", "origin", "main")
-        if _open_pull_requests(entry):
-            raise RuntimeError("Open pull request; cleanup refused")
-        head = _git(path, "rev-parse", "HEAD")
-        merged = bool(_git(path, "branch", "-r", "--contains", head, "origin/main"))
-        if not merged:
-            # WHY: a rebase merge rewrites commit identities. Git's patch comparison
-            # recognizes equivalent published outcomes without force-deleting history.
-            merged = not any(line.startswith("+") for line in
-                             _git(path, "cherry", "origin/main", "HEAD").splitlines())
-        if not merged:
-            upstream = _git(path, "rev-parse", "--verify", "@{upstream}", check=False)
-            if not upstream or _git(path, "rev-list", "--count", "@{upstream}..HEAD") != "0":
-                raise RuntimeError("Unpublished work; cleanup refused")
-            if not abandoned:
-                raise RuntimeError("Unmerged branch; explicit parent abandonment is required")
+        _removal_preflight(entry, abandoned=abandoned)
     registration["state"] = "removing"
     _write(layout.emule_workspace_root, layout.output_root, registration)
     for entry in registration["repositories"].values():
