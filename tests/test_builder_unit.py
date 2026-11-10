@@ -2,6 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import json
+import os
 import subprocess
 
 import pytest
@@ -19,7 +20,7 @@ def builder(tmp_path, monkeypatch):
     output = tmp_path / "output"
     layout = SimpleNamespace(build_repo_root=root, emule_workspace_root=workspace,
                              output_root=output, subprocess_environment=lambda: {})
-    monkeypatch.setattr("emule_workspace.git.git_output", lambda path, *args:
+    monkeypatch.setattr("emule_workspace.workstreams._git", lambda path, _policy, *args:
                         str(root) if args == ("rev-parse", "--show-toplevel") else
                         "a" * 40 if args == ("rev-parse", "HEAD") else "")
     monkeypatch.setattr(test_runs, "get_python_invocation", lambda: PythonInvocation(Path("synthetic-python")))
@@ -76,7 +77,7 @@ def test_builder_failure_is_retained_without_running_another_suite(builder, monk
 def test_builder_source_change_invalidates_successful_test_exit(builder, monkeypatch):
     layout, _calls = builder
     count = 0
-    def git(path, *args):
+    def git(path, _policy, *args):
         nonlocal count
         if args == ("rev-parse", "--show-toplevel"):
             return str(layout.build_repo_root)
@@ -84,7 +85,7 @@ def test_builder_source_change_invalidates_successful_test_exit(builder, monkeyp
             count += 1
             return ("a" if count == 1 else "b") * 40
         return ""
-    monkeypatch.setattr("emule_workspace.git.git_output", git)
+    monkeypatch.setattr("emule_workspace.workstreams._git", git)
     with pytest.raises(RuntimeError, match="source changed"):
         test_runs.invoke_builder_unit_tests(layout, paths=("tests/test_sample.py",))
     value = json.loads(next((layout.output_root / "reports/builder-unit").glob("*/results.json")).read_text())
@@ -92,7 +93,8 @@ def test_builder_source_change_invalidates_successful_test_exit(builder, monkeyp
 
 
 @pytest.mark.parametrize("content", ['<testsuites/>',
-                                    '<testsuite tests="1" failures="0" errors="0" skipped="1"/>'])
+                                    '<testsuite tests="1" failures="0" errors="0" skipped="1"/>',
+                                    '<testsuite tests="2" failures="0" errors="0" skipped="1"/>'])
 def test_empty_or_all_skipped_junit_cannot_qualify_success(builder, monkeypatch, content):
     layout, _calls = builder
     def execute(command, **kwargs):
@@ -103,6 +105,47 @@ def test_empty_or_all_skipped_junit_cannot_qualify_success(builder, monkeypatch,
         test_runs.invoke_builder_unit_tests(layout, paths=("tests/test_sample.py",))
     value = json.loads(next((layout.output_root / "reports/builder-unit").glob("*/results.json")).read_text())
     assert value["status"] == "failed" and value["exitCode"] == 0
+
+
+def test_builder_identity_queries_and_pytest_drop_foreign_git_bindings(tmp_path_factory, monkeypatch):
+    from emule_workspace.git_environment import git_environment
+    root = tmp_path_factory.mktemp("builder-git")
+    workspace, output = root / "workspace", root / "output"
+    source, foreign = workspace / "repos/emulebb-build", workspace / "repos/foreign"
+    real_run = subprocess.run
+    def git(path, *arguments):
+        return real_run(["git", "--no-optional-locks", "-C", str(path), *arguments],
+                        env=git_environment(), text=True, capture_output=True, check=True).stdout.strip()
+    for path, message in ((source, "source"), (foreign, "foreign")):
+        (path / "tests").mkdir(parents=True)
+        (path / "tests/test_sample.py").write_text("def test_sample(): pass\n", encoding="utf-8")
+        git(path, "init", "-q")
+        git(path, "add", "--", "tests/test_sample.py")
+        git(path, "-c", "user.name=Synthetic Test", "-c", "user.email=test@example.invalid", "commit", "-qm", message)
+    selected_head = git(source, "rev-parse", "HEAD")
+    assert selected_head != git(foreign, "rev-parse", "HEAD")
+    retained = {path: path.read_bytes() for repo in (source, foreign)
+                for path in (repo / ".git/index", repo / ".git/config", repo / ".git/HEAD")}
+    monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(source))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(foreign / ".git/index"))
+    environment = os.environ.copy()
+    layout = SimpleNamespace(build_repo_root=source, emule_workspace_root=workspace,
+                             output_root=output, subprocess_environment=lambda: {})
+    monkeypatch.setattr(test_runs, "get_python_invocation", lambda: PythonInvocation(Path("synthetic-python")))
+    def route(command, **kwargs):
+        if command[0] == "git":
+            return real_run(command, **kwargs)
+        assert not {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}.intersection(kwargs["env"])
+        Path(command[command.index("--junitxml") + 1]).write_text(
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"/>', encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(test_runs.subprocess, "run", route)
+    report = test_runs.invoke_builder_unit_tests(layout, paths=("tests/test_sample.py",))
+    value = json.loads((report / "results.json").read_text())
+    assert value["source"]["head"] == selected_head
+    assert os.environ == environment
+    assert retained == {path: path.read_bytes() for path in retained}
 
 
 def test_builder_cli_uses_selected_builder_owner_and_existing_lock(monkeypatch, tmp_path):

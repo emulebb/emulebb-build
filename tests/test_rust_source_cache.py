@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -87,8 +88,10 @@ def test_unqualified_cache_cleans_workspace_host_and_target_then_reuses_binding(
     runner = fake_runner(layout, calls)
     cache.ensure_rust_source_cache(layout, runner=runner, native_roots=(layout.emulebb_rust_repo_root,))
     assert calls == [["metadata", "--offline", "--locked", "--no-deps", "--format-version", "1"],
-                     ["clean", "--package", "source-cache-sample"],
-                     ["clean", "--package", "source-cache-sample", "--target", "aarch64-unknown-linux-gnu"]]
+                     ["clean", "--package", "source-cache-sample", "--profile", "dev"],
+                     ["clean", "--package", "source-cache-sample", "--profile", "release"],
+                     ["clean", "--package", "source-cache-sample", "--target", "aarch64-unknown-linux-gnu", "--profile", "dev"],
+                     ["clean", "--package", "source-cache-sample", "--target", "aarch64-unknown-linux-gnu", "--profile", "release"]]
     calls.clear()
     cache.ensure_rust_source_cache(layout, runner=runner, native_roots=(layout.emulebb_rust_repo_root,))
     assert calls == [["metadata", "--offline", "--locked", "--no-deps", "--format-version", "1"]]
@@ -109,7 +112,7 @@ def test_dirty_older_source_bytes_invalidate_without_touching_dependencies(guard
     calls.clear()
     after = cache.ensure_rust_source_cache(layout, runner=runner, native_roots=(layout.emulebb_rust_repo_root,))
     assert before["sources"] != after["sources"]
-    assert calls[1] == ["clean", "--package", "source-cache-sample"]
+    assert calls[1] == ["clean", "--package", "source-cache-sample", "--profile", "dev"]
     assert dependency.read_text() == "keep"
 
 
@@ -145,7 +148,7 @@ def test_native_material_change_invalidates_even_with_older_timestamp(guarded):
     os.utime(native / "source.c", (1, 1))
     calls.clear()
     cache.ensure_rust_source_cache(layout, runner=runner, native_roots=(native,))
-    assert calls[1] == ["clean", "--package", "source-cache-sample"]
+    assert calls[1] == ["clean", "--package", "source-cache-sample", "--profile", "dev"]
 
 
 def test_source_change_during_clean_cannot_publish_new_binding(guarded):
@@ -192,7 +195,7 @@ def test_default_native_roots_and_inherited_override_are_material_inputs(guarded
     calls.clear()
     cache.ensure_rust_source_cache(layout, runner=runner)
     assert calls[1][0] == "clean"
-    override = repository(layout.emule_workspace_root / "override", {"source.c": "override\n"})
+    override = repository(layout.emule_workspace_root.parent / "override", {"source.c": "override\n"})
     monkeypatch.setenv("MINIUPNP_ROOT", str(override))
     after = cache.ensure_rust_source_cache(layout, runner=runner)
     assert [item["root"] for item in after["sources"]][1:] == [str(override), str(pcp)]
@@ -284,7 +287,7 @@ def test_real_cargo_rebuilds_older_other_checkout_and_keeps_nonworkspace_depende
     roots = []
     for name in ("first", "second"):
         roots.append(repository(layout.emule_workspace_root / name, {
-            "Cargo.toml": '[workspace]\nmembers=["sample"]\nresolver="3"\n',
+            "Cargo.toml": '[workspace]\nmembers=["sample"]\nresolver="3"\n[profile.cache-proof]\ninherits="release"\nopt-level=0\n',
             "rust-toolchain.toml": '[toolchain]\nchannel="1.98.1"\nprofile="minimal"\n',
             "Cargo.lock": 'version=4\n[[package]]\nname="source-cache-sample"\nversion="0.1.0"\ndependencies=["synthetic-dependency"]\n[[package]]\nname="synthetic-dependency"\nversion="0.1.0"\n',
             "sample/Cargo.toml": '[package]\nname="source-cache-sample"\nversion="0.1.0"\nedition="2024"\n[dependencies]\nsynthetic-dependency={path="../../dependency"}\n',
@@ -301,19 +304,25 @@ def test_real_cargo_rebuilds_older_other_checkout_and_keeps_nonworkspace_depende
     original_environment = os.environ.copy()
     layout.emulebb_rust_repo_root = roots[0]
     first = cache._host_runner(roots[0], environment)
+    host = re.search(r"^host: (\S+)$", first(["-vV"]), re.MULTILINE).group(1)
+    modes = ([], ["--release"], ["--target", host], ["--target", host, "--release"],
+             ["--profile", "cache-proof"], ["--target", host, "--profile", "cache-proof"])
     cache.ensure_rust_source_cache(layout, runner=first, native_roots=(dependency,), prefetch=True)
-    assert "from_first_checkout ... ok" in first(["test", "--locked", "--offline"])
-    dependency_artifacts = list((layout.output_rust_target_root / "debug/deps").glob("*synthetic_dependency*.rlib"))
-    assert dependency_artifacts
+    for mode in modes:
+        assert "from_first_checkout ... ok" in first(["test", "--locked", "--offline", *mode])
+    dependency_artifacts = list(layout.output_rust_target_root.rglob("*synthetic_dependency*.rlib"))
+    assert len(dependency_artifacts) >= len(modes)
     retained = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in dependency_artifacts}
     layout.emulebb_rust_repo_root = roots[1]
     second = cache._host_runner(roots[1], environment)
-    stale = second(["test", "--locked", "--offline"])
-    assert "from_first_checkout ... ok" in stale
-    assert "from_second_checkout" not in stale
+    for mode in modes:
+        stale = second(["test", "--locked", "--offline", *mode])
+        assert "from_first_checkout ... ok" in stale
+        assert "from_second_checkout" not in stale
     cache.ensure_rust_source_cache(layout, runner=second, native_roots=(dependency,))
-    actual = second(["test", "--locked", "--offline"])
-    assert "from_second_checkout ... ok" in actual
-    assert "from_first_checkout" not in actual
+    for mode in modes:
+        actual = second(["test", "--locked", "--offline", *mode])
+        assert "from_second_checkout ... ok" in actual
+        assert "from_first_checkout" not in actual
     assert retained == {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in dependency_artifacts}
     assert os.environ == original_environment

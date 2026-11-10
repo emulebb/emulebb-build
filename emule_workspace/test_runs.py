@@ -975,9 +975,11 @@ def invoke_builder_unit_tests(layout: WorkspaceLayout, *, paths: tuple[str, ...]
     import re
     import xml.etree.ElementTree as ET
     from uuid import uuid4
-    from .git import git_output
     from .git_environment import git_environment
-    from .workstreams import _safe_path
+    from .workstreams import _safe_path, _git
+
+    def source_git(*arguments):
+        return _git(source, "--no-optional-locks", *arguments)
 
     workspace, output = layout.emule_workspace_root.resolve(), layout.output_root.resolve()
     source = _safe_path(workspace, layout.build_repo_root.absolute())
@@ -988,10 +990,10 @@ def invoke_builder_unit_tests(layout: WorkspaceLayout, *, paths: tuple[str, ...]
     for name in paths:
         if not _safe_path(source, source / name).is_file():
             raise ValueError("Selected Builder test file does not exist")
-    if Path(git_output(source, "rev-parse", "--show-toplevel").strip()).resolve() != source:
+    if Path(source_git("rev-parse", "--show-toplevel")).resolve() != source:
         raise RuntimeError("Builder tests must use the selected repository root")
-    head = git_output(source, "rev-parse", "HEAD").strip()
-    if git_output(source, "status", "--porcelain").strip():
+    head = source_git("rev-parse", "HEAD")
+    if source_git("status", "--porcelain"):
         raise RuntimeError("Builder unit qualification requires committed clean source")
     environment = git_environment()
     environment.update({key: str(value) for key, value in layout.subprocess_environment().items()})
@@ -1021,9 +1023,9 @@ def invoke_builder_unit_tests(layout: WorkspaceLayout, *, paths: tuple[str, ...]
         counts = {name: sum(int(suite.get(name, "0")) for suite in suites)
                   for name in ("tests", "failures", "errors", "skipped")}
         value["junit"] = counts
-        if counts["tests"] <= counts["skipped"] or counts["failures"] or counts["errors"]:
-            raise RuntimeError("Builder unit JUnit does not prove a passing nonempty suite")
-        if git_output(source, "rev-parse", "HEAD").strip() != head or git_output(source, "status", "--porcelain").strip():
+        if not counts["tests"] or any(counts[name] for name in ("skipped", "failures", "errors")):
+            raise RuntimeError("Builder unit JUnit does not prove a passing nonempty suite without skips")
+        if source_git("rev-parse", "HEAD") != head or source_git("status", "--porcelain"):
             raise RuntimeError("Selected Builder source changed during unit qualification")
         value["status"] = "passed"
         return report

@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import socket
 import subprocess
@@ -70,6 +70,9 @@ def _host_runner(source: Path, environment: dict[str, str]):
 
 
 def _normalized(value: str) -> str:
+    windows = PureWindowsPath(value)
+    if windows.is_absolute():
+        return windows.as_posix().casefold().rstrip("/")
     return value.replace("\\", "/").rstrip("/")
 
 
@@ -135,7 +138,10 @@ def ensure_rust_source_cache(layout, *, target: Path | None = None, runner=None,
         native_roots = _emulebb_rust_native_source_roots(layout)
     if any(not path.is_absolute() for path in native_roots):
         raise RuntimeError("Native Cargo input roots must be inherited absolute paths")
-    roots = (source, *(_safe_path(workspace, path.absolute()) for path in native_roots))
+    # Native overrides are read-only effective inputs, including operator-owned
+    # absolute checkouts outside this workspace. Cleaning still touches only the
+    # validated workspace target and its selected workspace packages.
+    roots = (source, *(path.resolve() for path in native_roots))
     identity = _source_identity(roots)
     effective = execution_identity or {}
     path = _safe_path(output, target / RECEIPT)
@@ -203,10 +209,11 @@ def ensure_rust_source_cache(layout, *, target: Path | None = None, runner=None,
     clean = ["clean", *[part for name in names for part in ("--package", name)]]
     for target_name in (None, *targets):
         arguments = clean + (["--target", target_name] if target_name else [])
-        execute(arguments)
-        for profile in profiles:
-            if profile not in {"dev", "release", "test", "bench"}:
-                execute([*arguments, "--profile", profile])
+        # Packaging uses release and explicit triples. Never rely on Cargo's
+        # unqualified-clean default to invalidate a different profile's tests.
+        for profile in ("dev", "release", *(name for name in profiles
+                                             if name not in {"dev", "release", "test", "bench"})):
+            execute([*arguments, "--profile", profile])
     if _source_identity(roots) != identity:
         raise RuntimeError("Cargo material source inputs changed during cache invalidation")
     receipt = {"schema": SCHEMA, "target": str(target), "sources": identity, "packages": names,
