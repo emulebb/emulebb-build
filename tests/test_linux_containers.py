@@ -1,7 +1,9 @@
 """Verify architecture preflight rejects advertised but unusable ARM64 execution."""
 import json
 import subprocess
-from types import SimpleNamespace
+import sys
+import time
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -580,3 +582,202 @@ def test_untraversable_windows_mount_uses_same_directory_and_cleans_alias(tmp_pa
     assert any("mount" in cmd and tmp_path.resolve().as_posix() in cmd for cmd in commands)
     assert commands[-2][-2:] == ["umount", mapped]
     assert commands[-1][-2:] == ["rmdir", mapped]
+
+
+@pytest.fixture
+def owned_wsl_lifetime(tmp_path, monkeypatch):
+    """Use real host children while modelling only the Linux identity boundary."""
+    harness = tmp_path / "harness"
+    harness.mkdir()
+    helper = harness / "helper.py"
+    helper.write_text("# Synthetic selected lifecycle input.\n")
+    state = {"boot": "00000000-0000-4000-8000-000000000001", "birth": "1234"}
+    children, stopped = [], []
+
+    def start(executable, arguments, log_path, pid_path, **kwargs):
+        assert executable.name == "sleep" and arguments == ["21600"]
+        proxy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        children.append(proxy)
+        pid_path.write_text("73\n", encoding="ascii")
+        return SimpleNamespace(proxy=proxy, pid_path=pid_path, poll=proxy.poll)
+
+    def stop(process):
+        assert process.pid_path.read_text(encoding="ascii").strip() == "73"
+        stopped.append(process.proxy.pid)
+        process.proxy.terminate()
+        process.proxy.wait(timeout=5)
+
+    api = SimpleNamespace(start_wsl_managed_executable=start, stop_process=stop)
+    monkeypatch.setattr(linux_containers, "_load_wsl_process_api", lambda path: (api, (helper,)))
+    session = linux_containers.WslValidationSession(harness, tmp_path / "evidence")
+
+    def read(path):
+        if path.endswith("boot_id"):
+            return state["boot"]
+        if not children or children[-1].poll() is not None:
+            raise subprocess.CalledProcessError(1, ["cat", path])
+        return "73 (sleep) " + " ".join(["S", *["0"] * 18, state["birth"]])
+
+    monkeypatch.setattr(session, "_read_linux", read)
+    monkeypatch.setattr(session, "_pid_exists", lambda pid: bool(children) and children[-1].poll() is None)
+    monkeypatch.setattr(session.docker, "run", lambda *args, **kwargs:
+                        SimpleNamespace(stdout=json.dumps({"Server": {"Arch": "amd64", "Version": "synthetic"}})))
+    yield session, state, stopped, children, helper
+    for child in children:
+        if child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
+def test_wsl_lifetime_reaps_only_its_owned_proxy_on_every_plan_exit(owned_wsl_lifetime, outcome):
+    session, _state, stopped, children, _helper = owned_wsl_lifetime
+    foreign = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        if outcome == "success":
+            with session:
+                session.check("host-stage")
+        else:
+            error = KeyboardInterrupt if outcome == "cancel" else RuntimeError
+            with pytest.raises(error):
+                with session:
+                    raise error("Synthetic check interruption")
+        assert stopped == [children[0].pid]
+        assert children[0].poll() is not None
+        assert foreign.poll() is None
+        receipt = json.loads((session.evidence / "wsl-session.json").read_text())
+        assert receipt["status"] == "stopped"
+        assert receipt["planOutcome"] == {"success": "completed", "failure": "failed", "cancel": "interrupted"}[outcome]
+        assert receipt["helperSources"] == {"helper.py": linux_containers.hashlib.sha256(_helper.read_bytes()).hexdigest()}
+    finally:
+        foreign.terminate()
+        foreign.wait(timeout=5)
+
+
+@pytest.mark.parametrize("change", ["boot", "birth"])
+def test_wsl_restart_or_pid_reuse_never_signals_the_new_linux_identity(owned_wsl_lifetime, change):
+    session, state, stopped, children, _helper = owned_wsl_lifetime
+    with pytest.raises(RuntimeError, match="restarted|identity changed"):
+        with session:
+            state[change] = "00000000-0000-4000-8000-000000000002" if change == "boot" else "9999"
+            session.check("before-linux")
+    assert stopped == []
+    assert children[0].poll() is not None
+    assert session.receipt["linuxCleanup"] == "identity-lost-no-linux-signals"
+
+
+def test_wsl_deadline_blocks_the_next_stage_and_tears_down(owned_wsl_lifetime):
+    session, _state, stopped, children, _helper = owned_wsl_lifetime
+    with pytest.raises(RuntimeError, match="deadline"):
+        with session:
+            session.deadline = time.monotonic() - 1
+            session.check("before-linux")
+    assert stopped == [children[0].pid] and children[0].poll() is not None
+
+
+def test_wsl_early_docker_failure_reaps_lifetime_before_host_work(owned_wsl_lifetime, monkeypatch):
+    session, _state, stopped, children, _helper = owned_wsl_lifetime
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("Synthetic Docker unavailable")
+    monkeypatch.setattr(session.docker, "run", unavailable)
+    with pytest.raises(RuntimeError, match="Docker unavailable"):
+        with session:
+            pytest.fail("Host work must not start")
+    assert stopped == [children[0].pid] and children[0].poll() is not None
+
+
+def test_wsl_selected_helper_bytes_cannot_change_during_the_plan(owned_wsl_lifetime):
+    session, _state, stopped, children, helper = owned_wsl_lifetime
+    with pytest.raises(RuntimeError, match="helper sources changed"):
+        with session:
+            helper.write_text("# Changed selected helper.\n")
+            session.check("before-linux")
+    assert stopped == [children[0].pid]
+
+
+@pytest.mark.parametrize("name,relative", [
+    ("emule_test_harness", "emule_test_harness/__init__.py"),
+    ("emule_live_profile_common_rust_ed2k", "scripts/emule-live-profile-common.py"),
+    ("cached_script_alias", "scripts/emule-live-profile-common.py"),
+])
+def test_wsl_loader_refuses_foreign_cached_packages_and_script_helpers(tmp_path, monkeypatch, name, relative):
+    selected = tmp_path / "selected"
+    foreign = ModuleType(name)
+    foreign.__file__ = str(tmp_path / "foreign/emulebb-build-tests" / relative)
+    monkeypatch.setitem(sys.modules, name, foreign)
+    def must_not_import(*args, **kwargs):
+        pytest.fail("A foreign cache must fail before importing selected code")
+    monkeypatch.setattr(linux_containers.importlib, "import_module", must_not_import)
+    with pytest.raises(RuntimeError, match="foreign"):
+        linux_containers._load_wsl_process_api(selected)
+    assert sys.modules[name] is foreign
+
+
+def test_wsl_loader_refuses_same_path_cached_function_objects(tmp_path, monkeypatch):
+    selected = tmp_path / "selected"
+    cached = ModuleType("emule_test_harness")
+    cached.__file__ = str(selected / "emule_test_harness/__init__.py")
+    monkeypatch.setitem(sys.modules, "emule_test_harness", cached)
+    with pytest.raises(RuntimeError, match="fresh process"):
+        linux_containers._load_wsl_process_api(selected)
+    assert sys.modules["emule_test_harness"] is cached
+
+
+@pytest.mark.parametrize("foreign_dependency", [False, True])
+def test_wsl_loader_binds_all_new_material_modules_and_restores_search_path(tmp_path, monkeypatch, foreign_dependency):
+    selected = tmp_path / "selected"
+    api_path = selected / "emule_test_harness/rust_ed2k.py"
+    api_path.parent.mkdir(parents=True)
+    source = "def start_wsl_managed_executable(): pass\ndef stop_process(): pass\n"
+    api_path.write_text(source)
+    (api_path.parent / "wsl_managed_process.sh").write_text("#!/bin/sh\nexec \"$@\"\n")
+    api = ModuleType("emule_test_harness.rust_ed2k")
+    api.__file__ = str(api_path)
+    exec(compile(source, str(api_path), "exec"), api.__dict__)
+    script = ModuleType("emule_live_profile_common_rust_ed2k")
+    script_path = (tmp_path / "foreign/emulebb-build-tests/scripts/emule-live-profile-common.py"
+                   if foreign_dependency else selected / "scripts/emule-live-profile-common.py")
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text("# Synthetic script dependency.\n")
+    script.__file__ = str(script_path)
+    original_path = list(sys.path)
+    def selected_import(name):
+        assert sys.path[0] == str(selected)
+        sys.path.insert(0, str(selected / "scripts"))
+        monkeypatch.setitem(sys.modules, api.__name__, api)
+        monkeypatch.setitem(sys.modules, script.__name__, script)
+        return api
+    monkeypatch.setattr(linux_containers.importlib, "import_module", selected_import)
+    if foreign_dependency:
+        with pytest.raises(RuntimeError, match="foreign"):
+            linux_containers._load_wsl_process_api(selected)
+    else:
+        loaded, material = linux_containers._load_wsl_process_api(selected)
+        assert loaded is api
+        assert set(material) == {api_path, script_path, api_path.parent / "wsl_managed_process.sh"}
+    assert sys.path == original_path
+
+
+def test_failed_linux_teardown_still_reaps_the_owned_windows_proxy(owned_wsl_lifetime):
+    session, _state, _stopped, children, _helper = owned_wsl_lifetime
+    def failed_stop(process):
+        raise RuntimeError("Synthetic Linux cleanup failure")
+    session.api = None
+    with pytest.raises(RuntimeError, match="lifetime cleanup failed"):
+        with session:
+            session.api.stop_process = failed_stop
+    assert children[0].poll() is not None
+    assert session.receipt["status"] == "cleanup-failed"
+
+
+def test_changed_pid_file_cannot_redirect_teardown_to_an_unrelated_pid(owned_wsl_lifetime):
+    session, _state, stopped, children, _helper = owned_wsl_lifetime
+    with pytest.raises(RuntimeError, match="identity changed"):
+        with session:
+            session.process.pid_path.write_text("999\n", encoding="ascii")
+            session.check("before-linux")
+    assert stopped == [children[0].pid]
+    assert children[0].poll() is not None
+    assert (session.evidence / "wsl-owned-stop.pid").read_text(encoding="ascii") == "73\n"

@@ -516,6 +516,131 @@ def test_workstream_push_rejects_changes_to_supporting_sources(tmp_path, monkeyp
     monkeypatch.setattr(local_checks.subprocess, "run", check)
     with pytest.raises(RuntimeError, match="Participating sources changed|clean worktree"):
         local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=root, output=output)
+
+
+def test_windows_full_plan_prepares_arm_explicitly_before_host_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_checks, "_windows_host", lambda: True)
+    repo = tmp_path / "workspaces/agents/sample/emulebb-rust"
+    builder = tmp_path / "workspaces/agents/sample/emulebb-build"
+    plan = check_plan(repo, {"Cargo.lock"}, "push", tmp_path, tmp_path / "out",
+                      {"emulebb-build": builder}, "sample")
+    preparation = [(index, cwd, command) for index, (cwd, command) in enumerate(plan)
+                   if "linux-containers" in command]
+    assert len(preparation) == 1
+    index, cwd, command = preparation[0]
+    assert cwd == builder and "--setup-arm64" in command
+    assert command[-2:] == ["--workstream", "sample"]
+    host = next(i for i, (_cwd, args) in enumerate(plan) if "tools/rust_quality_gate.py" in args)
+    assert index < host
+    assert sum("validate-emulebb-rust-linux" in args for _, args in plan) == 1
+    assert sum("validate-rust-android" in args for _, args in plan) == 1
+
+
+@pytest.mark.parametrize("stage,paths", [("commit", {"Cargo.lock"}), ("push", {"README.md"}),
+                                         ("push", {"crates/ordinary.rs"})])
+def test_light_and_native_musl_plans_do_not_request_privileged_arm_setup(tmp_path, monkeypatch, stage, paths):
+    monkeypatch.setattr(local_checks, "_windows_host", lambda: True)
+    repo = tmp_path / "repos/emulebb-rust"
+    ordinary = repo / "crates/ordinary.rs"
+    ordinary.parent.mkdir(parents=True)
+    ordinary.write_text("pub fn ordinary() {}\n")
+    plan = check_plan(repo, paths, stage, tmp_path, tmp_path / "out")
+    assert not any("--setup-arm64" in args for _, args in plan)
+
+
+def _synthetic_check_runner(tmp_path, monkeypatch, paths, *, windows=True):
+    root, output = tmp_path, tmp_path / "output"
+    repo = root / "repos/emulebb-build"
+    repo.mkdir(parents=True)
+    monkeypatch.setattr(local_checks, "_windows_host", lambda: windows)
+    monkeypatch.setattr(local_checks, "changed_paths", lambda *args: paths)
+    monkeypatch.setattr(local_checks, "check_whitespace", lambda *args: None)
+    monkeypatch.setattr(local_checks, "git", lambda path, *args:
+                        str(path) if args == ("rev-parse", "--show-toplevel") else
+                        "a" * 40 if args == ("rev-parse", "HEAD") else "")
+    snapshots = []
+    def snapshot(sources, **kwargs):
+        snapshots.append(dict(sources))
+        return {name: {"revision": "a" * 40} for name in sources}
+    monkeypatch.setattr(local_checks, "_source_snapshot", snapshot)
+    return root, output, repo, snapshots
+
+
+def test_early_arm_failure_stops_before_expensive_host_checks_and_releases_session(tmp_path, monkeypatch):
+    from emule_workspace import linux_containers
+    root, output, repo, snapshots = _synthetic_check_runner(
+        tmp_path, monkeypatch, {"emule_workspace/linux_containers.py"})
+    events = []
+    class Lifetime:
+        def __init__(self, harness, evidence):
+            assert harness == root / "repos/emulebb-build-tests"
+        def __enter__(self):
+            events.append("enter")
+            return self
+        def check(self, stage):
+            events.append(stage)
+        def __exit__(self, *args):
+            events.append("stop")
+    monkeypatch.setattr(linux_containers, "WslValidationSession", Lifetime)
+    commands = []
+    def execute(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 9 if "linux-containers" in command else 0)
+    monkeypatch.setattr(local_checks.subprocess, "run", execute)
+    with pytest.raises(RuntimeError, match="Local check failed \\(9\\)"):
+        local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None,
+                               root=root, output=output)
+    assert events[0] == "enter" and events[-1] == "stop"
+    assert not any("pytest" in command or "validate-emulebb-rust-linux" in command for command in commands)
+    assert snapshots[0]["emulebb-build-tests"] == root / "repos/emulebb-build-tests"
+    import json
+    evidence = json.loads(next((output / "reports").rglob("results.json")).read_text())
+    assert "--setup-arm64" in evidence[-1]["command"] and evidence[-1]["returncode"] == 9
+
+
+@pytest.mark.parametrize("stage,paths,windows", [("commit", {"emule_workspace/linux_containers.py"}, True),
+                                               ("push", {"README.md"}, True),
+                                               ("push", {"emule_workspace/linux_containers.py"}, False)])
+def test_commit_docs_and_native_linux_checks_do_not_create_wsl_lifetime(tmp_path, monkeypatch, stage, paths, windows):
+    from emule_workspace import linux_containers
+    root, output, repo, snapshots = _synthetic_check_runner(tmp_path, monkeypatch, paths, windows=windows)
+    def forbidden(*args, **kwargs):
+        pytest.fail("This plan must not create a WSL lifetime")
+    monkeypatch.setattr(linux_containers, "WslValidationSession", forbidden)
+    monkeypatch.setattr(local_checks.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 0))
+    local_checks.run_checks(repo=repo, stage=stage, remote="origin", updates=None, root=root, output=output)
+    assert all("emulebb-build-tests" not in snapshot for snapshot in snapshots)
+
+
+def test_owned_wsl_lifetime_spans_source_fence_host_and_final_identity_check(tmp_path, monkeypatch):
+    from emule_workspace import linux_containers, layout, rust_source_cache
+    root, output, build_repo, snapshots = _synthetic_check_runner(tmp_path, monkeypatch, {"Cargo.lock"})
+    repo = root / "repos/emulebb-rust"
+    repo.mkdir()
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(output / "builds/rust/target"))
+    events = []
+    class Lifetime:
+        def __init__(self, *args):
+            pass
+        def __enter__(self):
+            events.append("enter")
+            return self
+        def check(self, stage):
+            events.append(stage)
+        def __exit__(self, *args):
+            events.append("stop")
+    monkeypatch.setattr(linux_containers, "WslValidationSession", Lifetime)
+    monkeypatch.setattr(layout, "load_layout", lambda *args, **kwargs: object())
+    monkeypatch.setattr(rust_source_cache, "ensure_rust_source_cache", lambda *args, **kwargs: events.append("source-fence"))
+    def execute(command, **kwargs):
+        if "tools/rust_quality_gate.py" in command:
+            events.append("host")
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(local_checks.subprocess, "run", execute)
+    local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=root, output=output)
+    assert events.index("enter") < events.index("source-fence") < events.index("host")
+    assert events[-2:] == ["plan-complete", "stop"]
+    assert len(snapshots) == 2 and all("emulebb-build-tests" in sources for sources in snapshots)
     evidence = json.loads(next((output / "reports").rglob("sources.json")).read_text())
     assert evidence["sources"]["emulebb-tooling"]["revision"] == "a" * 40
     assert evidence["sources"]["emulebb-build"]["path"] == str(repo)

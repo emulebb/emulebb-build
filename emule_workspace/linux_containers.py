@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import importlib
 import os
 import platform
 import re
@@ -12,9 +14,10 @@ import shlex
 import shutil
 import sys
 import tomllib
+import time
 from .git import git_output
 from contextlib import ExitStack
-from uuid import uuid4
+from uuid import UUID, uuid4
 from .ci_image_sources import UPSTREAM_ALPINE, UPSTREAM_RUST, UPSTREAM_RUNTIME, select_image
 
 
@@ -209,6 +212,219 @@ class LinuxDocker:
         path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"Linux container preflight passed: {path}")
         return report
+
+
+def _harness_module_path(name: str, module, harness: Path) -> Path | None:
+    """Identify selected package modules and the script helper used by its WSL API."""
+    filename = getattr(module, "__file__", None)
+    path = Path(filename).resolve() if filename else None
+    relevant = (name == "emule_test_harness" or name.startswith("emule_test_harness.")
+                or name == "emule_live_profile_common_rust_ed2k"
+                or (path is not None and (path.is_relative_to(harness)
+                    or "emule_test_harness" in path.parts
+                    or "emulebb-build-tests" in path.parts
+                    or path.name == "emule-live-profile-common.py")))
+    if not relevant:
+        return None
+    if path is None or not path.is_relative_to(harness) or path.suffix != ".py":
+        raise RuntimeError(f"WSL lifecycle helper has a foreign or missing source: {name}")
+    for package_path in getattr(module, "__path__", ()):
+        if not Path(package_path).resolve().is_relative_to(harness):
+            raise RuntimeError(f"WSL lifecycle package has a foreign search path: {name}")
+    return path
+
+
+def _load_wsl_process_api(harness: Path):
+    """Load fresh selected Harness code without repairing a foreign module cache."""
+    harness = harness.resolve()
+    for name, module in tuple(sys.modules.items()):
+        if _harness_module_path(name, module, harness) is not None:
+            # WHY: a cached module can retain older function objects even when
+            # its current filename and Git revision match the selected source.
+            raise RuntimeError("WSL lifecycle requires a fresh process without cached Harness modules")
+    original_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(harness))
+        module = importlib.import_module("emule_test_harness.rust_ed2k")
+    finally:
+        # Harness script imports may themselves insert the selected repo root.
+        sys.path[:] = original_path
+    material = {path for name, loaded in tuple(sys.modules.items())
+                if (path := _harness_module_path(name, loaded, harness)) is not None}
+    material.add(harness / "emule_test_harness/wsl_managed_process.sh")
+    if not all(path.is_file() and path.resolve().is_relative_to(harness) for path in material):
+        raise RuntimeError("WSL lifecycle helper sources must belong to the selected Harness")
+    for name in ("start_wsl_managed_executable", "stop_process"):
+        function = getattr(module, name, None)
+        code = getattr(function, "__code__", None)
+        if code is None or not Path(code.co_filename).resolve().is_relative_to(harness):
+            raise RuntimeError(f"Selected Harness is missing its WSL lifecycle API: {name}")
+    return module, tuple(sorted(material))
+
+
+class WslValidationSession:
+    """Keep one bounded, PID-backed WSL lifetime across a Windows check plan.
+
+    The selected Harness owns launch and process-group teardown. Boot identity
+    and Linux start time fence its PID file so a restarted kernel or reused PID
+    cannot authorize signalling an unrelated Linux process.
+    """
+
+    def __init__(self, harness: Path, evidence: Path, *, distro: str = "Ubuntu",
+                 lifetime_seconds: int = 21600) -> None:
+        if not distro.strip() or any(character in distro for character in "\\/\0"):
+            raise ValueError("WSL distribution must be a non-empty distribution name")
+        if not 1 <= lifetime_seconds <= 86400:
+            raise ValueError("WSL validation lifetime must be between one second and one day")
+        self.harness, self.evidence = harness.resolve(), evidence
+        self.docker, self.seconds = LinuxDocker(distro), lifetime_seconds
+        self.process = self.api = None
+        self.sources: dict[Path, str] = {}
+        self.boot_id = self.birth = None
+        self.pid = None
+        self.deadline = None
+        self.receipt = {"schema": "emulebb.wsl-validation-session/1", "status": "starting",
+                        "distribution": distro, "lifetimeSeconds": lifetime_seconds}
+
+    def _read_linux(self, path: str) -> str:
+        return subprocess.check_output([*self.docker.prefix, "cat", path], text=True,
+                                       stderr=subprocess.STDOUT, timeout=15).strip()
+
+    def _boot(self) -> str:
+        return str(UUID(self._read_linux("/proc/sys/kernel/random/boot_id")))
+
+    def _pid_birth(self, pid: int) -> str:
+        # Linux proc_pid_stat(5): comm is parenthesized and may contain spaces.
+        fields = self._read_linux(f"/proc/{pid}/stat").rpartition(")")[2].split()
+        if len(fields) < 20 or not fields[19].isdigit():
+            raise RuntimeError("WSL owned process has an invalid Linux start-time identity")
+        return fields[19]
+
+    def _pid_exists(self, pid: int) -> bool:
+        result = subprocess.run([*self.docker.prefix, "test", "-d", f"/proc/{pid}"],
+                                capture_output=True, timeout=15)
+        if result.returncode not in (0, 1):
+            raise RuntimeError("Cannot establish whether the owned WSL process still exists")
+        return result.returncode == 0
+
+    def _write_receipt(self) -> None:
+        self.evidence.mkdir(parents=True, exist_ok=True)
+        (self.evidence / "wsl-session.json").write_text(json.dumps(self.receipt, indent=2) + "\n", encoding="utf-8")
+
+    def __enter__(self):
+        self.api, material = _load_wsl_process_api(self.harness)
+        self.sources = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in material}
+        self.receipt["helperSources"] = {path.relative_to(self.harness).as_posix(): digest
+                                         for path, digest in self.sources.items()}
+        self.evidence.mkdir(parents=True, exist_ok=True)
+        try:
+            self.boot_id = self._boot()
+            self.deadline = time.monotonic() + self.seconds
+            executable = Path(f"//wsl.localhost/{self.docker.distro}/usr/bin/sleep")
+            self.process = self.api.start_wsl_managed_executable(
+                executable, [str(self.seconds)], self.evidence / "wsl-session.log",
+                self.evidence / "wsl-session.pid", distribution=self.docker.distro)
+            ready_deadline = min(self.deadline, time.monotonic() + 30)
+            while not self.process.pid_path.is_file():
+                if self.process.poll() is not None or time.monotonic() >= ready_deadline:
+                    raise RuntimeError("WSL lifetime process failed before its PID was ready")
+                time.sleep(0.05)
+            self.pid = self._read_pid()
+            self.birth = self._pid_birth(self.pid)
+            self.receipt.update(status="running", bootId=self.boot_id, linuxPid=self.pid,
+                                linuxStartTime=self.birth, proxyPid=self.process.proxy.pid)
+            self.check("session-start")
+            version = json.loads(self.docker.run("version", "--format", "{{json .}}",
+                                                capture=True, timeout=30).stdout)
+            self.receipt["docker"] = {key: version["Server"][key] for key in ("Arch", "Version")}
+            self._write_receipt()
+            print(f"Owned WSL validation lifetime: {self.seconds}s; evidence: {self.evidence}", flush=True)
+            return self
+        except BaseException:
+            self.receipt["planOutcome"] = "startup-failed"
+            self._stop()
+            raise
+
+    def _read_pid(self) -> int:
+        with self.process.pid_path.open(encoding="ascii") as source:
+            text = source.read(25)
+        if len(text) > 24 or not text.strip().isdigit() or int(text) <= 1:
+            raise RuntimeError("WSL lifetime PID file must identify an owned non-init process")
+        return int(text)
+
+    def check(self, stage: str) -> None:
+        """Fail closed before/after a stage if lifetime, kernel or sources changed."""
+        if self.process.poll() is not None or time.monotonic() >= self.deadline:
+            raise RuntimeError("WSL validation lifetime ended or reached its deadline")
+        if self._boot() != self.boot_id:
+            raise RuntimeError("WSL kernel restarted during the validation plan")
+        if self._read_pid() != self.pid or self._pid_birth(self.pid) != self.birth:
+            raise RuntimeError("WSL lifetime process identity changed")
+        if any(hashlib.sha256(path.read_bytes()).hexdigest() != digest for path, digest in self.sources.items()):
+            raise RuntimeError("Selected WSL lifecycle helper sources changed during validation")
+        self.receipt["lastVerifiedStage"] = stage
+        self._write_receipt()
+
+    def _stop(self) -> None:
+        if self.process is None:
+            return
+        failure = None
+        try:
+            same_boot = self._boot() == self.boot_id
+            same_process = False
+            if same_boot and self.pid is not None and self.birth is not None:
+                try:
+                    same_process = self._pid_birth(self.pid) == self.birth
+                except subprocess.CalledProcessError:
+                    if self._pid_exists(self.pid):
+                        raise RuntimeError("Cannot read the existing owned WSL process identity")
+                    self.receipt["linuxCleanup"] = "owned-process-absent"
+            if same_process:
+                # The live helper PID file is diagnostic input, not signalling
+                # authority after it changes. Supply the verified owned PID.
+                stop_pid = self.evidence / "wsl-owned-stop.pid"
+                with stop_pid.open("x", encoding="ascii") as target:
+                    target.write(f"{self.pid}\n")
+                original_pid = self.process.pid_path
+                try:
+                    self.process.pid_path = stop_pid
+                    self.api.stop_process(self.process)
+                finally:
+                    self.process.pid_path = original_pid
+                if self._boot() == self.boot_id and self._pid_exists(self.pid):
+                    if self._pid_birth(self.pid) == self.birth:
+                        raise RuntimeError("Owned WSL lifetime process survived teardown")
+                self.receipt["linuxCleanup"] = "owned-process-stopped"
+            elif "linuxCleanup" not in self.receipt:
+                # WHY: a PID file from an older boot is not authority to send a
+                # signal in a new kernel, even when that integer exists there.
+                self.receipt["linuxCleanup"] = "identity-lost-no-linux-signals"
+        except BaseException as error:
+            failure = error
+        finally:
+            proxy = self.process.proxy
+            try:
+                if proxy.poll() is None:
+                    proxy.terminate()
+                    try:
+                        proxy.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proxy.kill()
+                        proxy.wait(timeout=10)
+            except BaseException as error:
+                failure = failure or error
+            self.receipt["status"] = "cleanup-failed" if failure else "stopped"
+            if failure:
+                self.receipt["cleanupError"] = str(failure)
+            self._write_receipt()
+        if failure:
+            raise RuntimeError("WSL lifetime cleanup failed; inspect its session receipt") from failure
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.receipt["planOutcome"] = ("completed" if exc_type is None else
+                                       "interrupted" if issubclass(exc_type, KeyboardInterrupt) else "failed")
+        self._stop()
+        return False
 
 
 def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: Path | None = None,

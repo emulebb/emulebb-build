@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 import subprocess
 import sys
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from uuid import uuid4
 from time import perf_counter
@@ -96,6 +97,22 @@ def linux_push_scope(paths: set[str], repo: Path | None = None) -> str:
             ):
                 return "full"
     return "musl"
+
+
+def _windows_host() -> bool:
+    return os.name == "nt"
+
+
+def wsl_validation_requirements(plan: list[tuple[Path, list[str]]]) -> bool | None:
+    """Return ARM readiness needs, or None when the plan does not use WSL."""
+    uses_wsl, arm64 = False, False
+    for _cwd, command in plan:
+        if "validate-emulebb-rust-linux" in command:
+            uses_wsl = True
+            arm64 |= command[command.index("--scope") + 1] in {"full", "image"}
+        elif any(name in command for name in ("validate-rust-android", "prepare-rust-android-emulator")):
+            uses_wsl = True
+    return arm64 if uses_wsl else None
 
 
 def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path,
@@ -213,6 +230,11 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
     if stage == "push" and repo.name in {"emulebb-pages", "emulebb-org-profile"}:
         commands.append((builder, [py, "-B", "-m", "emule_workspace", "test", "public-presence",
                                    "--repo", repo.name]))
+    if stage == "push" and _windows_host() and wsl_validation_requirements(commands) is True:
+        # WHY: binfmt registration belongs to the current WSL kernel. Prepare
+        # it explicitly inside the owned lifetime, before expensive host work.
+        commands.insert(2, (builder, [py, "-B", "-m", "emule_workspace",
+                                      "linux-containers", "--setup-arm64"]))
     if workstream:
         for _cwd, command in commands:
             if "emule_workspace" in command:
@@ -302,52 +324,65 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
                      GOPATH=str(output / "cache" / "go"), GOCACHE=str(output / "cache" / "go-build"))
     reports = output / "reports" / "local-check" / repo.name / run_id
     reports.mkdir(parents=True)
-    snapshot = _source_snapshot(source_paths, clean=stage == "push")
-    (reports / "sources.json").write_text(json.dumps({"workstream": registration["id"] if registration else None,
-                                                      "sources": snapshot}, indent=2) + "\n", encoding="utf-8")
     results = []
     plan = check_plan(repo, paths, stage, root, output, source_paths,
                       registration["id"] if registration else None, paths_file)
-    if repo.name == "emulebb-rust" and stage == "push" and any(
-            not (path.endswith(".md") or path.startswith("docs/")) for path in paths):
-        # WHY: the delegated Rust gate invokes Cargo directly. Fence its selected
-        # checkout before the first Cargo freshness decision, under this owner.
-        from .layout import load_layout
-        from .workstreams import apply_workstream_layout
-        from .rust_source_cache import ensure_rust_source_cache
-        cargo_layout = load_layout(root, output_root=output)
-        if registration:
-            cargo_layout = apply_workstream_layout(cargo_layout, registration)
-        ensure_rust_source_cache(cargo_layout, prefetch=True)
-    for index, (cwd, command) in enumerate(plan):
-        print(f"Local {stage}: {' '.join(command)}", flush=True)
-        log_path = reports / f"{index:02d}.log"
-        started = perf_counter()
-        result = None
-        error = None
-        try:
-            with log_path.open("w", encoding="utf-8") as log:
-                result = subprocess.run(command, cwd=cwd, env=child_env, stdout=log, stderr=subprocess.STDOUT)
-        except OSError as exc:
-            error = str(exc)
-            raise RuntimeError(f"Cannot start required local check {command[0]}: {exc}") from exc
-        finally:
-            results.append({"command": command, "returncode": result.returncode if result else None,
-                            "log": str(log_path), "elapsed_seconds": round(perf_counter() - started, 3),
-                            "error": error})
-            (reports / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
-        print(f"Local check finished in {results[-1]['elapsed_seconds']:.3f}s", flush=True)
-        if result.returncode:
-            print("\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-25:]))
-            raise RuntimeError(f"Local check failed ({result.returncode}); evidence: {log_path}")
-    if stage == "push":
-        # WHY: a clean commit made during validation changes the checked source
-        # without leaving a dirty tree. Its gates must run before it can push.
-        if git(repo, "rev-parse", "HEAD") != checked_head:
-            raise RuntimeError("HEAD changed during validation; validate the intended commit before pushing")
-        if git(repo, "status", "--porcelain"):
-            raise RuntimeError("Validation changed the worktree; review changes before pushing")
-        if _source_snapshot(source_paths, clean=True) != snapshot:
-            raise RuntimeError("Participating sources changed during validation; validate the intended revisions")
+    owns_wsl = stage == "push" and _windows_host() and wsl_validation_requirements(plan) is not None
+    if owns_wsl:
+        # The imported lifecycle code is a selected validation input too.
+        source_paths.setdefault("emulebb-build-tests", root / "repos/emulebb-build-tests")
+    snapshot = _source_snapshot(source_paths, clean=stage == "push")
+    (reports / "sources.json").write_text(json.dumps({"workstream": registration["id"] if registration else None,
+                                                      "sources": snapshot}, indent=2) + "\n", encoding="utf-8")
+    from .linux_containers import WslValidationSession
+    lifetime = WslValidationSession(source_paths["emulebb-build-tests"], reports) if owns_wsl else nullcontext()
+    with lifetime as wsl:
+        if repo.name == "emulebb-rust" and stage == "push" and any(
+                not (path.endswith(".md") or path.startswith("docs/")) for path in paths):
+            # WHY: the delegated Rust gate invokes Cargo directly. Fence its selected
+            # checkout before the first Cargo freshness decision, under this owner.
+            from .layout import load_layout
+            from .workstreams import apply_workstream_layout
+            from .rust_source_cache import ensure_rust_source_cache
+            cargo_layout = load_layout(root, output_root=output)
+            if registration:
+                cargo_layout = apply_workstream_layout(cargo_layout, registration)
+            ensure_rust_source_cache(cargo_layout, prefetch=True)
+        for index, (cwd, command) in enumerate(plan):
+            if wsl is not None:
+                wsl.check(f"before-check-{index}")
+            print(f"Local {stage}: {' '.join(command)}", flush=True)
+            log_path = reports / f"{index:02d}.log"
+            started = perf_counter()
+            result = None
+            error = None
+            try:
+                with log_path.open("w", encoding="utf-8") as log:
+                    result = subprocess.run(command, cwd=cwd, env=child_env, stdout=log, stderr=subprocess.STDOUT)
+            except OSError as exc:
+                error = str(exc)
+                raise RuntimeError(f"Cannot start required local check {command[0]}: {exc}") from exc
+            finally:
+                results.append({"command": command, "returncode": result.returncode if result else None,
+                                "log": str(log_path), "elapsed_seconds": round(perf_counter() - started, 3),
+                                "error": error})
+                (reports / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+            print(f"Local check finished in {results[-1]['elapsed_seconds']:.3f}s", flush=True)
+            if result.returncode:
+                print("\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-25:]))
+                raise RuntimeError(f"Local check failed ({result.returncode}); evidence: {log_path}")
+            if wsl is not None:
+                wsl.check(f"after-check-{index}")
+        if stage == "push":
+            # WHY: a clean commit made during validation changes the checked source
+            # without leaving a dirty tree. Its gates must run before it can push.
+            if git(repo, "rev-parse", "HEAD") != checked_head:
+                raise RuntimeError("HEAD changed during validation; validate the intended commit before pushing")
+            if git(repo, "status", "--porcelain"):
+                raise RuntimeError("Validation changed the worktree; review changes before pushing")
+            if _source_snapshot(source_paths, clean=True) != snapshot:
+                raise RuntimeError("Participating sources changed during validation; validate the intended revisions")
+        if wsl is not None:
+            wsl.check("plan-complete")
     print(f"Local checks passed; evidence: {reports}")
     print("Other OS builds, hosted CodeQL, permissions and publication still require GitHub.")

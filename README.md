@@ -340,6 +340,29 @@ Rust eD2K index-server build example:
 
 - `python -m emule_workspace build ed2k-server --config Release --platform x64` builds the Linux-only `repos\ed2k-server` fork through WSL on Windows (or native Cargo on Linux) and stages `ed2k-server` under `EMULEBB_WORKSPACE_OUTPUT_ROOT\tools\ed2k-server\bin`. It does not launch the server or select it for test campaigns.
 
+Windows local validation owns one bounded WSL session when the push plan
+requires Linux or Android checks. It keeps that session through the source-cache
+fence, host checks, platform stages and final source verification. The selected
+Harness process helper supplies PID-backed launch and teardown; its source
+revision and material helper hashes are retained with the local-check evidence.
+Cached Harness imports are refused rather than silently replaced.
+
+Full Linux and image plans print and record an explicit
+`linux-containers --setup-arm64` preparation stage before the expensive host
+gate. That stage registers only the pinned ARM64 emulator and proves real ARM64
+execution. Ordinary native-musl and Android-only plans check Docker readiness
+without requesting ARM registration. Later platform preflights still run.
+
+The session has a six-hour ceiling, verifies boot and owned-process identity
+between stages, and stops only its own process and proxy on completion or
+interruption. Receipts are below
+`EMULEBB_WORKSPACE_OUTPUT_ROOT/reports/local-check/<repo>/<run>/wsl-session.json`.
+Commit checks, documentation-only pushes and native Linux validation do not
+create a WSL session. Inherited environment, Cargo build-job limits, normal
+hooks and the required validation matrix remain unchanged. Standalone platform
+commands still require the explicit `linux-containers --setup-arm64` operation
+when the current local kernel lacks ARM64 execution support.
+
 Python test examples:
 
 - `python-tests` runs the default fast pytest collection
