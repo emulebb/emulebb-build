@@ -21,12 +21,14 @@ def git(root, *arguments):
                           capture_output=True, text=True, check=True).stdout
 
 
-def repository(path, files):
+def repository(path, files, *, before_commit=None):
     path.mkdir(parents=True)
     for name, text in files.items():
         destination = path / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(text, encoding="utf-8")
+    if before_commit is not None:
+        before_commit(path)
     git(path, "init", "-q")
     git(path, "add", "--", *files)
     git(path, "-c", "user.name=Synthetic Test", "-c", "user.email=test@example.invalid",
@@ -284,6 +286,15 @@ def test_real_cargo_rebuilds_older_other_checkout_and_keeps_nonworkspace_depende
         "Cargo.toml": '[package]\nname="synthetic-dependency"\nversion="0.1.0"\nedition="2024"\n',
         "src/lib.rs": "pub fn value() -> u8 { 7 }\n",
     })
+    environment = git_environment()
+    environment["CARGO_TARGET_DIR"] = str(layout.output_rust_target_root)
+    cold_home = layout.output_root / "cache/synthetic-cargo-home"
+    cold_home.mkdir(parents=True)
+    environment["CARGO_HOME"] = str(cold_home)
+    def canonical_lock(path):
+        # --locked may still normalize a hand-authored lock's presentation.
+        # Generate stable Cargo-owned bytes before Git/identity/mtime setup.
+        cache._host_runner(path, environment)(["generate-lockfile", "--offline"])
     roots = []
     for name in ("first", "second"):
         roots.append(repository(layout.emule_workspace_root / name, {
@@ -292,15 +303,10 @@ def test_real_cargo_rebuilds_older_other_checkout_and_keeps_nonworkspace_depende
             "Cargo.lock": 'version=4\n[[package]]\nname="source-cache-sample"\nversion="0.1.0"\ndependencies=["synthetic-dependency"]\n[[package]]\nname="synthetic-dependency"\nversion="0.1.0"\n',
             "sample/Cargo.toml": '[package]\nname="source-cache-sample"\nversion="0.1.0"\nedition="2024"\n[dependencies]\nsynthetic-dependency={path="../../dependency"}\n',
             "sample/src/lib.rs": f'#[test] fn from_{name}_checkout() {{ assert_eq!(synthetic_dependency::value(),7); }}\n',
-        }))
+        }, before_commit=canonical_lock))
     for item in roots[1].rglob("*"):
         if item.is_file() and ".git" not in item.parts:
             os.utime(item, (1, 1))
-    environment = git_environment()
-    environment["CARGO_TARGET_DIR"] = str(layout.output_rust_target_root)
-    cold_home = layout.output_root / "cache/synthetic-cargo-home"
-    cold_home.mkdir(parents=True)
-    environment["CARGO_HOME"] = str(cold_home)
     original_environment = os.environ.copy()
     layout.emulebb_rust_repo_root = roots[0]
     first = cache._host_runner(roots[0], environment)
