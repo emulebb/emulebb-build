@@ -192,20 +192,32 @@ def test_running_managed_interpreter_cannot_uninstall_itself(installation, monke
         runtime.bootstrap(reinstall=True)
 
 
-def test_hosted_python_pins_match_the_workspace_runtime():
+def _assert_hosted_python_pins(builder):
     import yaml
 
-    builder = Path(__file__).resolve().parents[1]
     version = (builder / ".python-version").read_text().strip()
     repos = builder.parent
-    for name in ("emulebb-build", "emulebb-rust", "emulebb-build-tests", "emulebb-tooling"):
-        for path in (repos / name / ".github/workflows").glob("*.yml"):
+    # WHY: isolated or hosted checkout names need not be emulebb-build. Always
+    # inspect the selected Builder itself, then any available support checkouts.
+    roots = {builder, *(repos / name for name in
+              ("emulebb-rust", "emulebb-build-tests", "emulebb-tooling"))}
+    for root in sorted(roots):
+        for path in (root / ".github/workflows").glob("*.yml"):
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
             for job in document.get("jobs", {}).values():
                 for step in job.get("steps", []):
                     if not step.get("uses", "").startswith("actions/setup-python@"):
                         continue
-                    selected = step["with"]["python-version"]
+                    inputs = step.get("with", {})
+                    selectors = {"python-version", "python-version-file"}.intersection(inputs)
+                    assert len(selectors) == 1, f"ambiguous or missing Python selector: {path}"
+                    if "python-version-file" in selectors:
+                        assert inputs["python-version-file"] == ".python-version", str(path)
+                        selected = (root / ".python-version").read_text().strip()
+                        assert selected == version, str(path)
+                        continue
+                    else:
+                        selected = inputs["python-version"]
                     if selected == "${{ inputs.python_version }}":
                         assert document[True]["workflow_call"]["inputs"]["python_version"]["default"] == version
                     else:
@@ -213,3 +225,75 @@ def test_hosted_python_pins_match_the_workspace_runtime():
     rust_pin = repos / "emulebb-rust/tools/ci-toolchain.json"
     if rust_pin.is_file():
         assert json.loads(rust_pin.read_text())["python"] == version
+
+
+def test_hosted_python_pins_match_the_workspace_runtime():
+    _assert_hosted_python_pins(Path(__file__).resolve().parents[1])
+
+
+def _python_pin_workflow(builder, inputs, default="3.15.2"):
+    import yaml
+
+    path = builder / ".github/workflows/pin.yml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({
+        True: {"workflow_call": {"inputs": {"python_version": {"default": default}}}},
+        "jobs": {"check": {"steps": [{"uses": "actions/setup-python@synthetic", "with": inputs}]}},
+    }), encoding="utf-8")
+
+
+@pytest.mark.parametrize("inputs", [
+    {"python-version": "3.15.2"},
+    {"python-version-file": ".python-version"},
+    {"python-version": "${{ inputs.python_version }}"},
+])
+def test_hosted_pin_scanner_accepts_only_bound_supported_forms(installation, inputs):
+    _, builder, _ = installation
+    _python_pin_workflow(builder, inputs)
+    _assert_hosted_python_pins(builder)
+
+
+@pytest.mark.parametrize("inputs", [
+    {},
+    {"version": "3.15.2"},
+    {"python-version": "3.15.2", "python-version-file": ".python-version"},
+    {"python-version-file": "../.python-version"},
+    {"python-version-file": "${{ env.PYTHON_PIN }}"},
+    {"python-version": "3.13.12"},
+    {"python-version": "${{ env.PYTHON_VERSION }}"},
+])
+def test_hosted_pin_scanner_rejects_unbound_or_ambiguous_forms(installation, inputs):
+    _, builder, _ = installation
+    _python_pin_workflow(builder, inputs)
+    with pytest.raises(AssertionError):
+        _assert_hosted_python_pins(builder)
+
+
+@pytest.mark.parametrize("pin", ["3.13.12", "${{ inputs.python_version }}"])
+def test_hosted_pin_scanner_checks_the_selected_file_against_builder_authority(installation, pin):
+    root, builder, _ = installation
+    support = root / "repos/emulebb-rust"
+    support.mkdir()
+    (support / ".python-version").write_text(pin + "\n", encoding="utf-8")
+    _python_pin_workflow(support, {"python-version-file": ".python-version"})
+    with pytest.raises(AssertionError):
+        _assert_hosted_python_pins(builder)
+    (support / ".python-version").unlink()
+    with pytest.raises(FileNotFoundError):
+        _assert_hosted_python_pins(builder)
+
+
+def test_hosted_pin_scanner_rejects_a_different_reusable_input_default(installation):
+    _, builder, _ = installation
+    _python_pin_workflow(builder, {"python-version": "${{ inputs.python_version }}"}, default="3.13.12")
+    with pytest.raises(AssertionError):
+        _assert_hosted_python_pins(builder)
+
+
+def test_hosted_pin_scanner_always_inspects_a_differently_named_builder(installation):
+    _, builder, _ = installation
+    selected = builder.with_name("selected-builder")
+    builder.rename(selected)
+    _python_pin_workflow(selected, {"python-version": "3.13.12"})
+    with pytest.raises(AssertionError):
+        _assert_hosted_python_pins(selected)
