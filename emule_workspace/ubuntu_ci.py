@@ -144,13 +144,25 @@ def write_receipt(receipt: dict, path: Path | None) -> str:
     return value
 
 
-if __name__ == "__main__":
-    # Private image-construction entrypoint; hosted callers use the shared CLI.
+def image_build_main(argv: list[str] | None = None) -> None:
+    """Provision the build image and retain bounded public failure evidence."""
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image-build", action="store_true", required=True)
     parser.add_argument("--report", type=Path, required=True)
-    arguments = parser.parse_args()
+    arguments = parser.parse_args(argv)
     if os.geteuid() != 0:
         parser.error("Image construction requires the build container's root user")
-    print(write_receipt(provision_dependencies(profile="rust-prepared-builder", deadline_seconds=600), arguments.report))
+    try:
+        receipt = provision_dependencies(profile="rust-prepared-builder", deadline_seconds=600)
+    except ProvisioningError as error:
+        # WHY: failed Docker layers disappear; emit their bounded public evidence
+        # before preserving the original provisioning failure and nonzero exit.
+        print(write_receipt(error.receipt, arguments.report), flush=True)
+        raise
+    print(write_receipt(receipt, arguments.report), flush=True)
+
+
+if __name__ == "__main__":
+    # Private image-construction entrypoint; hosted callers use the shared CLI.
+    image_build_main()
