@@ -14,7 +14,7 @@ import time
 PROFILES = {
     "rust-native-release": ("dpkg-dev", "libfontconfig1-dev"),
     "rust-prepared-builder": (
-        "build-essential", "ca-certificates", "cmake", "curl", "dpkg-dev",
+        "build-essential", "ca-certificates", "cmake", "curl", "dpkg-dev", "git", "libatomic1",
         "libfontconfig1-dev", "libssl-dev", "perl", "pkg-config", "zstd",
         "libbz2-1.0", "libffi8", "liblzma5", "libncursesw6", "libreadline8t64",
         "libsqlite3-0", "libuuid1", "zlib1g",

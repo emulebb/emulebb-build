@@ -17,16 +17,17 @@ import subprocess
 import urllib.request
 
 from .git_environment import git_environment
-from .linux_containers import ALPINE_IMAGE, RUNTIME_IMAGES, RUST_IMAGES
+from .ci_image_sources import NAMESPACE, UPSTREAM_ALPINE, UPSTREAM_RUNTIME, UPSTREAM_RUST
+from .ci_linux_tools import tool_inputs
 
 ROOT = Path(__file__).resolve().parents[1]
-NAMESPACE = "ghcr.io/emulebb/emulebb-build-ci"
 PREPARED = NAMESPACE + "/ubuntu-rust"
 UBUNTU_BUILDER = "docker.io/library/ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852"
 PYTHON_IMAGE = "docker.io/library/python:3.15.2-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9"
-SOURCES = {"rust-gnu": RUST_IMAGES["gnu"], "rust-musl": RUST_IMAGES["musl"],
-           "ubuntu-runtime": RUNTIME_IMAGES["gnu"], "alpine-runtime": ALPINE_IMAGE,
-           "ubuntu-builder-base": UBUNTU_BUILDER, "python-toolchain": PYTHON_IMAGE}
+SOURCES = {"rust-gnu": UPSTREAM_RUST["gnu"], "rust-musl": UPSTREAM_RUST["musl"],
+           "ubuntu-runtime": UPSTREAM_RUNTIME["gnu"], "alpine-runtime": UPSTREAM_ALPINE,
+           "ubuntu-builder-base": UBUNTU_BUILDER, "python-toolchain": PYTHON_IMAGE,
+           "node-toolchain": tool_inputs()["node"]["image"]}
 RECIPE = "emule_workspace/release_assets/ci_linux/Dockerfile"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ACCEPT = ", ".join(("application/vnd.oci.image.index.v1+json", "application/vnd.oci.image.manifest.v1+json",
@@ -59,6 +60,7 @@ def context() -> dict:
     if python_version() != "3.15.2":
         raise RuntimeError("Update the prepared Python image with the workspace interpreter pin")
     return {"repository": "emulebb/emulebb-build", "sourceSha": sha,
+            "workflowSha": sha, "workflow": ".github/workflows/ci-linux-images.yml",
             "runId": os.environ["GITHUB_RUN_ID"], "runAttempt": os.environ["GITHUB_RUN_ATTEMPT"]}
 
 
@@ -89,7 +91,7 @@ def registry_object(reference: str, digest: str, *, client=execute) -> dict:
                                 "--format", "raw-body"], raw=True), digest)
 
 
-def replicate_sources(*, client=execute) -> list[dict]:
+def replicate_sources(*, client=execute, progress=None) -> list[dict]:
     """Copy the complete original index, including both CPUs, without relabelling."""
     records = []
     for role, source in SOURCES.items():
@@ -118,6 +120,8 @@ def replicate_sources(*, client=execute) -> list[dict]:
                 raise RuntimeError("Replicated config has the wrong native CPU")
         records.append({"role": role, "upstream": source, "mirror": target + "@" + digest,
                         "indexDigest": digest, "platforms": downstream})
+        if progress is not None:
+            progress(records)
     return records
 
 
@@ -140,15 +144,20 @@ def public_index(reference: str, expected: str) -> dict:
 
 
 def material_hashes() -> dict[str, str]:
-    paths = (RECIPE, "emule_workspace/ubuntu_ci.py", "emule_workspace/ci_linux_image_probe.py")
+    paths = (RECIPE, "emule_workspace/ubuntu_ci.py", "emule_workspace/ci_linux_image_probe.py",
+             "emule_workspace/ci_linux_tools.py", "emule_workspace/python_runtime.py",
+             "emule_workspace/release_assets/ci_linux/requirements.txt",
+             "emule_workspace/release_assets/ci_linux/toolchain.json",
+             "emule_workspace/release_assets/appimage/type2-runtime.json")
     return {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in paths}
 
 
 def prepared_bases() -> dict[str, str]:
     """Use the exact replicated source identities, never moving mirror tags."""
     return {"UBUNTU_IMAGE": NAMESPACE + "/ubuntu-builder-base@" + UBUNTU_BUILDER.rsplit("@", 1)[1],
-            "RUST_IMAGE": NAMESPACE + "/rust-gnu@" + RUST_IMAGES["gnu"].rsplit("@", 1)[1],
-            "PYTHON_IMAGE": NAMESPACE + "/python-toolchain@" + PYTHON_IMAGE.rsplit("@", 1)[1]}
+            "RUST_IMAGE": NAMESPACE + "/rust-gnu@" + UPSTREAM_RUST["gnu"].rsplit("@", 1)[1],
+            "PYTHON_IMAGE": NAMESPACE + "/python-toolchain@" + PYTHON_IMAGE.rsplit("@", 1)[1],
+            "NODE_IMAGE": NAMESPACE + "/node-toolchain@" + tool_inputs()["node"]["image"].rsplit("@", 1)[1]}
 
 
 def build_platform(arch: str, report_dir: Path, identity: dict, *, client=execute) -> dict:
@@ -159,7 +168,7 @@ def build_platform(arch: str, report_dir: Path, identity: dict, *, client=execut
     if client(["docker", "version", "--format", "{{.Server.Arch}}"]).strip() != arch:
         raise RuntimeError("Prepared compiler image requires matching Docker CPU")
     report_dir.mkdir(parents=True, exist_ok=True)
-    metadata = report_dir / "buildx-metadata.json"
+    metadata = report_dir / ("buildx-metadata-" + arch + ".json")
     materials = material_hashes()
     bases = prepared_bases()
     command = ["docker", "buildx", "build", "--platform", "linux/" + arch,
@@ -177,7 +186,8 @@ def build_platform(arch: str, report_dir: Path, identity: dict, *, client=execut
     probe = json.loads(client(["docker", "run", "--rm", "--platform", "linux/" + arch,
                               "--network", "none", "--read-only", "--cap-drop", "ALL",
                               "--security-opt", "no-new-privileges", "--user", "10000:10000",
-                              "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", PREPARED + "@" + digest,
+                              "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=1g,mode=1777",
+                              "--env", "HOME=/tmp", "--env", "NPM_CONFIG_CACHE=/tmp/npm", PREPARED + "@" + digest,
                               "python3", "-B", "-m", "emule_workspace.ci_linux_image_probe"], timeout=120))
     if probe.get("status") != "passed" or probe.get("architecture") != arch:
         raise RuntimeError("Prepared compiler native probe did not pass")
@@ -192,7 +202,12 @@ def assemble_platforms(records: list[dict], identity: dict, *, client=execute) -
         raise RuntimeError("Prepared index requires exactly two native platform receipts")
     for record in records:
         probe = record.get("probe", {})
-        if (any(record.get(key) != value for key, value in identity.items())
+        attempt = record.get("runAttempt", "")
+        current_attempt = identity.get("runAttempt", "")
+        if (any(record.get(key) != value for key, value in identity.items() if key != "runAttempt")
+                or not isinstance(attempt, str) or not re.fullmatch(r"[1-9][0-9]*", attempt)
+                or not isinstance(current_attempt, str) or not re.fullmatch(r"[1-9][0-9]*", current_attempt)
+                or int(attempt) > int(current_attempt)
                 or record.get("materials") != material_hashes() or record.get("status") != "passed"
                 or record.get("bases") != prepared_bases() or record.get("image") != PREPARED
                 or not DIGEST.fullmatch(record.get("digest", ""))
@@ -246,7 +261,19 @@ def main() -> None:
         raise RuntimeError("CI image evidence must be outside the source checkout")
     identity = context()
     if args.operation == "mirror":
-        result = {"schema": "emulebb.ci-image-mirrors/1", **identity, "images": replicate_sources()}
+        result = {"schema": "emulebb.ci-image-mirrors/1", **identity, "status": "copying", "images": []}
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        def progress(records):
+            result["images"] = records
+            args.report.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        progress([])
+        try:
+            result["images"] = replicate_sources(progress=progress)
+        except Exception:
+            result["status"] = "failed"
+            progress(result["images"])
+            raise
+        result["status"] = "copied-pending-public-read"
     elif args.operation == "build-platform":
         result = build_platform(args.architecture, args.report.parent, identity)
     else:

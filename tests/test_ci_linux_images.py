@@ -214,6 +214,28 @@ def test_actual_prepared_graph_matches_both_native_tested_outputs():
     assert create[-2:] == [images.PREPARED + "@" + record["digest"] for record in registry.records]
 
 
+def test_same_run_prior_native_attempts_are_preserved_on_public_gate_rerun():
+    registry = PreparedRegistry()
+    current = {**registry.identity, "runAttempt": "2"}
+    result = images.assemble_platforms(registry.records, current, client=registry.run)
+    assert result["runAttempt"] == "2"
+    assert [record["runAttempt"] for record in result["nativeReceipts"]] == ["1", "1"]
+
+
+@pytest.mark.parametrize("field,value", [("runAttempt", "3"), ("runAttempt", "0"), ("runAttempt", True),
+                                        ("runId", "999"), ("repository", "foreign/example"),
+                                        ("sourceSha", "c" * 40), ("workflowSha", "c" * 40)])
+def test_partial_rerun_cannot_adopt_foreign_future_or_changed_source_receipt(field, value):
+    registry = PreparedRegistry()
+    registry.identity["workflowSha"] = registry.identity["sourceSha"]
+    for record in registry.records:
+        record["workflowSha"] = registry.identity["sourceSha"]
+    registry.records[0][field] = value
+    with pytest.raises(RuntimeError, match="exact producer"):
+        images.assemble_platforms(registry.records, {**registry.identity, "runAttempt": "2"},
+                                  client=lambda *a, **k: pytest.fail("Invalid retained receipt reached publication"))
+
+
 @pytest.mark.parametrize("kwargs,diagnostic", [({"wrong_label": True}, "native config"),
                                                ({"extra_cpu": True}, "unexpected runnable CPUs")])
 def test_prepared_graph_rejects_wrong_source_labels_or_extra_runnable_cpu(kwargs, diagnostic):

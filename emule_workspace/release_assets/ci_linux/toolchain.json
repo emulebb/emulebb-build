@@ -1,0 +1,24 @@
+{
+  "node": {
+    "version": "26.13.0",
+    "image": "docker.io/library/node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68"
+  },
+  "npm": {
+    "version": "11.20.0",
+    "url": "https://registry.npmjs.org/npm/-/npm-11.20.0.tgz",
+    "sha256": "d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483"
+  },
+  "pythonPackages": {
+    "click": "8.4.1",
+    "pydantic": "2.14.3",
+    "PyYAML": "6.0.3",
+    "jsonschema": "4.26.0"
+  },
+  "appimagetool": {
+    "version": "1.9.1",
+    "sha256": {
+      "x86_64": "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0",
+      "aarch64": "f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158"
+    }
+  }
+}

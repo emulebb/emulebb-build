@@ -6,18 +6,24 @@ on:
     paths:
       - '.github/workflows/ci-linux-images.yml'
       - 'emule_workspace/ci_linux_image*.py'
+      - 'emule_workspace/ci_linux_tools.py'
+      - 'emule_workspace/ci_image_sources.py'
       - 'emule_workspace/ubuntu_ci.py'
       - 'emule_workspace/release_assets/ci_linux/**'
       - 'tests/test_ci_linux_images.py'
+      - 'tests/test_ci_linux_tools.py'
       - 'tests/test_ubuntu_ci.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/ci-linux-images.yml'
       - 'emule_workspace/ci_linux_image*.py'
+      - 'emule_workspace/ci_linux_tools.py'
+      - 'emule_workspace/ci_image_sources.py'
       - 'emule_workspace/ubuntu_ci.py'
       - 'emule_workspace/release_assets/ci_linux/**'
       - 'tests/test_ci_linux_images.py'
+      - 'tests/test_ci_linux_tools.py'
       - 'tests/test_ubuntu_ci.py'
 
 permissions:
@@ -46,7 +52,7 @@ jobs:
         run: python -m pip install click==8.4.1 pydantic==2.14.3 PyYAML==6.0.3 pytest==9.1.1
       - name: Verify source, graph and real process deadlines without APT or Docker
         run: >-
-          python -B -m pytest tests/test_ubuntu_ci.py tests/test_ci_linux_images.py
+          python -B -m pytest tests/test_ubuntu_ci.py tests/test_ci_linux_images.py tests/test_ci_linux_tools.py
           -p no:cacheprovider --basetemp "${{ runner.temp }}/ci-image-unit"
 
   mirrors:
@@ -79,10 +85,11 @@ jobs:
       - name: Replicate complete exact upstream indexes and native CPU graphs
         run: python -B -m emule_workspace.ci_linux_images mirror --report "${{ runner.temp }}/ci-images/mirrors.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
         with:
           name: ci-image-mirrors
           path: ${{ runner.temp }}/ci-images/mirrors.json
-          if-no-files-found: error
+          if-no-files-found: warn
 
   native:
     needs: mirrors
@@ -130,10 +137,13 @@ jobs:
           --architecture ${{ matrix.architecture }}
           --report "${{ runner.temp }}/ci-images/platform-${{ matrix.architecture }}.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
         with:
           name: ci-image-platform-${{ matrix.architecture }}
-          path: ${{ runner.temp }}/ci-images/platform-${{ matrix.architecture }}.json
-          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/ci-images/platform-${{ matrix.architecture }}.json
+            ${{ runner.temp }}/ci-images/buildx-metadata-${{ matrix.architecture }}.json
+          if-no-files-found: warn
 
   verify:
     needs: [mirrors, native]
