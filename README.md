@@ -346,6 +346,8 @@ fence, host checks, platform stages and final source verification. The selected
 Harness process helper supplies PID-backed launch and teardown; its source
 revision and material helper hashes are retained with the local-check evidence.
 Cached Harness imports are refused rather than silently replaced.
+Folder-mounted output paths use the existing owned DrvFS mapping; its alias
+remains available until the lifetime process and proxy have stopped.
 
 Full Linux and image plans print and record an explicit
 `linux-containers --setup-arm64` preparation stage before the expensive host
