@@ -51,11 +51,12 @@ def optional_setup_fixture(tmp_path, monkeypatch):
             return "main"
         return ""
     monkeypatch.setattr(materialize, "resolve_setup_workspace_root", lambda value: root)
+    monkeypatch.setattr(materialize, "resolve_required_workspace_roots", lambda: (root, tmp_path / "output"))
     monkeypatch.setattr(materialize, "_setup_guard", guard)
     monkeypatch.setattr(workstreams, "_git", git)
     monkeypatch.setattr(materialize, "ensure_repo_clone", lambda root, repo: calls.append(repo.name))
     monkeypatch.setattr(materialize, "install_workspace_hooks", lambda root, topology, **kwargs: calls.append(kwargs["only_repos"]))
-    monkeypatch.setattr(materialize, "log_line", lambda *args: None)
+    monkeypatch.setattr(materialize, "log_line", lambda *args: pytest.fail("Optional setup must not use the legacy source logger"))
     monkeypatch.setattr(materialize, "_sync_workspace_unlocked", lambda **kwargs: pytest.fail("Core setup must not run"))
     return root, manifest, payload, calls, core
 
@@ -65,6 +66,8 @@ def test_optional_only_setup_is_guarded_idempotent_and_preserves_core(tmp_path, 
     import os
     root, manifest, before, calls, core = optional_setup_fixture(tmp_path, monkeypatch)
     core_bytes = {path.name: path.read_bytes() for path in core.iterdir()}
+    legacy_log = root / materialize.SETUP_LOG_FILE_NAME
+    legacy_log.write_bytes(b"preserve historical setup log\n")
     environment = os.environ.copy()
     for repeat in range(2):
         materialize.sync_workspace(workspace_root=str(root), profiles=("public-presence",), optional_only=True)
@@ -76,6 +79,9 @@ def test_optional_only_setup_is_guarded_idempotent_and_preserves_core(tmp_path, 
     roles = json.loads((manifest.parent / "repo-roles.json").read_text())
     assert roles["repos"][0]["operator_note"] == "preserve unrelated role information"
     assert core_bytes == {path.name: path.read_bytes() for path in core.iterdir()}
+    assert legacy_log.read_bytes() == b"preserve historical setup log\n"
+    log = tmp_path / "output/logs/setup/workspace" / materialize.SETUP_LOG_FILE_NAME
+    assert log.read_text().splitlines() == ["Optional repository sync complete; core sources unchanged."] * 2
     assert os.environ == environment
     assert calls.count("emulebb-pages") == calls.count("emulebb-org-profile") == 2
     assert calls[0] == "guard entered" and calls[-1] == "guard released"
@@ -107,11 +113,25 @@ def test_optional_only_setup_refuses_dirty_identity_before_admission(tmp_path, m
     assert calls == ["guard entered", "guard released"]
 
 
-def test_optional_only_setup_requires_profile_and_existing_workspace(tmp_path):
+def test_optional_only_setup_requires_profile_and_existing_workspace(tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    monkeypatch.setattr(materialize, "resolve_required_workspace_roots", lambda: (root, tmp_path / "output"))
     with pytest.raises(ValueError, match="explicit optional profile"):
-        materialize._sync_optional_only(tmp_path, "workspace", ())
+        materialize._sync_optional_only(root, "workspace", ())
     with pytest.raises(FileNotFoundError):
-        materialize._sync_optional_only(tmp_path, "workspace", ("public-presence",))
+        materialize._sync_optional_only(root, "workspace", ("public-presence",))
+
+
+def test_optional_setup_log_preflight_precedes_all_mutations(tmp_path, monkeypatch):
+    root, manifest, before, calls, core = optional_setup_fixture(tmp_path, monkeypatch)
+    data = manifest.read_bytes()
+    monkeypatch.setattr(materialize, "resolve_required_workspace_roots", lambda: (root.parent, tmp_path / "output"))
+    with pytest.raises(RuntimeError, match="inherited workspace and external OUTPUT"):
+        materialize.sync_workspace(workspace_root=str(root), profiles=("public-presence",), optional_only=True)
+    assert manifest.read_bytes() == data
+    assert calls == ["guard entered", "guard released"]
+    assert not (root / materialize.SETUP_LOG_FILE_NAME).exists()
+    assert not (tmp_path / "output").exists()
 
 
 def test_hook_target_filter_never_configures_core_or_app(tmp_path, monkeypatch):
