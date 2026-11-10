@@ -14,6 +14,7 @@ from uuid import uuid4
 import xml.etree.ElementTree as ET
 
 from .git_environment import git_environment
+from .config import resolve_required_workspace_roots
 from .workstreams import OPTIONAL_REPOSITORY_FIELDS, _git, _safe_path
 
 
@@ -162,7 +163,12 @@ def validate_public_presence(layout, *, repository: str) -> Path:
                        PYTHONPYCACHEPREFIX=str(output / "cache/pycache"))
     print(f"Public presence evidence: {report_path}", flush=True)
     try:
-        layout.subprocess_environment()
+        # WHY: public checks consume source and OUTPUT, not Cargo. Validate the
+        # inherited roots without creating an unrelated Rust toolchain dependency.
+        inherited_root, inherited_output = resolve_required_workspace_roots()
+        if (inherited_root.resolve() != layout.emule_workspace_root.resolve()
+                or inherited_output.resolve() != output):
+            raise RuntimeError("Inherited workspace/OUTPUT roots must match public validation layout")
         if repository == "emulebb-pages":
             report["rendererCapabilities"] = _renderer_capabilities(sources[repository], environment)
         staging.parent.mkdir(parents=True)

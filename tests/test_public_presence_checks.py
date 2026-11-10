@@ -26,8 +26,8 @@ def public_layout(tmp_path, monkeypatch):
     profile = paths["emulebb_org_profile_repo_root"] / "profile/README.md"
     profile.parent.mkdir()
     profile.write_text("# Synthetic organization profile\n", encoding="utf-8")
-    layout = SimpleNamespace(emule_workspace_root=root, output_root=output, **paths,
-                             subprocess_environment=lambda: {})
+    layout = SimpleNamespace(emule_workspace_root=root, output_root=output, **paths)
+    monkeypatch.setattr(checks, "resolve_required_workspace_roots", lambda: (root, output))
     monkeypatch.setattr(checks, "_git", lambda path, *args:
                         str(path) if args == ("rev-parse", "--show-toplevel") else
                         "a" * 40 if args == ("rev-parse", "HEAD") else "")
@@ -106,6 +106,7 @@ def test_installer_mismatch_is_a_blocking_retained_failure(public_layout, monkey
 
 
 def test_org_checks_do_not_read_pages_or_product_sources(public_layout, monkeypatch):
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     public_layout.emulebb_pages_repo_root = None
     commands = []
     monkeypatch.setattr(checks, "_run", lambda command, **kwargs: commands.append(command))
@@ -115,6 +116,14 @@ def test_org_checks_do_not_read_pages_or_product_sources(public_layout, monkeypa
     assert set(result["sources"]) == {"emulebb-org-profile", "emulebb-tooling", "emulebb-build"}
     assert any("check-org-profile" in command for command in commands)
     assert (Path(result["staging"]) / "README.md").read_text() == "# Synthetic organization profile\n"
+
+
+def test_inherited_root_mismatch_prevents_public_commands(public_layout, monkeypatch):
+    monkeypatch.setattr(checks, "resolve_required_workspace_roots", lambda:
+                        (public_layout.emule_workspace_root, public_layout.output_root.parent))
+    monkeypatch.setattr(checks, "_run", lambda *args, **kwargs: pytest.fail("Invalid roots must block checks"))
+    with pytest.raises(RuntimeError, match="roots must match"):
+        checks.validate_public_presence(public_layout, repository="emulebb-org-profile")
 
 
 def test_consumed_authority_head_change_cannot_receive_a_pass(public_layout, monkeypatch):
