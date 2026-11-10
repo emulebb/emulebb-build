@@ -1,0 +1,202 @@
+name: Prepared Linux CI images
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/ci-linux-images.yml'
+      - 'emule_workspace/ci_linux_image*.py'
+      - 'emule_workspace/ubuntu_ci.py'
+      - 'emule_workspace/release_assets/ci_linux/**'
+      - 'tests/test_ci_linux_images.py'
+      - 'tests/test_ubuntu_ci.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ci-linux-images.yml'
+      - 'emule_workspace/ci_linux_image*.py'
+      - 'emule_workspace/ubuntu_ci.py'
+      - 'emule_workspace/release_assets/ci_linux/**'
+      - 'tests/test_ci_linux_images.py'
+      - 'tests/test_ubuntu_ci.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trusted-linux-ci-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.15.2'
+      - name: Install focused unit-test dependencies
+        run: python -m pip install click==8.4.1 pydantic==2.14.3 PyYAML==6.0.3 pytest==9.1.1
+      - name: Verify source, graph and real process deadlines without APT or Docker
+        run: >-
+          python -B -m pytest tests/test_ubuntu_ci.py tests/test_ci_linux_images.py
+          -p no:cacheprovider --basetemp "${{ runner.temp }}/ci-image-unit"
+
+  mirrors:
+    needs: tests
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'emulebb/emulebb-build' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.15.2'
+      - name: Install pinned orchestration dependencies
+        run: python -m pip install click==8.4.1 pydantic==2.14.3
+      - name: Install pinned registry client
+        uses: regclient/actions/regctl-installer@dd58ad94f76adb73d8ac1bf75ed25f01545d5b32 # v0.2.0
+        with:
+          release: v0.11.6
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Replicate complete exact upstream indexes and native CPU graphs
+        run: python -B -m emule_workspace.ci_linux_images mirror --report "${{ runner.temp }}/ci-images/mirrors.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-image-mirrors
+          path: ${{ runner.temp }}/ci-images/mirrors.json
+          if-no-files-found: error
+
+  native:
+    needs: mirrors
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'emulebb/emulebb-build' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.15.2'
+      - name: Install pinned orchestration dependencies
+        run: python -m pip install click==8.4.1 pydantic==2.14.3
+      - uses: docker/setup-docker-action@7ec28a010822b4626af4874f9448a4b05ac6f3e5 # v5.6.0
+        with:
+          version: v29.6.1
+          daemon-config: '{"features":{"containerd-snapshotter":true}}'
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          version: v0.35.0
+          driver: docker-container
+          driver-opts: image=docker.io/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build native compiler image and probe as an arbitrary non-root uid
+        run: >-
+          python -B -m emule_workspace.ci_linux_images build-platform
+          --architecture ${{ matrix.architecture }}
+          --report "${{ runner.temp }}/ci-images/platform-${{ matrix.architecture }}.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-image-platform-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/ci-images/platform-${{ matrix.architecture }}.json
+          if-no-files-found: error
+
+  verify:
+    needs: [mirrors, native]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'emulebb/emulebb-build' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.15.2'
+      - name: Install pinned orchestration dependencies
+        run: python -m pip install click==8.4.1 pydantic==2.14.3
+      - uses: regclient/actions/regctl-installer@dd58ad94f76adb73d8ac1bf75ed25f01545d5b32 # v0.2.0
+        with:
+          release: v0.11.6
+      - uses: docker/setup-docker-action@7ec28a010822b4626af4874f9448a4b05ac6f3e5 # v5.6.0
+        with:
+          version: v29.6.1
+          daemon-config: '{"features":{"containerd-snapshotter":true}}'
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          version: v0.35.0
+          driver: docker
+          use: false
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ci-image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/ci-images
+      - name: Assemble actual digest and require anonymous public readability
+        id: prepared
+        run: >-
+          python -B -m emule_workspace.ci_linux_images assemble
+          --records "${{ runner.temp }}/ci-images"
+          --report "${{ runner.temp }}/ci-images/prepared-index.json"
+          --github-output "$GITHUB_OUTPUT"
+      - name: Attest exact prepared image output
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/emulebb/emulebb-build-ci/ubuntu-rust
+          subject-digest: ${{ steps.prepared.outputs.digest }}
+          push-to-registry: true
+      - name: Attest explicit upstream and native material receipts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/ci-images/*.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: linux-ci-image-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-images/*.json
+          if-no-files-found: error

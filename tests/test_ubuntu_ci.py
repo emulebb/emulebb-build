@@ -1,6 +1,10 @@
 """Provisioning failures must be bounded and must never weaken APT trust."""
 from pathlib import Path
+import os
+import signal
 import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -139,3 +143,45 @@ def test_ci_command_rejects_local_provisioning(monkeypatch):
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     result = CliRunner().invoke(cli.main, ["provision-ubuntu-dependencies-ci", "--profile", "rust-native-release"])
     assert result.exit_code != 0 and "requires GitHub Actions" in result.output
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="GNU timeout process-group proof requires Linux")
+def test_real_deadline_stops_owned_descendant_without_using_apt(tmp_path, monkeypatch):
+    """Exercise the actual timeout wrapper against an isolated fake APT tree."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    heartbeat = tmp_path / "heartbeat"
+    child_pid = tmp_path / "child.pid"
+    dpkg = binaries / "dpkg"
+    dpkg.write_text("#!/bin/sh\nprintf 'amd64\\n'\n", encoding="utf-8")
+    dpkg.chmod(0o755)
+    fake_apt = binaries / "apt-get"
+    child = ("from pathlib import Path; import time; p=Path(" + repr(str(heartbeat)) + "); "
+             "exec('while True:\\n p.write_text(str(time.monotonic()))\\n time.sleep(0.03)')")
+    fake_apt.write_text("#!/usr/bin/env -S python3 -B\nimport subprocess,sys,time\nfrom pathlib import Path\n"
+                        "child=subprocess.Popen([sys.executable,'-B','-c'," + repr(child) + "])\n"
+                        "Path(" + repr(str(child_pid)) + ").write_text(str(child.pid))\n"
+                        "time.sleep(30)\n", encoding="utf-8")
+    fake_apt.chmod(0o755)
+    monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
+    keyring = tmp_path / "keyring"
+    keyring.write_bytes(b"synthetic keyring")
+    try:
+        with pytest.raises(ubuntu_ci.ProvisioningError):
+            ubuntu_ci.provision_dependencies(profile="rust-native-release", deadline_seconds=10, attempts=1,
+                                              os_release={"ID": "ubuntu", "VERSION_CODENAME": "noble"},
+                                              keyring=keyring, scratch_root=tmp_path, privileged=True)
+        assert heartbeat.is_file()
+        before = heartbeat.read_bytes()
+        time.sleep(0.2)
+        assert heartbeat.read_bytes() == before, "Owned descendant survived provisioning timeout"
+    finally:
+        if child_pid.exists():
+            pid = int(child_pid.read_text())
+            command = Path(f"/proc/{pid}/cmdline")
+            # Cleanup only an exact still-running fixture child, never a reused PID.
+            if command.exists() and str(heartbeat).encode() in command.read_bytes():
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
