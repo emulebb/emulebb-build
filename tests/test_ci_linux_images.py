@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import tomllib
+import urllib.error
 
 import pytest
 import yaml
@@ -95,7 +96,7 @@ def test_trusted_context_rejects_pr_before_any_git_or_registry_operation(monkeyp
 
 def test_private_package_is_actionable_failure_without_credential_changes(monkeypatch):
     def unavailable(*args, **kwargs):
-        raise OSError("synthetic anonymous denial")
+        raise urllib.error.HTTPError("https://ghcr.io/token", 403, "synthetic anonymous denial", {}, None)
     monkeypatch.setattr(images.urllib.request, "urlopen", unavailable)
     with pytest.raises(RuntimeError, match="operator must review public visibility"):
         images.public_index(images.PREPARED, "sha256:" + "a" * 64)

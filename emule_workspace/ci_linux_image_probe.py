@@ -63,6 +63,9 @@ def probe() -> dict:
     node, npm = output("node", "--version"), output("npm", "--version")
     if node != "v" + inputs["node"]["version"] or npm != inputs["npm"]["version"]:
         raise RuntimeError("Prepared frontend tools differ from the reviewed pins")
+    node_notice = Path("/opt/emulebb/licenses/Node-LICENSE").read_bytes()
+    if b"Node.js" not in node_notice or len(node_notice) < 1000:
+        raise RuntimeError("Prepared Node distribution lacks its bundled third-party notices")
     packages = {name: importlib.metadata.version(name) for name in inputs["pythonPackages"]}
     if packages != inputs["pythonPackages"]:
         raise RuntimeError("Prepared Python CLI dependencies differ from the reviewed pins")
@@ -90,6 +93,7 @@ def probe() -> dict:
             "uid": os.geteuid(), "rustc": rust, "cargo": cargo, "clippy": clippy, "rustfmt": rustfmt,
             "python": platform.python_version(), "installedPackages": installed.splitlines(),
             "packagingTools": {"node": node, "npm": npm, "pythonPackages": packages,
+                               "nodeLicenseSha256": hashlib.sha256(node_notice).hexdigest(),
                                "git": output("git", "--version"), "appimagetool": appimage_version,
                                "appimageRuntimeSha256": runtime_pin["sha256"][machine],
                                "requirementsSha256": hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest(),

@@ -98,7 +98,7 @@ def archive_digest(rust_root: Path, archive: Path, *, control_rust_root: Path | 
 
 def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version: str, image: str,
                 architectures: tuple[str, ...] = ("amd64", "arm64"), wsl_distro: str = "Ubuntu",
-                control_rust_root: Path | None = None, variant: str = "ubuntu") -> Path:
+                control_rust_root: Path | None = None, variant: str = "ubuntu", use_ci_image_mirrors: bool = False) -> Path:
     """Build an inventoried archive with fresh OS packages and an owned builder."""
     from .release import _is_release_version, _sha256, _emulebb_rust_artifact_origin
 
@@ -123,6 +123,10 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
     source = rust_root / "packaging/docker"
     if not (source / recipe).is_file():
         raise RuntimeError(f"Image Dockerfile is missing: {source}")
+    if variant == "alpine" and use_ci_image_mirrors:
+        text = (source / recipe).read_text(encoding="utf-8")
+        if "ARG ALPINE_UNPACK_IMAGE=" not in text or "FROM ${ALPINE_UNPACK_IMAGE} AS unpack" not in text:
+            raise RuntimeError("Selected Alpine recipe cannot honor the explicit mirror selector")
     if context.exists():
         shutil.rmtree(context)
     shutil.copytree(source, context)
@@ -159,6 +163,11 @@ def build_image(*, rust_root: Path, output_root: Path, assets_dir: Path, version
                    "--label", f"org.opencontainers.image.revision={report['sourceSha']}",
                    "--output", f"type=oci,dest={docker.path(archive.parent)}/{archive.name}"]
         command.append(docker.path(context))
+        if variant == "alpine" and use_ci_image_mirrors:
+            from .ci_image_sources import UPSTREAM_ALPINE, select_image
+            selected = select_image("alpine-runtime", UPSTREAM_ALPINE, True)
+            command[-1:-1] = ["--build-arg", "ALPINE_UNPACK_IMAGE=" + selected]
+            report["unpackBase"] = selected
         print(f"Building {image}; diagnostics: {log}", flush=True)
         try:
             docker.run("buildx", "create", "--name", builder, "--driver", "docker-container",

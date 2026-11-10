@@ -15,16 +15,14 @@ import tomllib
 from .git import git_output
 from contextlib import ExitStack
 from uuid import uuid4
+from .ci_image_sources import UPSTREAM_ALPINE, UPSTREAM_RUST, UPSTREAM_RUNTIME, select_image
 
 
 BINFMT_IMAGE = "docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
-ALPINE_IMAGE = "docker.io/library/alpine:3.24@sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a"
-RUST_IMAGES = {
-    "gnu": "docker.io/library/rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e",
-    "musl": "docker.io/library/rust:1.98.1-alpine3.24@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f",
-}
+ALPINE_IMAGE = UPSTREAM_ALPINE
+RUST_IMAGES = dict(UPSTREAM_RUST)
 MUSL_CROSS_IMAGE = "ghcr.io/rust-cross/rust-musl-cross:aarch64-musl@sha256:02e790506c5f15a533bc05b3af8719b16a8a2314480f6f0fdc0166432035d9b4"
-RUNTIME_IMAGES = {"musl": ALPINE_IMAGE, "gnu": "docker.io/library/ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c"}
+RUNTIME_IMAGES = dict(UPSTREAM_RUNTIME)
 
 
 def _hosted_linux_environment(architecture: str, engine_arch: str) -> list[str]:
@@ -46,14 +44,15 @@ def _hosted_linux_environment(architecture: str, engine_arch: str) -> list[str]:
     return [argument for name, value in values.items() for argument in ("--env", f"{name}={value}")]
 
 
-def build_configuration(libc: str, architecture: str, host: str) -> tuple[str, str, bool]:
+def build_configuration(libc: str, architecture: str, host: str, *, use_ci_image_mirrors: bool = False) -> tuple[str, str, bool]:
     """@brief Select native CI builds or x64-hosted ARM64 cross compilation."""
     if libc not in RUST_IMAGES or architecture not in {"amd64", "arm64"} or host not in {"amd64", "arm64"}:
         raise ValueError("Expected GNU/musl and supported Linux CPU architectures")
     cross = architecture != host
     if cross and host != "amd64":
         raise RuntimeError("Cross compilation currently requires an AMD64 host")
-    return MUSL_CROSS_IMAGE if cross and libc == "musl" else RUST_IMAGES[libc], host, cross
+    base = MUSL_CROSS_IMAGE if cross and libc == "musl" else select_image("rust-" + libc, RUST_IMAGES[libc], use_ci_image_mirrors)
+    return base, host, cross
 
 
 def linux_test_plan(scope: str, *, cross: bool, rust_root: Path | None = None) -> list[tuple[str, list[str]]]:
@@ -207,7 +206,8 @@ class LinuxDocker:
 
 
 def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: Path | None = None,
-                          release_version: str | None = None, smoke: bool = False, test_scope: str = "portable") -> Path:
+                          release_version: str | None = None, smoke: bool = False, test_scope: str = "portable",
+                          use_ci_image_mirrors: bool = False) -> Path:
     """@brief Build and inventory one GNU/musl package using pinned Docker inputs.
 
     Container paths translate valid operator roots; only generated output is
@@ -216,9 +216,11 @@ def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: P
     """
     with LinuxDocker() as docker:
         archive = _build_linux_artifacts(layout, docker, libc=libc, architecture=architecture,
-                                         webui_dist=webui_dist, release_version=release_version, test_scope=test_scope)
+                                         webui_dist=webui_dist, release_version=release_version, test_scope=test_scope,
+                                         use_ci_image_mirrors=use_ci_image_mirrors)
     if smoke:
-        smoke_linux_archive(layout, archive=archive, libc=libc, architecture=architecture)
+        smoke_linux_archive(layout, archive=archive, libc=libc, architecture=architecture,
+                            use_ci_image_mirrors=use_ci_image_mirrors)
     return archive
 
 
@@ -262,7 +264,7 @@ def _runtime_harness_source(layout, reports: Path) -> Path:
     return snapshot
 
 
-def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) -> Path:
+def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, use_ci_image_mirrors: bool = False) -> Path:
     """@brief Run the shared two-peer lifecycle harness as a non-root container user."""
     from .release import _emulebb_rust_artifact_origin, _assert_emulebb_rust_hosted_artifact
 
@@ -295,7 +297,8 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) 
     with LinuxDocker() as docker:
         host_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
         hosted_environment = _hosted_linux_environment(architecture, host_arch)
-        docker.run("build", "--platform", f"linux/{architecture}", "--build-arg", f"BASE_IMAGE={RUNTIME_IMAGES[libc]}",
+        runtime_base = select_image("alpine-runtime" if libc == "musl" else "ubuntu-runtime", RUNTIME_IMAGES[libc], use_ci_image_mirrors)
+        docker.run("build", "--platform", f"linux/{architecture}", "--build-arg", f"BASE_IMAGE={runtime_base}",
                    "--file", docker.path(context) + "/Dockerfile.runtime", "--tag", runtime, docker.path(context))
         mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
                   "--mount", f"type=bind,source={docker.path(layout.emulebb_rust_repo_root)},target=/workspace/repos/emulebb-rust,readonly",
@@ -332,7 +335,7 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) 
                 or git_output(layout.tests_repo_root, "status", "--porcelain").strip()):
             raise RuntimeError("Selected runtime harness changed while validating its snapshot")
         (reports / "runtime-inputs.json").write_text(json.dumps({
-            "runtimeBase": RUNTIME_IMAGES[libc], "filesystem": "tmpfs", "user": user,
+            "runtimeBase": runtime_base, "filesystem": "tmpfs", "user": user,
             "execution": "native" if host_arch == architecture else "qemu",
             "sourceSha": source_sha, "archiveSha256": manifest["sha256"],
             "harnessSha": git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip(),
@@ -342,7 +345,8 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str) 
 
 
 def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architecture: str,
-                           webui_dist: Path | None, release_version: str | None, test_scope: str) -> Path:
+                           webui_dist: Path | None, release_version: str | None, test_scope: str,
+                           use_ci_image_mirrors: bool = False) -> Path:
     from . import release
     if libc not in RUST_IMAGES or architecture not in {"amd64", "arm64"}:
         raise ValueError("Expected gnu/musl and amd64/arm64")
@@ -364,7 +368,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     target = f"{'x86_64' if architecture == 'amd64' else 'aarch64'}-unknown-linux-{libc}"
     engine_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True).stdout.strip()
     hosted_environment = _hosted_linux_environment(architecture, engine_arch)
-    base, build_arch, cross = build_configuration(libc, architecture, engine_arch)
+    base, build_arch, cross = build_configuration(libc, architecture, engine_arch, use_ci_image_mirrors=use_ci_image_mirrors)
     test_plan = linux_test_plan(test_scope, cross=cross, rust_root=rust)
     quality_plan = linux_quality_plan(rust, target) if test_scope == "full" else []
     user = _builder_user(docker)
@@ -494,7 +498,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                 "testCompilation": "workspace" if test_scope == "full" else "selected-libraries",
                 "testExecution": "workspace" if test_scope == "full" and not cross else "selected-libraries",
                 "testProfile": "test", "testPlan": test_plan, "qualityPlan": quality_plan,
-                "resolvedToolchain": tools,
+                "resolvedToolchain": tools, "builderBase": base,
                 "builderRecipeSha256": release._sha256(context / "Dockerfile"),
                 "cargoLockSha256": release._sha256(rust / "Cargo.lock"),
                 "files": release._staged_package_file_hashes(stage),

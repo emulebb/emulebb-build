@@ -14,7 +14,9 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import time
 import urllib.request
+import urllib.error
 
 from .git_environment import git_environment
 from .ci_image_sources import NAMESPACE, UPSTREAM_ALPINE, UPSTREAM_RUNTIME, UPSTREAM_RUST
@@ -125,22 +127,50 @@ def replicate_sources(*, client=execute, progress=None) -> list[dict]:
     return records
 
 
-def public_index(reference: str, expected: str) -> dict:
+def public_metadata_bytes(request, *, deadline: float | None = None) -> bytes:
+    """Bound unauthenticated public metadata by size and an absolute deadline."""
+    deadline = time.monotonic() + 20 if deadline is None else deadline
+    def remaining():
+        value = min(20, deadline - time.monotonic())
+        if value <= 0:
+            raise TimeoutError("Public registry metadata deadline expired")
+        return value
+    with urllib.request.urlopen(request, timeout=remaining()) as response:
+        chunks, size = [], 0
+        while True:
+            remaining()
+            # read1 performs at most one underlying read; read(n) may otherwise
+            # keep filling indefinitely when a server trickles small responses.
+            chunk = response.read1(min(65536, 1024 * 1024 + 1 - size))
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > 1024 * 1024:
+                raise RuntimeError("Public registry metadata exceeds its bound")
+
+
+def public_index(reference: str, expected: str, *, deadline: float | None = None) -> dict:
     """Prove anonymous GHCR readability; credentials remain transient in memory."""
+    deadline = time.monotonic() + 60 if deadline is None else deadline
     repository = reference.removeprefix("ghcr.io/").split("@", 1)[0]
     url = "https://ghcr.io/token?service=ghcr.io&scope=repository:" + repository + ":pull"
     try:
-        with urllib.request.urlopen(url, timeout=20) as response:
-            token = json.loads(response.read(1024 * 1024 + 1))["token"]
+        token = json.loads(public_metadata_bytes(url, deadline=deadline))["token"]
         request = urllib.request.Request("https://ghcr.io/v2/" + repository + "/manifests/" + expected,
                                          headers={"Authorization": "Bearer " + token, "Accept": ACCEPT})
-        with urllib.request.urlopen(request, timeout=20) as response:
-            raw = response.read(1024 * 1024 + 1)
+        raw = public_metadata_bytes(request, deadline=deadline)
         if len(raw) > 1024 * 1024:
             raise RuntimeError("Public registry index exceeds its metadata bound")
         return digest_bytes(raw, expected)
-    except (OSError, KeyError, ValueError) as error:
+    except urllib.error.HTTPError as error:
+        if error.code not in {401, 403}:
+            raise RuntimeError("Public CI registry metadata request failed") from error
         raise RuntimeError("Dedicated Build CI package is not anonymously readable; operator must review public visibility and Build Actions package access") from error
+    except TimeoutError as error:
+        raise RuntimeError("Public registry metadata deadline expired") from error
+    except (OSError, KeyError, ValueError) as error:
+        raise RuntimeError("Public CI registry metadata could not be verified") from error
 
 
 def material_hashes() -> dict[str, str]:

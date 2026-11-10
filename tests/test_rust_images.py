@@ -141,15 +141,18 @@ def test_hosted_oci_digest_uses_only_the_clean_workflow_pinned_control_code(host
 
 
 @pytest.mark.parametrize("fault", ["timeout", "builder-moved"])
-def test_failed_image_build_invalidates_old_sidecars_and_removes_only_its_worker(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize("variant,mirrors", [("ubuntu", False), ("alpine", True)])
+def test_failed_image_build_invalidates_old_sidecars_and_removes_only_its_worker(tmp_path, monkeypatch, fault, variant, mirrors):
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     rust = tmp_path / "rust"
     (rust / "packaging/docker").mkdir(parents=True)
     (rust / "packaging/docker/Dockerfile").write_text("FROM scratch\n")
+    (rust / "packaging/docker/Dockerfile.alpine").write_text(
+        "ARG ALPINE_UNPACK_IMAGE=synthetic\nFROM ${ALPINE_UNPACK_IMAGE} AS unpack\n")
     output = tmp_path / "output"
     assets = output / "assets"
     assets.mkdir(parents=True)
-    archive = output / "artifacts/emulebb-rust-v0.1.0-beta.2-ubuntu-multiarch.oci.tar"
+    archive = output / f"artifacts/emulebb-rust-v0.1.0-beta.2-{variant}-multiarch.oci.tar"
     archive.parent.mkdir()
     previous = (archive, archive.with_name(archive.name + ".manifest.json"), archive.with_suffix(".digest"))
     for path in previous:
@@ -185,7 +188,8 @@ def test_failed_image_build_invalidates_old_sidecars_and_removes_only_its_worker
     monkeypatch.setattr(rust_images.subprocess, "run", run)
     with pytest.raises(RuntimeError, match="diagnostics"):
         rust_images.build_image(rust_root=rust, output_root=output, assets_dir=assets,
-                                version="0.1.0-beta.2", image="local/test:beta")
+                                version="0.1.0-beta.2", image="local/test:beta", variant=variant,
+                                use_ci_image_mirrors=mirrors)
     name = calls[0][calls[0].index("--name") + 1]
     assert name.startswith("emulebb-image-")
     assert f"image={rust_images.BUILDKIT_IMAGE}" in calls[0]
@@ -199,6 +203,11 @@ def test_failed_image_build_invalidates_old_sidecars_and_removes_only_its_worker
     assert not any(path.exists() for path in previous[1:])
     build = next(command for command in calls if "--output" in command)
     assert "--no-cache" in build and "--cache-from" not in build
+    if mirrors:
+        from emule_workspace.ci_image_sources import UPSTREAM_ALPINE, select_image
+        selected = select_image("alpine-runtime", UPSTREAM_ALPINE, True)
+        assert "ALPINE_UNPACK_IMAGE=" + selected in build
+        assert json.loads(report_path.read_text())["unpackBase"] == selected
 
 
 @pytest.mark.parametrize("fault", [None, "timeout", "old-schema", "wrong-version", "root-daemon"])

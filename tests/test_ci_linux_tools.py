@@ -57,3 +57,4 @@ def test_complete_recipe_copies_tool_stages_and_runs_verification():
     assert "--from=python-toolchain /etc/ssl/certs" in recipe
     assert "ldconfig" in recipe and "emule_workspace.ci_linux_tools" in recipe
     assert "COPY emule_workspace /opt/emulebb/emule_workspace" in recipe
+    assert "COPY --from=node-toolchain /usr/local/LICENSE /opt/emulebb/licenses/Node-LICENSE" in recipe
