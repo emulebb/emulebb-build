@@ -893,13 +893,13 @@ def test_package_campaign_uses_selected_sources_and_existing_lock(tmp_path, monk
                                active_owner_text=lambda: "fixture owner")
         monkeypatch.setattr(cli, "WorkspaceLock", lambda **kwargs: lock)
         monkeypatch.setattr(cli, "invoke_rust_release_package", lambda layout, options, **kwargs:
-                            events.append((layout, kwargs["verify_profile_ownership"])))
+                            events.append((layout, kwargs["verify_profile_ownership"], kwargs["expected_channel"])))
         result = CliRunner().invoke(cli.main, ["test", "rust-release-package", "--workstream", "alpha",
             "--release-dir", str(release), "--release-version", "0.1.0-beta.2", "--target-os", "windows",
-            "--verify-profile-ownership"])
+            "--verify-profile-ownership", "--expected-channel", "nightly"])
         if acquired:
             assert result.exit_code == 0, result.output
-            assert events == ["acquire", (selected, True), "release"]
+            assert events == ["acquire", (selected, True, "nightly"), "release"]
         else:
             assert result.exit_code != 0 and "Workspace busy" in result.output
             assert events == ["acquire"]

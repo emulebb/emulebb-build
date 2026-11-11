@@ -1694,13 +1694,15 @@ def test_rust_rest_openapi(*, workspace_options: WorkspaceOptions, layout) -> No
 @click.option("--linux-libc", type=click.Choice(["gnu", "musl"]), default=None)
 @click.option("--verify-profile-ownership", is_flag=True)
 @click.option("--render-webui", is_flag=True)
+@click.option("--expected-channel", type=click.Choice(["development", "candidate", "beta", "nightly"]), default=None)
 def test_rust_release_package(*, release_dir, release_version, target_os, linux_libc,
-                              verify_profile_ownership, render_webui, workspace_options, layout) -> None:
+                              verify_profile_ownership, render_webui, expected_channel, workspace_options, layout) -> None:
     """Smoke exact-source native packages with disposable profiles and the existing lock."""
     _locked("test rust-release-package", lambda **kwargs: invoke_rust_release_package(
         kwargs["layout"], kwargs["workspace_options"], release_dir=release_dir,
         release_version=release_version, target_os=target_os, linux_libc=linux_libc,
         verify_profile_ownership=verify_profile_ownership, render_webui=render_webui,
+        expected_channel=expected_channel,
     ))(workspace_options=workspace_options, layout=layout)
 
 
