@@ -17,6 +17,33 @@ from emule_workspace.config import EmulebbRustPackageOptions, WorkspaceOptions
 from emule_workspace.layout import AppVariant, TestTargets, WorkspaceLayout
 
 
+@pytest.mark.parametrize("suffix", ["metainfo", "appdata"])
+def test_linux_metadata_validation_requires_tools_and_one_component(tmp_path, monkeypatch, suffix):
+    monkeypatch.setattr(release.sys, "platform", "linux")
+    component = "io.github.emulebb.emulebb-rust"
+    desktop = tmp_path / f"usr/share/applications/{component}.desktop"
+    metadata = tmp_path / f"usr/share/metainfo/{component}.{suffix}.xml"
+    for path in (desktop, metadata):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("synthetic", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(release, "_run_packaging_tool", lambda command, label: calls.append(command))
+    monkeypatch.setattr(release.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="desktop-file-utils and appstream"):
+        release._validate_emulebb_rust_linux_metadata(tmp_path)
+    assert calls == []
+    monkeypatch.setattr(release.shutil, "which", lambda name: "/tools/" + name)
+    release._validate_emulebb_rust_linux_metadata(tmp_path)
+    assert calls == [("/tools/desktop-file-validate", str(desktop)),
+                     ("/tools/appstreamcli", "validate-tree", "--no-net", str(tmp_path))]
+    other = "appdata" if suffix == "metainfo" else "metainfo"
+    metadata.with_name(f"{component}.{other}.xml").write_text("duplicate", encoding="utf-8")
+    calls.clear()
+    with pytest.raises(RuntimeError, match="one coherent"):
+        release._validate_emulebb_rust_linux_metadata(tmp_path)
+    assert calls == []
+
+
 @pytest.mark.parametrize(
     "release_version",
     [
@@ -1218,6 +1245,7 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     image_arch: str,
     formats: tuple[str, ...],
 ) -> None:
+    monkeypatch.setattr(release.sys, "platform", "linux")
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     layout = _make_rust_package_layout(tmp_path)
     _stage_rust_package_inputs(layout)
@@ -1229,7 +1257,7 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
         "_package_repo_provenance",
         lambda repo: {"commit": "a" * 40, "branch": "main", "remote": ""},
     )
-    monkeypatch.setattr(release.shutil, "which", lambda name: "/tools/appimagetool" if name == "appimagetool" else None)
+    monkeypatch.setattr(release.shutil, "which", lambda name: "/tools/" + name)
     dependencies = "libc6 (>= 2.39), libgcc-s1 (>= 3.0), ca-certificates"
     def resolve_dependencies(executable, scratch):
         assert "deb" in formats
@@ -1244,6 +1272,10 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     monkeypatch.setattr(release, "_emulebb_rust_appimage_runtime", lambda *_args: (runtime, runtime_info))
 
     def fake_packaging_tool(command: tuple[str, ...], _label: str) -> None:
+        if command[0] != "/tools/appimagetool":
+            assert command[0] in {"/tools/desktop-file-validate", "/tools/appstreamcli"}
+            return
+        assert "--no-appstream" not in command
         assert command[command.index("--runtime-file") + 1] == str(runtime)
         Path(command[-1]).write_bytes(b"package")
 
@@ -1280,24 +1312,27 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     appdir = staging / "AppDir"
     assert not (appdir / "emulebb-rust.svg").exists()
     assert (appdir / "emulebb-rust.png").read_bytes() == b"sample-icon-256"
-    assert (appdir / "emulebb-rust.desktop").read_bytes() == (
-        appdir / "usr/share/applications/emulebb-rust.desktop"
+    desktop_name = "io.github.emulebb.emulebb-rust.desktop"
+    assert (appdir / desktop_name).read_bytes() == (
+        appdir / "usr/share/applications" / desktop_name
     ).read_bytes()
-    metainfo_path = Path("usr/share/metainfo/io.github.emulebb.emulebb-rust.metainfo.xml")
     for tree in (staging / "deb", appdir):
+        suffix = "appdata" if tree == appdir else "metainfo"
+        metainfo_path = Path(f"usr/share/metainfo/io.github.emulebb.emulebb-rust.{suffix}.xml")
+        assert len(list((tree / "usr/share/metainfo").glob("*.xml"))) == 1
         for size in (16, 24, 32, 48, 64, 128, 256, 512):
             icon = tree / "usr/share/icons/hicolor" / f"{size}x{size}/apps/emulebb-rust.png"
             assert icon.read_bytes() == f"sample-icon-{size}".encode("ascii")
         desktop = configparser.ConfigParser(interpolation=None)
-        desktop.read(tree / "usr/share/applications/emulebb-rust.desktop", encoding="utf-8")
+        desktop.read(tree / "usr/share/applications" / desktop_name, encoding="utf-8")
         assert desktop["Desktop Entry"]["Icon"] == "emulebb-rust"
         assert desktop["Desktop Entry"]["GenericName"] == "Peer-to-peer file sharing client"
         assert "eD2K" in desktop["Desktop Entry"]["Comment"]
         assert "Kad;" in desktop["Desktop Entry"]["Keywords"]
         component = ET.parse(tree / metainfo_path).getroot()
         assert component.attrib["type"] == "desktop-application"
-        assert component.findtext("id") + ".metainfo.xml" == metainfo_path.name
-        assert component.findtext("launchable[@type='desktop-id']") == "emulebb-rust.desktop"
+        assert component.findtext("id") + f".{suffix}.xml" == metainfo_path.name
+        assert component.findtext("launchable[@type='desktop-id']") == desktop_name
         assert component.findtext("summary") == desktop["Desktop Entry"]["Comment"]
         assert component.findtext("project_license") == "GPL-2.0-only"
         beta = component.find("releases/release[@version='0.1.0-beta.2']")
@@ -1309,6 +1344,8 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
         assert (tree / "usr/lib/emulebb-rust/webui/apple-touch-icon.png").read_bytes() == b"sample-touch-icon"
         assert "Slint" not in (tree / "usr/share/doc/emulebb-rust/README.md").read_text(encoding="utf-8")
     for asset in (deb, appimage) if "deb" in formats else (appimage,):
+        suffix = "metainfo" if asset == deb else "appdata"
+        metainfo_path = Path(f"usr/share/metainfo/io.github.emulebb.emulebb-rust.{suffix}.xml")
         sbom = asset.with_name(asset.name + ".sbom.spdx.json")
         manifest = json.loads(asset.with_name(asset.name + ".manifest.json").read_text())
         assert manifest["sbom"] == sbom.name and manifest["sbomSha256"] == release._sha256(sbom)
@@ -1335,6 +1372,7 @@ def test_emulebb_rust_linux_deb_only_does_not_require_appimagetool(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(release.sys, "platform", "linux")
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     layout = _make_rust_package_layout(tmp_path)
     _stage_rust_package_inputs(layout)
@@ -1346,12 +1384,12 @@ def test_emulebb_rust_linux_deb_only_does_not_require_appimagetool(
         "_package_repo_provenance",
         lambda repo: {"commit": "a" * 40, "branch": "main", "remote": ""},
     )
-    monkeypatch.setattr(release.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(release.shutil, "which", lambda name: None if name == "appimagetool" else "/tools/" + name)
     monkeypatch.setattr(release, "_emulebb_rust_deb_dependencies", lambda *_args: "libc6 (>= 2.39), ca-certificates")
     monkeypatch.setattr(release, "_emulebb_rust_appimage_runtime", lambda *_args: pytest.fail("DEB must not download an AppImage runtime"))
 
     def fake_packaging_tool(command: tuple[str, ...], _label: str) -> None:
-        Path(command[-1]).write_bytes(b"package")
+        assert command[0] in {"/tools/desktop-file-validate", "/tools/appstreamcli"}
 
     monkeypatch.setattr(release, "_run_packaging_tool", fake_packaging_tool)
     monkeypatch.setattr(
