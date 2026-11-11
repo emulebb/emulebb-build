@@ -18,7 +18,9 @@ def git(root: Path, *arguments: str) -> None:
 
 def symlink(path: Path, target: str, *, directory: bool = False) -> None:
     try:
-        path.symlink_to(target, target_is_directory=directory)
+        # Windows reparse targets require native separators; Path preserves the
+        # literal upstream relative form on POSIX and gives a usable native link.
+        path.symlink_to(Path(target), target_is_directory=directory)
     except OSError as error:
         if os.name == "nt" and getattr(error, "winerror", None) == 1314:
             pytest.skip("Native Windows symlink creation requires an operator privilege")
