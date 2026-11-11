@@ -896,6 +896,8 @@ def assemble_emulebb_rust_release_assets(assets_dir: Path, version: str, *,
 
     payloads = tuple(name for names in package_layout(version, platform_profile).values() for name in names)
     if ".nightly." in version:
+        if platform_profile != "full":
+            raise RuntimeError("Nightly release assembly requires the full platform profile")
         stem = f"emulebb-rust-v{version}"
         payloads += tuple(f"{stem}-android-{abi}.tar.zst" for abi in ("arm64-v8a", "x86_64"))
     hosted = _emulebb_rust_artifact_origin()["origin"] == "github-actions"
