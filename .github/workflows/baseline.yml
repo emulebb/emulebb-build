@@ -21,6 +21,7 @@ jobs:
       extra_commands: |
         python -m pip install -e .[dev]
         python -m pytest tests/test_ci_workflows.py tests/test_workstreams.py tests/test_local_checks.py tests/test_python_runtime.py tests/test_cli.py tests/test_linux_containers.py tests/test_layout.py tests/test_materialize.py tests/test_public_presence_checks.py
+        python -m pytest tests -o "python_files=test_platform_profiles.py test_release_candidate.py test_release.py test_android_package.py test_rust_runtime_stage.py test_runtime_stage_activation.py test_rust_rest_openapi.py"
       tooling_ref: 856e0499d12e281697618cc81a0b09805e96f59e
 
   lifecycle-linux:
@@ -48,3 +49,8 @@ jobs:
           tests/test_workstreams.py tests/test_locks.py tests/test_cli.py tests/test_ci_workflows.py
           tests/test_public_presence_checks.py
           -p no:cacheprovider --basetemp "${{ runner.temp }}/workstream-tests"
+      - name: Exercise profile and runtime unit owners
+        run: >-
+          python -B -m pytest tests
+          -o "python_files=test_platform_profiles.py test_release_candidate.py test_release.py test_android_package.py test_rust_runtime_stage.py test_runtime_stage_activation.py test_rust_rest_openapi.py"
+          -p no:cacheprovider --basetemp "${{ runner.temp }}/provider-runtime-tests"
