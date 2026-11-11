@@ -505,6 +505,10 @@ def test_gnu_deb_uses_verified_linux_payload_and_private_native_modes(tmp_path, 
     rust.mkdir()
     for name in ("LICENSE", "emulebb-rust-settings.example.toml"):
         (rust / name).write_text("fixture")
+    icons = rust / "resources/icons"
+    icons.mkdir(parents=True)
+    for size in (16, 24, 32, 48, 64, 128, 256, 512):
+        (icons / f"donkey-{size}.png").write_bytes(f"synthetic icon {size}".encode("ascii"))
     tooling = tmp_path / "tooling"
     docs = tooling / "docs/products/emulebb-rust"
     docs.mkdir(parents=True)
@@ -534,6 +538,10 @@ def test_gnu_deb_uses_verified_linux_payload_and_private_native_modes(tmp_path, 
     assert calls[0][calls[0].index("--user") + 1] == "1000:1000"
     assert "uid=1000,gid=1000,mode=0700" in calls[0][calls[0].index("--tmpfs") + 1]
     assert "--root-owner-group" in calls[0][-1] and "chmod 0644" in calls[0][-1]
+    script = calls[0][-1]
+    assert script.index("desktop-file-validate ") < script.index("dpkg-deb --build")
+    assert script.index("appstreamcli validate-tree --no-net ") < script.index("dpkg-deb --build")
+    assert len(list((root / "deb/usr/share/metainfo").glob("*.xml"))) == 1
     manifest = json.loads(files[1].read_text())
     assert manifest["sha256"] == release._sha256(deb)
     assert manifest["target"] == "aarch64-unknown-linux-gnu"
