@@ -29,9 +29,9 @@ OPTIONAL_REPOSITORY_FIELDS = {
 REPOSITORY_FIELDS = {**CORE_REPOSITORY_FIELDS, **OPTIONAL_REPOSITORY_FIELDS}
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> str:
+def _git(repo: Path, *args: str, check: bool = True, input_text: str | None = None) -> str:
     result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                            env=git_environment())
+                            env=git_environment(), input=input_text)
     if check and result.returncode:
         raise RuntimeError(result.stderr.strip() or f"Git {' '.join(args)} failed")
     return result.stdout.strip() if result.returncode == 0 else ""
@@ -395,7 +395,10 @@ def _removal_preflight(entry: dict[str, Any], *, abandoned: bool = False,
     if checkout_present and _git(path, "status", "--porcelain", "--ignored"):
         raise RuntimeError("Dirty worktree; cleanup refused")
     _git(canonical, "fetch", "origin", "main")
-    if _open_pull_requests(entry):
+    requests = _open_pull_requests(entry)
+    if not isinstance(requests, list):
+        raise RuntimeError("Cannot establish PR state; cleanup refused")
+    if requests:
         raise RuntimeError("Open pull request; cleanup refused")
     ref = "refs/heads/" + entry["branch"]
     head = _git(canonical, "rev-parse", "--verify", ref + "^{commit}")
@@ -408,11 +411,46 @@ def _removal_preflight(entry: dict[str, Any], *, abandoned: bool = False,
     if not merged:
         upstream_ref = entry["branch"] + "@{upstream}"
         upstream = _git(canonical, "rev-parse", "--verify", upstream_ref, check=False)
-        if not upstream or _git(canonical, "rev-list", "--count", f"{upstream}..{head}") != "0":
+        if (not abandoned
+                and (not upstream or _git(canonical, "rev-list", "--count", f"{upstream}..{head}") != "0")):
             raise RuntimeError("Unpublished work; cleanup refused")
         if not abandoned:
             raise RuntimeError("Unmerged branch; explicit parent abandonment is required")
     return head
+
+
+def _archive_abandoned_head(workstream_id: str, name: str, entry: dict[str, Any], head: str) -> None:
+    """Retain exact abandoned history before removing any checkout or runtime."""
+    canonical = Path(entry["canonical_path"])
+    archive = f"refs/recovery/abandoned/{_id(workstream_id)}/{name}"
+    branch = "refs/heads/" + entry["branch"]
+    _git(canonical, "check-ref-format", archive)
+    existing = _git(canonical, "rev-parse", "--verify", archive, check=False)
+    if (_git(canonical, "symbolic-ref", "--quiet", archive, check=False)
+            or existing and existing != head):
+        raise RuntimeError("Abandoned recovery ref already has a different identity; cleanup refused")
+    # WHY: branch deletion remains a separate parent decision. Git retains all
+    # reachable commits via this local ref, without publishing withdrawn code.
+    # Verify the source head and recovery-ref lease in one atomic Git operation.
+    transaction = (f"start\noption no-deref\nverify {branch} {head}\n"
+                   f"option no-deref\nupdate {archive} {head} {existing or '0' * len(head)}\n"
+                   "prepare\ncommit\n")
+    _git(canonical, "update-ref", "--stdin", input_text=transaction)
+    if _git(canonical, "rev-parse", "--verify", archive) != head:
+        raise RuntimeError("Abandoned recovery ref changed; cleanup refused")
+    print(f"Archived abandoned head: {name} {archive} {head}")
+
+
+def _check_removal_snapshot(layout, registration: dict[str, Any], heads: dict[str, str]) -> None:
+    """Refuse changed ownership or sources after network and reference operations."""
+    if _read(layout.emule_workspace_root, layout.output_root, registration["id"]) != registration:
+        raise RuntimeError("Workstream registration changed during removal preflight")
+    for name, entry in registration["repositories"].items():
+        _check_entry(layout.emule_workspace_root, registration["id"], name, entry)
+        path = Path(entry["path"])
+        if (_git(path, "status", "--porcelain", "--ignored")
+                or _git(path, "rev-parse", "HEAD") != heads[name]):
+            raise RuntimeError("Checkout changed during removal preflight")
 
 
 def _retirement_identity(layout, registration: dict[str, Any], name: str,
@@ -532,16 +570,24 @@ def remove_workstream(layout, workstream_id: str, owner: str, *, abandoned: bool
 
 
 def _remove_workstream(layout, workstream_id: str, owner: str, *, abandoned: bool, retire_runtime) -> None:
-    """Parent-only cleanup refuses dirty, unpublished or open-PR work; never force-removes."""
+    """Parent cleanup archives explicit abandonment; ordinary removal remains strict."""
     registration = resolve_workstream(layout.emule_workspace_root, layout.output_root, workstream_id=workstream_id)
     if owner != registration["owner"]:
         raise RuntimeError("Removal must identify the assigned parent owner")
-    for entry in registration["repositories"].values():
-        _removal_preflight(entry, abandoned=abandoned)
+    heads = {name: _removal_preflight(entry, abandoned=abandoned)
+             for name, entry in registration["repositories"].items()}
+    _check_removal_snapshot(layout, registration, heads)
+    if abandoned:
+        for name, entry in registration["repositories"].items():
+            _archive_abandoned_head(workstream_id, name, entry, heads[name])
+        _check_removal_snapshot(layout, registration, heads)
     retire_runtime()
     registration["state"] = "removing"
     _write(layout.emule_workspace_root, layout.output_root, registration)
-    for entry in registration["repositories"].values():
+    for name, entry in registration["repositories"].items():
+        if (_git(Path(entry["path"]), "status", "--porcelain", "--ignored")
+                or _git(Path(entry["path"]), "rev-parse", "HEAD") != heads[name]):
+            raise RuntimeError("Checkout changed during removal")
         _git(Path(entry["canonical_path"]), "worktree", "remove", entry["path"])
     # WHY: GitHub rebase merges and explicit abandonment can leave valuable local
     # history unmerged by identity. Keep branches; this command never force-deletes.
