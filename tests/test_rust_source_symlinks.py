@@ -88,9 +88,11 @@ def test_native_links_do_not_admit_redirected_root_or_directory_ancestors(source
     rust, native = sources
     directory = {"link-parent": native / "minissdpd",
                  "target-parent": native / "miniupnpd", "root": native}[redirect]
-    moved = directory.with_name(directory.name + "-physical")
+    # Keep relocated files outside the admitted tree so newly untracked links
+    # cannot mask the specific ancestor-redirection rejection under test.
+    moved = native.parent / f"{native.name}-{directory.name}-physical"
     directory.rename(moved)
-    symlink(directory, moved.name, directory=True)
+    symlink(directory, str(moved), directory=True)
     with pytest.raises(RuntimeError, match="Redirected workstream path"):
         cache._source_identity((rust, native))
 
