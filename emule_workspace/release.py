@@ -26,6 +26,7 @@ from .build import (
     app_property_overrides,
     build_emulebb_rust_client,
     ensure_app_dependency_artifacts,
+    rust_client_target,
     staged_emulebb_rust_root,
     verify_app_control_flow_guard,
     wsl_path,
@@ -263,7 +264,11 @@ def create_emulebb_rust_package(
     if staging_root.exists():
         shutil.rmtree(staging_root)
     package_root.mkdir(parents=True, exist_ok=True)
-    staged_bin = staged_emulebb_rust_root(layout) / "bin"
+    target = rust_client_target(workspace_options.platform, target_os=package_options.target_os)
+    staged_bin = staged_emulebb_rust_root(layout, target) / "bin"
+    from .rust_runtime_stage import stage_root as registered_stage_root, verify_stage
+    if registered_stage_root(layout, target) is not None:
+        verify_stage(layout, target=target)
     exe_source = staged_bin / "emulebb-rust.exe"
     webui_source = staged_bin / "webui"
     if not exe_source.is_file():
@@ -361,7 +366,11 @@ def _create_emulebb_rust_linux_packages(
     if staging_root.exists():
         shutil.rmtree(staging_root)
     release_root.mkdir(parents=True, exist_ok=True)
-    staged_bin = staged_emulebb_rust_root(layout) / "bin"
+    target = rust_client_target(workspace_options.platform, target_os="linux")
+    staged_bin = staged_emulebb_rust_root(layout, target) / "bin"
+    from .rust_runtime_stage import stage_root as registered_stage_root, verify_stage
+    if registered_stage_root(layout, target) is not None:
+        verify_stage(layout, target=target)
     executable = staged_bin / "emulebb-rust"
     webui = staged_bin / "webui"
     if not executable.is_file():
@@ -541,7 +550,11 @@ def _create_emulebb_rust_macos_package(
     sums_path = release_root / "SHA256SUMS"
     for path in (stage_root, app_root, dmg, manifest_path, sbom_path, sums_path):
         _assert_path_under_root(path, release_root, "emulebb-rust macOS package path")
-    staged_bin = staged_emulebb_rust_root(layout) / "bin"
+    target = rust_client_target(workspace_options.platform, target_os="macos")
+    staged_bin = staged_emulebb_rust_root(layout, target) / "bin"
+    from .rust_runtime_stage import stage_root as registered_stage_root, verify_stage
+    if registered_stage_root(layout, target) is not None:
+        verify_stage(layout, target=target)
     executable = staged_bin / "emulebb-rust"
     webui = staged_bin / "webui"
     if not executable.is_file() or not (webui / "index.html").is_file():
