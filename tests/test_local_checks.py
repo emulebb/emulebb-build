@@ -104,6 +104,179 @@ def test_staged_paths_exclude_unstaged_new_files(repo):
     assert changed_paths(repo, "commit", "origin", None) == {"selected.txt"}
 
 
+@pytest.mark.parametrize("on_main", [False, True])
+def test_full_uses_committed_tree_after_branch_was_pushed_or_on_clean_main(repo, on_main):
+    if on_main:
+        git(repo, "switch", "main")
+    else:
+        (repo / "new.py").write_text("value = 1\n")
+        git(repo, "add", "new.py")
+        git(repo, "commit", "-m", "synthetic implementation")
+        git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    assert changed_paths(repo, "push", "origin", None) == set()
+    expected = {"base.txt"} if on_main else {"base.txt", "new.py"}
+    assert changed_paths(repo, "full", "origin", None) == expected
+    local_checks.check_whitespace(repo, "full", "origin", None)
+
+
+@pytest.mark.parametrize("repository,path", [
+    ("emulebb-rust", "Cargo.lock"), ("emulebb-rust", ".github/workflows/ci.yml"),
+    ("emulebb-build", "emule_workspace/linux_containers.py"),
+    ("emulebb-build", "emule_workspace/android_install.py"),
+    ("emulebb-build-tests", "scripts/smoke-rust-release-package.py"),
+    ("emulebb-build-tests", "scripts/smoke-rust-container.py"),
+])
+def test_daytime_push_never_selects_broad_runtime_or_container_validation(tmp_path, repository, path):
+    repo = tmp_path / "repos" / repository
+    plan = check_plan(repo, {path}, "push", tmp_path, tmp_path / "out")
+    assert local_checks.wsl_validation_requirements(plan) is None
+    for _cwd, command in plan:
+        assert not {"pre-push", "emule_workspace", "--registered-stage", "tests", "tests/python"}.intersection(command)
+    if repository == "emulebb-rust":
+        assert plan[-1][1][-1] == ("branch-ci" if path.startswith(".github/") else "branch-check")
+
+
+def test_fast_python_owners_do_not_fall_back_to_a_whole_suite_and_use_unique_scratch(tmp_path):
+    repo = tmp_path / "repos/emulebb-build"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests/test_local_checks.py").touch()
+    paths = {"emule_workspace/local_checks.py", "emule_workspace/unmapped.py", "pyproject.toml"}
+    first = tmp_path / "out/tmp/first/paths.json"
+    second = tmp_path / "out/tmp/second/paths.json"
+    plans = [check_plan(repo, paths, "push", tmp_path, tmp_path / "out", paths_file=path) for path in (first, second)]
+    commands = [next(command for _, command in plan if "pytest" in command) for plan in plans]
+    assert all("tests/test_local_checks.py" in command and "tests" not in command for command in commands)
+    assert commands[0] != commands[1]
+
+
+def test_fast_rust_runner_never_fences_or_stages_shared_cargo_outputs(tmp_path, monkeypatch):
+    from emule_workspace import linux_containers, rust_source_cache
+    root, output, _build, snapshots = _synthetic_check_runner(tmp_path, monkeypatch, {"Cargo.lock"})
+    repo = root / "repos/emulebb-rust"
+    repo.mkdir()
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(output / "builds/rust/target"))
+    def forbidden(*args, **kwargs):
+        pytest.fail("fast push touched a heavy runtime owner")
+    monkeypatch.setattr(linux_containers, "WslValidationSession", forbidden)
+    monkeypatch.setattr(rust_source_cache, "ensure_rust_source_cache", forbidden)
+    commands = []
+    def execute(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(local_checks.subprocess, "run", execute)
+    local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=root, output=output)
+    assert len(snapshots) == 2
+    assert commands[-1][-1] == "branch-check"
+
+
+@pytest.mark.parametrize("change", ["head", "supporting-source"])
+def test_full_runner_rejects_changed_inputs_even_with_a_clean_worktree(tmp_path, monkeypatch, change):
+    root, output, repo, _snapshots = _synthetic_check_runner(tmp_path, monkeypatch, {"README.md"})
+    revision = ["a" * 40]
+    original_git = local_checks.git
+    monkeypatch.setattr(local_checks, "git", lambda path, *args:
+                        revision[0] if args == ("rev-parse", "HEAD") else original_git(path, *args))
+    monkeypatch.setattr(local_checks, "_source_snapshot", lambda *args, **kwargs:
+                        {"emulebb-build": {"revision": revision[0]}})
+    def execute(command, **kwargs):
+        revision[0] = "b" * 40
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(local_checks, "check_plan", lambda *args: [(repo, ["check"])])
+    monkeypatch.setattr(local_checks.subprocess, "run", execute)
+    if change == "supporting-source":
+        monkeypatch.setattr(local_checks, "git", original_git)
+    with pytest.raises(RuntimeError, match="HEAD changed|Participating sources changed"):
+        local_checks.run_checks(repo=repo, stage="full", remote="origin", updates=None, root=root, output=output)
+
+
+def test_clean_pushed_main_selects_the_full_rust_plan(repo):
+    root = repo / "repos/emulebb-rust"
+    (root / "crates/sample/src").mkdir(parents=True)
+    (root / "Cargo.lock").write_text("# synthetic lock fixture\n")
+    (root / "crates/sample/src/lib.rs").write_text("pub fn sample() {}\n")
+    git(root, "init", "-b", "main")
+    git(root, "config", "user.email", "test@example.invalid")
+    git(root, "config", "user.name", "Test")
+    git(root, "add", "Cargo.lock", "crates/sample/src/lib.rs")
+    git(root, "commit", "-m", "synthetic committed main")
+    git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    assert changed_paths(root, "push", "origin", None) == set()
+    plan = check_plan(root, changed_paths(root, "full", "origin", None), "full", repo, repo / "out")
+    assert any("pre-push" in command for _, command in plan)
+    assert any(command[-3:] == ["validate-emulebb-rust-linux", "--scope", "full"] for _, command in plan)
+    assert any(command[-1] == "validate-rust-android" for _, command in plan)
+
+
+def test_registered_full_missing_runtime_capability_fails_before_any_side_effect(tmp_path, monkeypatch):
+    from emule_workspace import linux_containers, rust_source_cache
+    root, output, _builder, _snapshots = _synthetic_check_runner(tmp_path, monkeypatch, {"Cargo.lock"})
+    repo = root / "repos/emulebb-rust"
+    repo.mkdir()
+    sources = {name: root / "repos" / name for name in (
+        "emulebb-rust", "emulebb-build", "emulebb-build-tests", "emulebb-tooling")}
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(output / "builds/rust/target"))
+    monkeypatch.setattr(local_checks, "_resolve_registration", lambda *args: {"id": "sample"})
+    monkeypatch.setattr(local_checks, "_workstream_sources", lambda *args: sources)
+    def forbidden(*args, **kwargs):
+        pytest.fail("missing #45 prerequisite reached runtime work")
+    monkeypatch.setattr(linux_containers, "WslValidationSession", forbidden)
+    monkeypatch.setattr(rust_source_cache, "ensure_rust_source_cache", forbidden)
+    monkeypatch.setattr(local_checks.subprocess, "run", forbidden)
+    with pytest.raises(RuntimeError, match="Build #45 owned-runtime support"):
+        local_checks.run_checks(repo=repo, stage="full", remote="origin", updates=None, root=root, output=output)
+
+
+@pytest.fixture
+def runtime_interfaces(tmp_path):
+    sources = {name: tmp_path / name for name in ("emulebb-build", "emulebb-rust", "emulebb-build-tests")}
+    files = {
+        ("emulebb-build", "emule_workspace/rust_runtime_stage.py"):
+            "SCHEMA = 'emulebb.rust-runtime-stage/1'\n" + "\n".join(
+                f"def {name}(): pass" for name in ("stage_root", "prepare_stage", "pending_bin_dir", "publish_stage", "verify_stage", "discard_stage")),
+        ("emulebb-rust", "tools/rust_quality_gate.py"):
+            "\n".join(f"def {name}(*, registered_stage=False): pass" for name in ("commands_for_gate", "build_step", "rest_openapi_step"))
+            + "\nparser.add_argument('--registered-stage')\n",
+        ("emulebb-rust", "tools/fresh_rust_build.py"):
+            "def runtime_stage_request(): pass\nparser.add_argument('--registered-stage')\nparser.add_argument('--verify-stage')\n",
+        ("emulebb-build-tests", "emule_test_harness/rust_client.py"):
+            "def verified_runtime_stage(rust_repo, output_root): pass\n",
+        ("emulebb-build-tests", "scripts/rust-rest-openapi-ci.py"):
+            "def run_campaign(*, registered_stage=False): pass\nparser.add_argument('--registered-stage')\n",
+    }
+    for (repository, relative), content in files.items():
+        path = sources[repository] / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return sources
+
+
+def test_runtime_capability_receipt_binds_actual_selected_interface_bytes(runtime_interfaces):
+    import hashlib
+    evidence = local_checks.require_runtime_stage_capabilities(runtime_interfaces)
+    assert len(evidence) == 5
+    for name, digest in evidence.items():
+        repository, relative = name.split("/", 1)
+        assert digest == hashlib.sha256((runtime_interfaces[repository] / relative).read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("surface", ["schema", "signature", "cli", "missing", "syntax"])
+def test_incomplete_runtime_interfaces_are_not_admitted(runtime_interfaces, surface):
+    path = runtime_interfaces["emulebb-build"] / "emule_workspace/rust_runtime_stage.py"
+    if surface == "schema":
+        path.write_text(path.read_text().replace("stage/1", "stage/0"))
+    elif surface == "missing":
+        path.unlink()
+    else:
+        path = runtime_interfaces["emulebb-rust"] / "tools/rust_quality_gate.py"
+        text = path.read_text()
+        path.write_text(text.replace("registered_stage=False", "other=False") if surface == "signature"
+                        else text.replace("parser.add_argument", "example.add_help") if surface == "cli"
+                        else "def broken(:\n")
+    with pytest.raises(RuntimeError, match="Build #45 owned-runtime support"):
+        local_checks.require_runtime_stage_capabilities(runtime_interfaces)
+
+
 @pytest.mark.parametrize("kind", ["first", "existing", "tag", "multiple"])
 def test_clean_tree_with_bad_outgoing_whitespace_is_rejected(repo, kind):
     base = git(repo, "rev-parse", "HEAD")
@@ -139,7 +312,7 @@ def test_staged_whitespace_is_rejected_and_delete_only_push_is_allowed(repo):
                                    "emule_workspace/release_assets/android/toolchain.json"])
 def test_android_tool_changes_require_real_wsl_docker_probe_before_push(tmp_path, path):
     repo = tmp_path / "repos/emulebb-build"
-    pushed = check_plan(repo, {path}, "push", tmp_path, tmp_path / "out")
+    pushed = check_plan(repo, {path}, "full", tmp_path, tmp_path / "out")
     committed = check_plan(repo, {path}, "commit", tmp_path, tmp_path / "out")
     assert sum(command[-1] == "validate-rust-android" for _, command in pushed) == 1
     assert not any(command[-1] == "validate-rust-android" for _, command in committed)
@@ -147,7 +320,7 @@ def test_android_tool_changes_require_real_wsl_docker_probe_before_push(tmp_path
 
 def test_docs_do_not_trigger_android_tool_downloads(tmp_path):
     repo = tmp_path / "repos/emulebb-build"
-    plan = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
+    plan = check_plan(repo, {"README.md"}, "full", tmp_path, tmp_path / "out")
     assert not any(command[-1] in {"prepare-rust-android-toolchain", "validate-rust-android", "prepare-rust-android-emulator"} for _, command in plan)
 
 
@@ -156,23 +329,23 @@ def test_docs_do_not_trigger_android_tool_downloads(tmp_path):
                                   "emule_workspace/release_assets/android/emulator-inputs.json"])
 def test_emulator_tool_changes_require_offline_execution_before_push(tmp_path, path):
     repo = tmp_path / "repos/emulebb-build"
-    plan = check_plan(repo, {path}, "push", tmp_path, tmp_path / "out")
+    plan = check_plan(repo, {path}, "full", tmp_path, tmp_path / "out")
     command = next(command for _, command in plan if command[-1] == "prepare-rust-android-emulator")
     assert "--image" not in command
 
 
 def test_rust_implementation_requires_android_compilation_before_push(tmp_path):
     repo = tmp_path / "repos/emulebb-rust"
-    source = check_plan(repo, {"crates/emulebb-core/src/lib.rs"}, "push", tmp_path, tmp_path / "out")
-    docs = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
+    source = check_plan(repo, {"crates/emulebb-core/src/lib.rs"}, "full", tmp_path, tmp_path / "out")
+    docs = check_plan(repo, {"README.md"}, "full", tmp_path, tmp_path / "out")
     assert sum(command[-1] == "validate-rust-android" for _, command in source) == 1
     assert not any(command[-1] == "validate-rust-android" for _, command in docs)
 
 
 def test_rust_docs_avoid_native_build_but_source_push_gets_full_gate(tmp_path):
     repo = tmp_path / "repos" / "emulebb-rust"
-    docs = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
-    source = check_plan(repo, {"src/main.rs"}, "push", tmp_path, tmp_path / "out")
+    docs = check_plan(repo, {"README.md"}, "full", tmp_path, tmp_path / "out")
+    source = check_plan(repo, {"src/main.rs"}, "full", tmp_path, tmp_path / "out")
     assert not any(command[-1] == "pre-push" for _, command in docs)
     assert sum(command[-1] == "pre-push" for _, command in source) == 1
     assert not any("deny" in command or command[-1].endswith("rust-rest-openapi-ci.py") for _, command in source)
@@ -200,13 +373,13 @@ def test_rust_push_runs_host_then_native_musl_and_docs_stay_light(tmp_path):
     source = repo / "crates/emulebb-core/src/lib.rs"
     source.parent.mkdir(parents=True)
     source.write_text("pub fn ordinary_logic() {}\n")
-    plan = check_plan(repo, {"crates/emulebb-core/src/lib.rs"}, "push", tmp_path, tmp_path / "out")
+    plan = check_plan(repo, {"crates/emulebb-core/src/lib.rs"}, "full", tmp_path, tmp_path / "out")
     assert plan[-3][1][-1] == "pre-push"
     assert plan[-2][0] == tmp_path / "repos/emulebb-build"
     assert plan[-2][1][-3:] == ["validate-emulebb-rust-linux", "--scope", "musl"]
     assert plan[-1][0] == tmp_path / "repos/emulebb-build"
     assert plan[-1][1][-1] == "validate-rust-android"
-    docs = check_plan(repo, {"README.md"}, "push", tmp_path, tmp_path / "out")
+    docs = check_plan(repo, {"README.md"}, "full", tmp_path, tmp_path / "out")
     assert not any("validate-emulebb-rust-linux" in command for _, command in docs)
 
 
@@ -243,7 +416,7 @@ def test_ordinary_rolling_windows_do_not_trigger_platform_matrix(tmp_path):
     ("emulebb-build-tests", "scripts/smoke-rust-container.py", "image"),
 ])
 def test_shared_linux_pipeline_pushes_require_actual_local_integration(tmp_path, name, path, scope):
-    plan = check_plan(tmp_path / "repos" / name, {path}, "push", tmp_path, tmp_path / "out")
+    plan = check_plan(tmp_path / "repos" / name, {path}, "full", tmp_path, tmp_path / "out")
     assert plan[-1][1][-3:] == ["validate-emulebb-rust-linux", "--scope", scope]
     commit = check_plan(tmp_path / "repos" / name, {path}, "commit", tmp_path, tmp_path / "out")
     assert not any("validate-emulebb-rust-linux" in command for _, command in commit)
@@ -254,7 +427,7 @@ def test_shared_linux_pipeline_pushes_require_actual_local_integration(tmp_path,
     ("emulebb-build-tests", {"scripts/smoke-rust-container.py", "scripts/smoke-rust-release-package.py"}),
 ])
 def test_full_linux_gate_covers_mixed_image_and_package_changes_once(tmp_path, name, paths):
-    plan = check_plan(tmp_path / "repos" / name, paths, "push", tmp_path, tmp_path / "out")
+    plan = check_plan(tmp_path / "repos" / name, paths, "full", tmp_path, tmp_path / "out")
     gates = [command for _, command in plan if "validate-emulebb-rust-linux" in command]
     assert len(gates) == 1 and gates[0][-1] == "full"
 
@@ -264,7 +437,7 @@ def test_harness_push_selects_the_changed_scripts_test_owner(tmp_path):
     tests = repo / "tests/python"
     tests.mkdir(parents=True)
     (tests / "test_smoke_rust_release_package.py").touch()
-    plan = check_plan(repo, {"scripts/smoke-rust-release-package.py"}, "push", tmp_path, tmp_path / "out")
+    plan = check_plan(repo, {"scripts/smoke-rust-release-package.py"}, "full", tmp_path, tmp_path / "out")
     command = next(command for _, command in plan if "pytest" in command)
     assert "tests/python/test_smoke_rust_release_package.py" in command
     assert "tests/python" not in command
@@ -272,7 +445,7 @@ def test_harness_push_selects_the_changed_scripts_test_owner(tmp_path):
 
 def test_harness_shared_owner_without_a_single_suite_requires_all_unit_tests(tmp_path):
     plan = check_plan(tmp_path / "repos/emulebb-build-tests", {"emule_test_harness/shared.py"},
-                      "push", tmp_path, tmp_path / "out")
+                      "full", tmp_path, tmp_path / "out")
     assert any("tests/python" in command for _, command in plan)
 
 
@@ -283,13 +456,13 @@ def test_harness_docs_and_commit_checks_do_not_run_pytest(tmp_path):
 
 
 def test_docs_workflow_gets_local_publication_validation(tmp_path):
-    plan = check_plan(tmp_path / "repos" / "emulebb-tooling", {".github/workflows/docs-site.yml"}, "push", tmp_path, tmp_path / "out")
+    plan = check_plan(tmp_path / "repos" / "emulebb-tooling", {".github/workflows/docs-site.yml"}, "full", tmp_path, tmp_path / "out")
     assert any(command[-1] == "scripts/docs-publish-check.py" for _, command in plan)
 
 
 def test_topology_routes_to_its_existing_test_owners(tmp_path):
     repo = tmp_path / "repos" / "emulebb-build"
-    plan = check_plan(repo, {"emule_workspace/topology.py"}, "push", tmp_path, tmp_path / "out")
+    plan = check_plan(repo, {"emule_workspace/topology.py"}, "full", tmp_path, tmp_path / "out")
     command = next(command for _, command in plan if "pytest" in command)
     assert "tests/test_layout.py" in command
     assert "tests/test_materialize.py" in command
@@ -402,7 +575,7 @@ def test_workstream_routes_nested_checks_to_selected_builder(tmp_path):
     repo = tmp_path / "workspaces/agents/sample/emulebb-build-tests"
     builder = tmp_path / "workspaces/agents/sample/emulebb-build"
     tooling = tmp_path / "workspaces/agents/sample/emulebb-tooling"
-    plan = check_plan(repo, {"scripts/smoke-rust-release-package.py"}, "push", tmp_path,
+    plan = check_plan(repo, {"scripts/smoke-rust-release-package.py"}, "full", tmp_path,
                       tmp_path / "output", {"emulebb-build": builder, "emulebb-tooling": tooling}, "sample")
     nested = [(cwd, command) for cwd, command in plan if "emule_workspace" in command]
     assert nested and all(cwd == builder for cwd, _ in nested)
@@ -414,7 +587,7 @@ def test_workstream_rust_push_selects_exact_rest_sources(tmp_path):
     repo = tmp_path / "workspaces/agents/sample/emulebb-rust"
     harness = tmp_path / "workspaces/agents/sample/emulebb-build-tests"
     tooling = tmp_path / "workspaces/agents/sample/emulebb-tooling"
-    plan = check_plan(repo, {"crates/sample.rs"}, "push", tmp_path, tmp_path / "output",
+    plan = check_plan(repo, {"crates/sample.rs"}, "full", tmp_path, tmp_path / "output",
                       {"emulebb-rust": repo, "emulebb-build-tests": harness, "emulebb-tooling": tooling}, "sample")
     gate = next(command for _, command in plan if "tools/rust_quality_gate.py" in command)
     assert gate[gate.index("--rest-harness-script") + 1] == str(harness / "scripts/rust-rest-openapi-ci.py")
@@ -426,7 +599,7 @@ def test_optional_push_uses_public_owner_without_product_builds(tmp_path, reposi
     repo = tmp_path / "workspaces/agents/public" / repository
     builder = tmp_path / "workspaces/agents/public/emulebb-build"
     tooling = tmp_path / "workspaces/agents/public/emulebb-tooling"
-    plan = check_plan(repo, {"profile/README.md"}, "push", tmp_path, tmp_path / "output",
+    plan = check_plan(repo, {"profile/README.md"}, "full", tmp_path, tmp_path / "output",
                       {"emulebb-build": builder, "emulebb-tooling": tooling, repository: repo}, "public")
     command = next(command for cwd, command in plan if "public-presence" in command)
     assert command[-2:] == ["--workstream", "public"]
@@ -525,7 +698,7 @@ def test_windows_full_plan_prepares_arm_explicitly_before_host_gate(tmp_path, mo
     monkeypatch.setattr(local_checks, "_windows_host", lambda: True)
     repo = tmp_path / "workspaces/agents/sample/emulebb-rust"
     builder = tmp_path / "workspaces/agents/sample/emulebb-build"
-    plan = check_plan(repo, {"Cargo.lock"}, "push", tmp_path, tmp_path / "out",
+    plan = check_plan(repo, {"Cargo.lock"}, "full", tmp_path, tmp_path / "out",
                       {"emulebb-build": builder}, "sample")
     preparation = [(index, cwd, command) for index, (cwd, command) in enumerate(plan)
                    if "linux-containers" in command]
@@ -558,6 +731,8 @@ def _synthetic_check_runner(tmp_path, monkeypatch, paths, *, windows=True):
     monkeypatch.setattr(local_checks, "_windows_host", lambda: windows)
     monkeypatch.setattr(local_checks, "changed_paths", lambda *args: paths)
     monkeypatch.setattr(local_checks, "check_whitespace", lambda *args: None)
+    monkeypatch.setattr(local_checks, "_workstream_sources", lambda root, output, registration, repo_name:
+                        {repo_name: root / "repos" / repo_name})
     monkeypatch.setattr(local_checks, "git", lambda path, *args:
                         str(path) if args == ("rev-parse", "--show-toplevel") else
                         "a" * 40 if args == ("rev-parse", "HEAD") else "")
@@ -591,7 +766,7 @@ def test_early_arm_failure_stops_before_expensive_host_checks_and_releases_sessi
         return subprocess.CompletedProcess(command, 9 if "linux-containers" in command else 0)
     monkeypatch.setattr(local_checks.subprocess, "run", execute)
     with pytest.raises(RuntimeError, match="Local check failed \\(9\\)"):
-        local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None,
+        local_checks.run_checks(repo=repo, stage="full", remote="origin", updates=None,
                                root=root, output=output)
     assert events[0] == "enter" and events[-1] == "stop"
     assert not any("pytest" in command or "validate-emulebb-rust-linux" in command for command in commands)
@@ -640,7 +815,7 @@ def test_owned_wsl_lifetime_spans_source_fence_host_and_final_identity_check(tmp
             events.append("host")
         return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr(local_checks.subprocess, "run", execute)
-    local_checks.run_checks(repo=repo, stage="push", remote="origin", updates=None, root=root, output=output)
+    local_checks.run_checks(repo=repo, stage="full", remote="origin", updates=None, root=root, output=output)
     assert events.index("enter") < events.index("source-fence") < events.index("host")
     assert events[-2:] == ["plan-complete", "stop"]
     assert len(snapshots) == 2 and all("emulebb-build-tests" in sources for sources in snapshots)

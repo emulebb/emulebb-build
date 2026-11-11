@@ -677,16 +677,19 @@ def _android_ci_layout():
 
 @main.command("local-check")
 @click.option("--repo", type=click.Path(path_type=Path, exists=True), required=True)
-@click.option("--stage", type=click.Choice(["commit", "push"]), default="push")
+@click.option("--stage", type=click.Choice(["commit", "push", "full"]), default="push",
+              help="commit=staged checks; push=fast host checks; full=locked validation of all tracked HEAD inputs.")
 @click.option("--remote", default="origin")
 @click.option("--push-stdin", is_flag=True, help="Read Git pre-push ref updates from stdin.")
 @_common_options
 def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, workspace_options, layout,
                 workstream: str | None = None) -> None:
-    """Run local CI equivalents before committing or pushing."""
+    """Run fast commit/push checks or explicit full local validation."""
     import sys
     from .local_checks import run_checks
 
+    if push_stdin and stage != "push":
+        raise click.ClickException("--push-stdin is only valid with --stage push")
     updates = sys.stdin.read() if push_stdin else None
 
     def execute(**kwargs):
@@ -696,7 +699,7 @@ def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, worksp
             workstream=workstream,
         )
 
-    if stage == "commit":
+    if stage in {"commit", "push"}:
         try:
             execute()
         except Exception as exc:

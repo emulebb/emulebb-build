@@ -7,6 +7,34 @@ from click.testing import CliRunner
 from emule_workspace import cli
 
 
+def test_local_check_stage_dispatch_keeps_fast_hooks_outside_heavy_lock(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from emule_workspace import local_checks
+
+    repo = tmp_path / "repos/emulebb-build"
+    repo.mkdir(parents=True)
+    options = SimpleNamespace(workspace_root=tmp_path, output_root=tmp_path / "out")
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: object())
+    events = []
+    monkeypatch.setattr(local_checks, "run_checks", lambda **kwargs: events.append(("check", kwargs["stage"])))
+    def locked(name, function):
+        def invoke(**kwargs):
+            events.append(("lock", name))
+            return function(**kwargs)
+        return invoke
+    monkeypatch.setattr(cli, "_locked", locked)
+    for stage in ("commit", "push", "full"):
+        events.clear()
+        result = CliRunner().invoke(cli.main, ["local-check", "--repo", str(repo), "--stage", stage])
+        assert result.exit_code == 0, result.output
+        assert events == ([("lock", "local-check"), ("check", stage)] if stage == "full" else [("check", stage)])
+    result = CliRunner().invoke(cli.main, ["local-check", "--repo", str(repo), "--stage", "full", "--push-stdin"])
+    assert result.exit_code != 0 and "only valid with --stage push" in result.output
+    result = CliRunner().invoke(cli.main, ["local-check", "--repo", str(repo), "--stage", "invalid"])
+    assert result.exit_code != 0 and "Invalid value" in result.output
+
+
 def test_ci_android_guest_rejects_local_execution(monkeypatch):
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     result = CliRunner().invoke(cli.main, ["probe-rust-android-guest-ci", "--image", "min"])
