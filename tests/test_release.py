@@ -1335,6 +1335,15 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
         assert component.findtext("launchable[@type='desktop-id']") == desktop_name
         assert component.findtext("summary") == desktop["Desktop Entry"]["Comment"]
         assert component.findtext("project_license") == "GPL-2.0-only"
+        screenshot = component.find("screenshots/screenshot[@type='default']")
+        assert screenshot is not None
+        assert screenshot.findtext("caption") == "Search and build information in the browser WebUI"
+        image = screenshot.find("image")
+        assert image is not None
+        assert image.attrib == {"type": "source", "width": "1280", "height": "720"}
+        assert image.text == (
+            "https://emulebb.github.io/emulebb-tooling/assets/emulebb-rust/webui-eac9b37a6e20.png"
+        )
         beta = component.find("releases/release[@version='0.1.0-beta.2']")
         assert beta is not None and beta.attrib["date"] == "2026-10-02"
         assert beta.findtext("url[@type='details']") == (
