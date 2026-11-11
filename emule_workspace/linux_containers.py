@@ -839,6 +839,8 @@ def _package_gnu_deb(layout, docker, *, root: Path, stage: Path, version: str, a
         "chmod 0755 " + " ".join(q(native + path) for path in
             ("/usr/bin/emulebb-rust", "/usr/bin/emulebb-rust-launch",
              "/usr/lib/emulebb-rust/emulebb-rust", "/usr/lib/emulebb-rust/launch")),
+        "desktop-file-validate " + q(native + "/usr/share/applications/io.github.emulebb.emulebb-rust.desktop"),
+        "appstreamcli validate-tree --no-net " + q(native),
         f"dpkg-deb --build --root-owner-group {q(native)} {q(destination)}",
     ])
     # DrvFS modes must not enter an installable Linux artifact.

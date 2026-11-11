@@ -5,7 +5,8 @@ RUN if command -v apk >/dev/null; then \
       apk add --no-cache build-base linux-headers binutils cmake perl python3 tar zstd ca-certificates tzdata; \
     else \
       apt-get update && apt-get install -y --no-install-recommends \
-        python3 binutils cmake perl zstd ca-certificates tzdata && rm -rf /var/lib/apt/lists/*; \
+        python3 binutils cmake perl zstd ca-certificates tzdata appstream desktop-file-utils \
+        && rm -rf /var/lib/apt/lists/*; \
     fi
 # Cross images keep rustup proxies and toolchains under /root. Install the
 # pinned toolchain in public executable paths before running as the operator.
