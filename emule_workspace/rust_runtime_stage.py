@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 from uuid import uuid4
 
 from .config import WorkspaceOptions, resolve_required_workspace_roots
@@ -148,7 +149,7 @@ def _ready(root: Path, context: dict) -> dict:
 
 
 def publish_stage(layout, description: dict) -> dict:
-    """Publish a complete source-bound bundle and restore the previous stage on failure."""
+    """Publish a complete bundle; restore the prior stage on precommit promotion failure."""
     context = _context(layout, description.get("target"))
     if any(description.get(key) != value for key, value in context.items()):
         raise RuntimeError("Runtime source identity changed during the build")
@@ -197,9 +198,18 @@ def publish_stage(layout, description: dict) -> dict:
                 os.replace(root, pending)
             os.replace(backup, root)
         raise
+    result = {**data, "receipt": str(root / RECEIPT), "binDir": str(root / "bin")}
     if backup.exists():
-        shutil.rmtree(backup)
-    return {**data, "receipt": str(root / RECEIPT), "binDir": str(root / "bin")}
+        try:
+            shutil.rmtree(backup)
+        except OSError as error:
+            # WHY: ready publication is committed. Backup cleanup can partly
+            # succeed, so attempting rollback here could destroy valid bytes.
+            result["cleanupWarnings"] = [{"operation": "remove-previous-runtime-stage",
+                                          "path": str(backup), "error": str(error)}]
+            print(f"Warning: runtime stage is ready; previous owned backup cleanup failed: {backup}: {error}",
+                  file=sys.stderr)
+    return result
 
 
 def verify_stage(layout, *, target: str | None = None, diagnostics: bool = False) -> dict:
