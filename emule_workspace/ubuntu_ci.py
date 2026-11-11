@@ -21,6 +21,10 @@ PROFILES = {
     ),
 }
 KEYRING = Path("/usr/share/keyrings/ubuntu-archive-keyring.gpg")
+ARCHIVE_MIRRORS = {
+    "amd64": "https://mirrors.edge.kernel.org/ubuntu",
+    "arm64": "https://mirror.csclub.uwaterloo.ca/ubuntu-ports",
+}
 
 
 class ProvisioningError(RuntimeError):
@@ -31,8 +35,9 @@ class ProvisioningError(RuntimeError):
         self.receipt = receipt
 
 
-def ubuntu_sources(codename: str, architecture: str, keyring: Path = KEYRING) -> str:
-    """Select official HTTPS archives and keep Ubuntu signature verification."""
+def ubuntu_sources(codename: str, architecture: str, keyring: Path = KEYRING,
+                   *, mirror: bool = False) -> str:
+    """Select one fixed HTTPS source group with Ubuntu signature verification."""
     if not re.fullmatch(r"[a-z][a-z0-9-]*", codename):
         raise ValueError("Ubuntu requires a valid VERSION_CODENAME")
     if architecture not in {"amd64", "arm64"}:
@@ -40,6 +45,8 @@ def ubuntu_sources(codename: str, architecture: str, keyring: Path = KEYRING) ->
     archive = ("https://archive.ubuntu.com/ubuntu" if architecture == "amd64"
                else "https://ports.ubuntu.com/ubuntu-ports")
     security = ("https://security.ubuntu.com/ubuntu" if architecture == "amd64" else archive)
+    if mirror:
+        archive = security = ARCHIVE_MIRRORS[architecture]
     return "".join(
         f"deb [arch={architecture} signed-by={keyring}] {uri} {suite} main universe\n"
         for uri, suite in ((archive, codename), (archive, codename + "-updates"),
@@ -96,6 +103,7 @@ def provision_dependencies(*, profile: str, deadline_seconds: int = 300,
         receipt["architecture"] = architecture
         sources = ubuntu_sources(receipt["codename"], architecture, keyring)
         receipt["sources"] = sources.splitlines()
+        receipt["sourceGroup"] = "official"
         with tempfile.TemporaryDirectory(prefix="emulebb-ubuntu-apt-", dir=scratch_root) as directory:
             source_file = Path(directory) / "ubuntu.list"
             source_file.write_text(sources, encoding="utf-8")
@@ -111,9 +119,22 @@ def provision_dependencies(*, profile: str, deadline_seconds: int = 300,
             for operation, tail in (("update", ["update"]),
                                     ("install", ["install", "--no-install-recommends", "-y", *PROFILES[profile]])):
                 for attempt in range(1, attempts + 1):
+                    if operation == "update":
+                        # WHY: repeated DNS failure on one archive must not consume
+                        # every attempt. Replace all suites together, within the
+                        # original budget; installation retains the verified group.
+                        mirror = attempt > 1
+                        sources = ubuntu_sources(receipt["codename"], architecture, keyring, mirror=mirror)
+                        source_file.write_text(sources, encoding="utf-8")
+                        receipt["sources"] = sources.splitlines()
+                        receipt["sourceGroup"] = "mirror" if mirror else "official"
                     result = command(["apt-get", *options, *tail])
-                    receipt["operations"].append({"operation": operation, "attempt": attempt,
-                                                  "returncode": result.returncode})
+                    evidence = {"operation": operation, "attempt": attempt,
+                                "returncode": result.returncode,
+                                "sourceGroup": receipt["sourceGroup"], "sources": list(receipt["sources"])}
+                    if result.returncode:
+                        evidence["diagnostic"] = result.stdout[-1000:]
+                    receipt["operations"].append(evidence)
                     if result.returncode == 0:
                         break
                     if result.returncode in {124, 137} or attempt == attempts:

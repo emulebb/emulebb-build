@@ -43,9 +43,10 @@ def test_image_entrypoint_publishes_receipt_and_preserves_failure(tmp_path, monk
 
 
 class AptHost:
-    def __init__(self, root, architecture="amd64", failures=()):
+    def __init__(self, root, architecture="amd64", failures=(), diagnostic="public apt diagnostic"):
         self.root, self.architecture = root, architecture
         self.failures = list(failures)
+        self.diagnostic = diagnostic
         self.commands = []
         self.sources = []
         self.keyring = root / "ubuntu-archive-keyring.gpg"
@@ -56,7 +57,7 @@ class AptHost:
         if "apt-get" in arguments:
             source = next(item.split("=", 1)[1] for item in arguments if item.startswith("Dir::Etc::sourcelist="))
             self.sources.append(Path(source).read_text(encoding="utf-8"))
-            return SimpleNamespace(returncode=self.failures.pop(0) if self.failures else 0, stdout="public apt diagnostic")
+            return SimpleNamespace(returncode=self.failures.pop(0) if self.failures else 0, stdout=self.diagnostic)
         if "dpkg-query" in arguments:
             return SimpleNamespace(returncode=0, stdout=(
                 "dpkg-dev\t1.0\tall\n"
@@ -108,6 +109,7 @@ def test_incomplete_update_exhausts_bounded_attempts_and_never_installs(tmp_path
         host.provision()
     assert failure.value.receipt["status"] == "failed"
     assert [item["returncode"] for item in failure.value.receipt["operations"]] == [100] * 3
+    assert [item["sourceGroup"] for item in failure.value.receipt["operations"]] == ["official", "mirror", "mirror"]
     assert all(args[-1] == "update" for args, _ in host.commands if "apt-get" in args)
 
 
@@ -118,6 +120,74 @@ def test_transient_update_retries_then_records_installed_versions(tmp_path):
         ("update", 1), ("update", 2), ("install", 1)]
     assert result["installedPackages"] == ["dpkg-dev\t1.0\tall",
                                           "appstream\t1.0\tamd64", "desktop-file-utils\t1.0\tamd64"]
+
+
+@pytest.mark.parametrize("architecture,mirror", [
+    ("amd64", "https://mirrors.edge.kernel.org/ubuntu"),
+    ("arm64", "https://mirror.csclub.uwaterloo.ca/ubuntu-ports"),
+])
+def test_fallback_replaces_all_suites_and_installs_from_successfully_updated_group(tmp_path, architecture, mirror):
+    vendor = tmp_path / "unrelated-vendor.sources"
+    vendor.write_bytes(b"Synthetic untouched host repository\n")
+    before = vendor.read_bytes()
+    host = AptHost(tmp_path, architecture, failures=[100, 0, 100, 0],
+                   diagnostic="Temporary failure resolving archive")
+
+    result = host.provision()
+
+    assert result["status"] == "passed" and result["sourceGroup"] == "mirror"
+    assert [(item["operation"], item["attempt"], item["sourceGroup"]) for item in result["operations"]] == [
+        ("update", 1, "official"), ("update", 2, "mirror"),
+        ("install", 1, "mirror"), ("install", 2, "mirror")]
+    expected = [f"deb [arch={architecture} signed-by={host.keyring}] {mirror} {suite} main universe"
+                for suite in ("noble", "noble-updates", "noble-security")]
+    assert result["sources"] == expected
+    assert all(source.splitlines() == expected for source in host.sources[1:])
+    assert result["operations"][0]["sources"] == host.sources[0].splitlines()
+    assert all(item["sources"] == expected for item in result["operations"][1:])
+    assert result["operations"][0]["diagnostic"] == "Temporary failure resolving archive"
+    assert vendor.read_bytes() == before
+    for arguments, _ in host.commands:
+        if "apt-get" in arguments:
+            assert "Dir::Etc::sourceparts=-" in arguments
+            assert "APT::Update::Error-Mode=any" in arguments
+            assert "Acquire::https::Verify-Peer=true" in arguments
+            assert "Acquire::https::Verify-Host=true" in arguments
+            assert "Acquire::https::AllowRedirect=false" in arguments
+            assert "Acquire::AllowInsecureRepositories=false" in arguments
+            assert "APT::Get::AllowUnauthenticated=false" in arguments
+    assert not list(tmp_path.glob("emulebb-ubuntu-apt-*"))
+
+
+def test_fallback_cannot_reset_the_overall_deadline(tmp_path):
+    host = AptHost(tmp_path, failures=[100])
+    readings = iter([0, 0, 1, 7, 8])
+    with pytest.raises(ubuntu_ci.ProvisioningError, match="overall deadline") as failure:
+        host.provision(deadline_seconds=10, clock=lambda: next(readings))
+    assert failure.value.receipt["status"] == "failed"
+    assert len(host.sources) == 1
+    assert len(failure.value.receipt["operations"]) == 1
+    assert failure.value.receipt["operations"][0]["sourceGroup"] == "official"
+
+
+def test_bad_signatures_on_all_sources_never_authorize_installation(tmp_path):
+    host = AptHost(tmp_path, failures=[100, 100, 100], diagnostic="BADSIG synthetic archive signature")
+    with pytest.raises(ubuntu_ci.ProvisioningError) as failure:
+        host.provision()
+    assert failure.value.receipt["status"] == "failed"
+    assert len(host.sources) == 3
+    assert all(item["returncode"] == 100 for item in failure.value.receipt["operations"])
+    assert all("BADSIG" in item["diagnostic"] for item in failure.value.receipt["operations"])
+    assert all(arguments[-1] == "update" for arguments, _ in host.commands if "apt-get" in arguments)
+
+
+def test_one_attempt_never_adds_a_mirror_retry(tmp_path):
+    host = AptHost(tmp_path, failures=[100])
+    with pytest.raises(ubuntu_ci.ProvisioningError) as failure:
+        host.provision(attempts=1)
+    assert len(host.sources) == 1
+    assert failure.value.receipt["maximumAttempts"] == 1
+    assert failure.value.receipt["sourceGroup"] == "official"
 
 
 def test_overall_budget_does_not_restart_for_retry_or_install(tmp_path):
