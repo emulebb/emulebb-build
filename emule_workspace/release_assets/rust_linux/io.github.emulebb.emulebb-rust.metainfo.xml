@@ -17,6 +17,12 @@
   <url type="vcs-browser">https://github.com/emulebb/emulebb-rust</url>
   <url type="bugtracker">https://github.com/emulebb/emulebb-rust/issues</url>
   <url type="help">https://emulebb.github.io/emulebb-tooling/products/emulebb-rust/reference/GUIDE-GETTING-STARTED/</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Search and build information in the browser WebUI</caption>
+      <image type="source" width="1280" height="720">https://emulebb.github.io/emulebb-tooling/assets/emulebb-rust/webui-eac9b37a6e20.png</image>
+    </screenshot>
+  </screenshots>
   <releases>
     <release type="development" version="0.1.0-beta.2" date="2026-10-02">
       <url type="details">https://github.com/emulebb/emulebb-rust/releases/tag/rust-v0.1.0-beta.2</url>
