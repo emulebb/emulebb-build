@@ -1064,6 +1064,64 @@ def invoke_rust_rest_openapi(layout: WorkspaceLayout) -> None:
                cwd=harness, env=_workspace_env(layout))
 
 
+def invoke_rust_release_package(
+    layout: WorkspaceLayout, options: WorkspaceOptions, *, release_dir: Path,
+    release_version: str, target_os: str, linux_libc: str | None = None,
+    verify_profile_ownership: bool = False, render_webui: bool = False,
+) -> Path:
+    """Smoke exact selected-source packages through the existing native Harness owner."""
+    from uuid import uuid4
+    from .local_checks import _source_snapshot
+    from .release import _is_release_version
+    from .workstreams import _safe_path, resolve_workstream
+
+    workspace, output = layout.emule_workspace_root.resolve(), layout.output_root.resolve()
+    if layout.emulebb_rust_repo_root is None:
+        raise RuntimeError("test rust-release-package requires selected Rust sources")
+    sources = {"emulebb-build": layout.build_repo_root, "emulebb-rust": layout.emulebb_rust_repo_root,
+               "emulebb-build-tests": layout.tests_repo_root, "emulebb-tooling": layout.tooling_repo_root}
+    sources = {name: _safe_path(workspace, path) for name, path in sources.items()}
+    rust, harness = sources["emulebb-rust"], sources["emulebb-build-tests"]
+    resolve_workstream(workspace, output, repo=rust)
+    script = _safe_path(harness, harness / "scripts/smoke-rust-release-package.py")
+    release_dir = _safe_path(output, release_dir.absolute())
+    if not release_dir.is_dir() or not script.is_file():
+        raise RuntimeError("Package smoke requires an existing OUTPUT release directory and selected Harness script")
+    if not _is_release_version(release_version) or (linux_libc is not None and target_os != "linux"):
+        raise ValueError("Package smoke requires a valid release version; --linux-libc requires Linux")
+    before = _source_snapshot(sources, clean=True)
+    environment = dict(_workspace_env(layout))
+    run_id = uuid4().hex[:12]
+    report = _safe_path(output, output / "reports/rust-release-package" / run_id)
+    scratch = _safe_path(output, output / "tmp/rust-release-package" / run_id)
+    report.mkdir(parents=True)
+    scratch.mkdir(parents=True)
+    environment.update(TEMP=str(scratch), TMP=str(scratch), TMPDIR=str(scratch))
+    arguments = ["-B", script, "--release-dir", release_dir, "--release-version", release_version,
+                 "--rust-repo", rust, "--target-os", target_os, "--platform", options.platform,
+                 "--expected-source-sha", before["emulebb-rust"]["revision"], "--report-path", report / "report.json"]
+    if linux_libc:
+        arguments.extend(["--linux-libc", linux_libc])
+    if verify_profile_ownership:
+        arguments.append("--verify-profile-ownership")
+    if render_webui:
+        arguments.append("--render-webui")
+    # WHY: retain orchestration provenance separately from the persisted runner's
+    # package/SBOM/CPU/restart proof; a changed clean support HEAD cannot borrow it.
+    receipt = {"schema": "emulebb.rust-package-smoke-source/1", "sources": before, "status": "failed"}
+    print(f"Native package smoke evidence: {report}", flush=True)
+    try:
+        run_native(get_python_invocation().command(arguments), label="Rust native package smoke", cwd=harness, env=environment)
+        if _source_snapshot(sources, clean=True) != before:
+            raise RuntimeError("Selected package-smoke source set changed during validation")
+        if not (report / "report.json").is_file():
+            raise RuntimeError("Native package smoke did not retain its result")
+        receipt["status"] = "passed"
+        return report
+    finally:
+        (report / "sources.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+
+
 def invoke_rust_unit_tests(
     layout: WorkspaceLayout, *, package: str | None = None, refresh_workspace_lock: bool = False,
 ) -> None:

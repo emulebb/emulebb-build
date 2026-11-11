@@ -72,6 +72,7 @@ from .test_runs import (
     invoke_fake_kad_trust_soak,
     invoke_rust_network_proof,
     invoke_rust_rest_openapi,
+    invoke_rust_release_package,
     invoke_rust_unit_tests,
     invoke_rust_webui_tests,
     invoke_live_diff_runs,
@@ -1682,6 +1683,24 @@ def test_rust_rest_openapi(*, workspace_options: WorkspaceOptions, layout) -> No
     """Gate the selected staged daemon through the persisted REST harness."""
     _locked("test rust-rest-openapi", lambda **kwargs: invoke_rust_rest_openapi(
         kwargs["layout"]))(workspace_options=workspace_options, layout=layout)
+
+
+@test.command("rust-release-package")
+@_common_options
+@click.option("--release-dir", type=click.Path(path_type=Path, exists=True, file_okay=False), required=True)
+@click.option("--release-version", required=True)
+@click.option("--target-os", type=click.Choice(["windows", "linux", "macos"]), required=True)
+@click.option("--linux-libc", type=click.Choice(["gnu", "musl"]), default=None)
+@click.option("--verify-profile-ownership", is_flag=True)
+@click.option("--render-webui", is_flag=True)
+def test_rust_release_package(*, release_dir, release_version, target_os, linux_libc,
+                              verify_profile_ownership, render_webui, workspace_options, layout) -> None:
+    """Smoke exact-source native packages with disposable profiles and the existing lock."""
+    _locked("test rust-release-package", lambda **kwargs: invoke_rust_release_package(
+        kwargs["layout"], kwargs["workspace_options"], release_dir=release_dir,
+        release_version=release_version, target_os=target_os, linux_libc=linux_libc,
+        verify_profile_ownership=verify_profile_ownership, render_webui=render_webui,
+    ))(workspace_options=workspace_options, layout=layout)
 
 
 @test.command("rust-unit")

@@ -875,6 +875,36 @@ def test_rest_campaign_help_uses_the_fixed_persisted_runner():
     assert "--executable" not in result.output
 
 
+def test_package_campaign_uses_selected_sources_and_existing_lock(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from emule_workspace import workstreams
+
+    locked = cli._locked
+    root, output, _, selected, _ = _workstream_cli_fixture(tmp_path, monkeypatch)
+    selected.emule_workspace_root = root
+    release = output / "release/candidate"
+    release.mkdir(parents=True)
+    monkeypatch.setattr(cli, "_locked", locked)
+    monkeypatch.setattr(workstreams, "resolve_workstream", lambda *args, **kwargs: {"id": "alpha"})
+    for acquired in (True, False):
+        events = []
+        lock = SimpleNamespace(acquire=lambda: events.append("acquire") or acquired,
+                               release=lambda: events.append("release"), delegation_token=None,
+                               active_owner_text=lambda: "fixture owner")
+        monkeypatch.setattr(cli, "WorkspaceLock", lambda **kwargs: lock)
+        monkeypatch.setattr(cli, "invoke_rust_release_package", lambda layout, options, **kwargs:
+                            events.append((layout, kwargs["verify_profile_ownership"])))
+        result = CliRunner().invoke(cli.main, ["test", "rust-release-package", "--workstream", "alpha",
+            "--release-dir", str(release), "--release-version", "0.1.0-beta.2", "--target-os", "windows",
+            "--verify-profile-ownership"])
+        if acquired:
+            assert result.exit_code == 0, result.output
+            assert events == ["acquire", (selected, True), "release"]
+        else:
+            assert result.exit_code != 0 and "Workspace busy" in result.output
+            assert events == ["acquire"]
+
+
 def test_rest_campaign_uses_selected_sources_and_existing_lock(tmp_path, monkeypatch):
     import os
     from types import SimpleNamespace
