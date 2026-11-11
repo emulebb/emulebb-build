@@ -49,13 +49,15 @@ def invoke(context, **kwargs):
 
 def test_package_adapter_binds_current_sources_and_retains_both_proofs(package_context):
     layout, _, snapshot, calls = package_context
-    report = invoke(package_context, verify_profile_ownership=True, render_webui=True, expected_channel="nightly")
+    report = invoke(package_context, verify_profile_ownership=True, render_webui=True,
+                    expected_channel="nightly", capture_public_webui=True)
     command, context = calls[0]
     assert command[command.index("--expected-source-sha") + 1] == snapshot["emulebb-rust"]["revision"]
     assert command[command.index("--rust-repo") + 1] == str(layout.emulebb_rust_repo_root)
     assert command[2] == str(layout.tests_repo_root / "scripts/smoke-rust-release-package.py")
     assert "--verify-profile-ownership" in command and "--render-webui" in command
     assert command[command.index("--expected-channel") + 1] == "nightly"
+    assert "--capture-public-webui" in command
     assert context["cwd"] == layout.tests_repo_root
     assert Path(context["env"]["TEMP"]).is_relative_to(layout.output_root / "tmp/rust-release-package")
     receipt = json.loads((report / "sources.json").read_text())
@@ -103,4 +105,11 @@ def test_missing_persisted_result_cannot_count_as_success(package_context, monke
 def test_invalid_identity_channel_is_rejected_before_launch(package_context):
     with pytest.raises(ValueError, match="supported expected channel"):
         invoke(package_context, expected_channel="invented")
+    assert not package_context[3]
+
+
+@pytest.mark.parametrize("arguments", [{}, {"render_webui": True}, {"expected_channel": "candidate"}])
+def test_public_capture_without_strict_rendering_is_rejected_before_launch(package_context, arguments):
+    with pytest.raises(ValueError, match="Public capture requires"):
+        invoke(package_context, capture_public_webui=True, **arguments)
     assert not package_context[3]

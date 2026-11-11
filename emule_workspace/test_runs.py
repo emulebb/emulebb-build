@@ -1069,6 +1069,7 @@ def invoke_rust_release_package(
     release_version: str, target_os: str, linux_libc: str | None = None,
     verify_profile_ownership: bool = False, render_webui: bool = False,
     expected_channel: str | None = None,
+    capture_public_webui: bool = False,
 ) -> Path:
     """Smoke exact selected-source packages through the existing native Harness owner."""
     from uuid import uuid4
@@ -1092,6 +1093,8 @@ def invoke_rust_release_package(
         raise ValueError("Package smoke requires a valid release version; --linux-libc requires Linux")
     if expected_channel is not None and expected_channel not in {"development", "candidate", "beta", "nightly"}:
         raise ValueError("Package smoke requires a supported expected channel")
+    if capture_public_webui and not (render_webui and expected_channel):
+        raise ValueError("Public capture requires rendered WebUI and explicit expected channel")
     before = _source_snapshot(sources, clean=True)
     environment = dict(_workspace_env(layout))
     run_id = uuid4().hex[:12]
@@ -1111,6 +1114,8 @@ def invoke_rust_release_package(
         arguments.append("--render-webui")
     if expected_channel is not None:
         arguments.extend(["--expected-channel", expected_channel])
+    if capture_public_webui:
+        arguments.append("--capture-public-webui")
     # WHY: retain orchestration provenance separately from the persisted runner's
     # package/SBOM/CPU/restart proof; a changed clean support HEAD cannot borrow it.
     receipt = {"schema": "emulebb.rust-package-smoke-source/1", "sources": before, "status": "failed"}
