@@ -69,6 +69,19 @@ def _source_identity(roots: tuple[Path, ...]) -> list[dict]:
                     raise RuntimeError("Native source symlink must have a bounded relative target")
                 target = Path(os.path.normpath(path.parent / link))
                 target = _safe_path(root, target)
+                try:
+                    resolved = path.resolve(strict=True)
+                except (OSError, RuntimeError) as error:
+                    raise RuntimeError("Native source symlink target must resolve strictly") from error
+                # A lexical redirect/.. can normalize inside this root even
+                # though the OS traverses the redirect first to different bytes.
+                if resolved != target:
+                    raise RuntimeError("Native source symlink target resolves outside its admitted path")
+                ancestor = (path.parent / link).parent
+                while ancestor != root.parent:
+                    if ancestor.is_symlink() or getattr(ancestor, "is_junction", lambda: False)():
+                        raise RuntimeError("Native source symlink target has a redirected ancestor")
+                    ancestor = ancestor.parent
                 if not target.is_file():
                     raise RuntimeError("Native source symlink target must be a contained regular file")
                 digest.update(b"symlink\0" + encoded_link + b"\0")
