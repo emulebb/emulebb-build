@@ -227,6 +227,21 @@ def test_registered_full_missing_runtime_capability_fails_before_any_side_effect
         local_checks.run_checks(repo=repo, stage="full", remote="origin", updates=None, root=root, output=output)
 
 
+def test_registered_builder_full_host_tests_do_not_require_product_runtime_capabilities(tmp_path, monkeypatch):
+    root, output, repo, _snapshots = _synthetic_check_runner(tmp_path, monkeypatch, {"emule_workspace/local_checks.py"})
+    monkeypatch.setattr(local_checks, "_resolve_registration", lambda *args: {"id": "sample"})
+    def forbidden(*args, **kwargs):
+        pytest.fail("host-only Builder proof required the Rust runtime contract")
+    monkeypatch.setattr(local_checks, "require_runtime_stage_capabilities", forbidden)
+    commands = []
+    def execute(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(local_checks.subprocess, "run", execute)
+    local_checks.run_checks(repo=repo, stage="full", remote="origin", updates=None, root=root, output=output)
+    assert any("pytest" in command for command in commands)
+
+
 @pytest.fixture
 def runtime_interfaces(tmp_path):
     sources = {name: tmp_path / name for name in ("emulebb-build", "emulebb-rust", "emulebb-build-tests")}
