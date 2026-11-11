@@ -563,10 +563,11 @@ def test_expected_context_must_pin_every_source_and_the_workflow(evidence, fault
         candidate.write_candidate(**{**args(evidence), "context": context})
 
 
-def test_old_candidate_format_cannot_be_verified(evidence):
+@pytest.mark.parametrize("old_format", [2, 3])
+def test_old_candidate_format_cannot_be_verified(evidence, old_format):
     path = candidate.write_candidate(**args(evidence))
     data = evidence["read"](path.name)
-    data["formatVersion"] = 2
+    data["formatVersion"] = old_format
     evidence["save"](path.name, data)
     with pytest.raises(RuntimeError, match="Saved candidate"):
         candidate.verify_candidate(**args(evidence))

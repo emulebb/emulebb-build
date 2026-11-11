@@ -2,8 +2,9 @@
 import json
 
 import pytest
+from click.testing import CliRunner
 
-from emule_workspace import release
+from emule_workspace import cli, release
 from emule_workspace.platform_profiles import package_layout
 
 
@@ -44,3 +45,25 @@ def test_scoped_profile_cannot_assemble_a_nightly(tmp_path):
         release.assemble_emulebb_rust_release_assets(
             tmp_path, "0.1.0-beta.2.nightly.20261111.g1234567", platform_profile="windows-linux",
         )
+
+
+@pytest.mark.parametrize("options,expected", [
+    ([], "full"),
+    (["--platform-profile", "windows-linux"], "windows-linux"),
+])
+def test_assembly_cli_preserves_default_and_forwards_explicit_profile(tmp_path, monkeypatch, options, expected):
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    monkeypatch.setenv("EMULEBB_WORKSPACE_OUTPUT_ROOT", str(tmp_path))
+    captured = []
+
+    def assemble(directory, version, *, platform_profile):
+        captured.append((directory, version, platform_profile))
+        return directory / "SHA256SUMS"
+
+    monkeypatch.setattr(cli, "assemble_emulebb_rust_release_assets", assemble)
+    result = CliRunner().invoke(cli.assemble_emulebb_rust_release_ci, [
+        "--release-version", "0.1.0-beta.2", "--assets-dir", str(assets), *options,
+    ])
+    assert result.exit_code == 0, result.output
+    assert captured == [(assets.resolve(), "0.1.0-beta.2", expected)]
