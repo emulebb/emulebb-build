@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 import struct
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -1282,6 +1283,7 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     assert (appdir / "emulebb-rust.desktop").read_bytes() == (
         appdir / "usr/share/applications/emulebb-rust.desktop"
     ).read_bytes()
+    metainfo_path = Path("usr/share/metainfo/io.github.emulebb.emulebb-rust.metainfo.xml")
     for tree in (staging / "deb", appdir):
         for size in (16, 24, 32, 48, 64, 128, 256, 512):
             icon = tree / "usr/share/icons/hicolor" / f"{size}x{size}/apps/emulebb-rust.png"
@@ -1289,8 +1291,20 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
         desktop = configparser.ConfigParser(interpolation=None)
         desktop.read(tree / "usr/share/applications/emulebb-rust.desktop", encoding="utf-8")
         assert desktop["Desktop Entry"]["Icon"] == "emulebb-rust"
+        assert desktop["Desktop Entry"]["GenericName"] == "Peer-to-peer file sharing client"
         assert "eD2K" in desktop["Desktop Entry"]["Comment"]
         assert "Kad;" in desktop["Desktop Entry"]["Keywords"]
+        component = ET.parse(tree / metainfo_path).getroot()
+        assert component.attrib["type"] == "desktop-application"
+        assert component.findtext("id") + ".metainfo.xml" == metainfo_path.name
+        assert component.findtext("launchable[@type='desktop-id']") == "emulebb-rust.desktop"
+        assert component.findtext("summary") == desktop["Desktop Entry"]["Comment"]
+        assert component.findtext("project_license") == "GPL-2.0-only"
+        beta = component.find("releases/release[@version='0.1.0-beta.2']")
+        assert beta is not None and beta.attrib["date"] == "2026-10-02"
+        assert beta.findtext("url[@type='details']") == (
+            "https://github.com/emulebb/emulebb-rust/releases/tag/rust-v0.1.0-beta.2"
+        )
         assert (tree / "usr/lib/emulebb-rust/webui/favicon.ico").read_bytes() == b"sample-favicon"
         assert (tree / "usr/lib/emulebb-rust/webui/apple-touch-icon.png").read_bytes() == b"sample-touch-icon"
         assert "Slint" not in (tree / "usr/share/doc/emulebb-rust/README.md").read_text(encoding="utf-8")
@@ -1299,6 +1313,7 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
         manifest = json.loads(asset.with_name(asset.name + ".manifest.json").read_text())
         assert manifest["sbom"] == sbom.name and manifest["sbomSha256"] == release._sha256(sbom)
         document = json.loads(sbom.read_text())
+        assert any(entry["fileName"].endswith("/" + metainfo_path.as_posix()) for entry in document["files"])
         runtime_components = [package for package in document["packages"] if package["name"] == "AppImage type2-runtime"]
         if asset == deb:
             assert not runtime_components and "appImageRuntime" not in manifest

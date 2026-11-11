@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.emulebb.emulebb-rust</id>
+  <name>eMuleBB Rust</name>
+  <summary>Search, download and share files over eD2K and Kad</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-only</project_license>
+  <developer id="io.github.emulebb">
+    <name>eMuleBB project</name>
+  </developer>
+  <description>
+    <p>eMuleBB Rust is a peer-to-peer file sharing client for eD2K and Kad. Search for files, manage downloads and share folders from the browser console.</p>
+    <p>The desktop launcher starts the daemon and opens its local WebUI in your default browser when available. Use the authenticated REST API to automate supported client operations.</p>
+  </description>
+  <launchable type="desktop-id">emulebb-rust.desktop</launchable>
+  <url type="homepage">https://emulebb.github.io/</url>
+  <url type="vcs-browser">https://github.com/emulebb/emulebb-rust</url>
+  <url type="bugtracker">https://github.com/emulebb/emulebb-rust/issues</url>
+  <url type="help">https://emulebb.github.io/emulebb-tooling/products/emulebb-rust/reference/GUIDE-GETTING-STARTED/</url>
+  <releases>
+    <release type="development" version="0.1.0-beta.2" date="2026-10-02">
+      <url type="details">https://github.com/emulebb/emulebb-rust/releases/tag/rust-v0.1.0-beta.2</url>
+    </release>
+  </releases>
+</component>

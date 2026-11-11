@@ -643,10 +643,12 @@ def _stage_emulebb_rust_linux_tree(
     lib_root = destination / "lib" / "emulebb-rust"
     doc_root = destination / "share" / "doc" / "emulebb-rust"
     applications_root = destination / "share" / "applications"
+    metainfo_root = destination / "share" / "metainfo"
     bin_root = destination / "bin"
     lib_root.mkdir(parents=True)
     doc_root.mkdir(parents=True)
     applications_root.mkdir(parents=True)
+    metainfo_root.mkdir(parents=True)
     bin_root.mkdir(parents=True)
     shutil.copy2(executable, lib_root / "emulebb-rust")
     shutil.copytree(webui, lib_root / "webui")
@@ -670,14 +672,9 @@ def _stage_emulebb_rust_linux_tree(
         encoding="utf-8",
         newline="\n",
     )
-    (applications_root / "emulebb-rust.desktop").write_text(
-        "[Desktop Entry]\nVersion=1.0\nType=Application\nName=eMuleBB Rust\n"
-        "Comment=Search, download and share files over eD2K and Kad\n"
-        "Exec=emulebb-rust-launch\nIcon=emulebb-rust\nCategories=Network;FileTransfer;\n"
-        "Keywords=eD2K;Kad;P2P;download;sharing;\nTerminal=true\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    desktop_assets = Path(__file__).parent / "release_assets" / "rust_linux"
+    shutil.copy2(desktop_assets / "emulebb-rust.desktop", applications_root)
+    shutil.copy2(desktop_assets / "io.github.emulebb.emulebb-rust.metainfo.xml", metainfo_root)
     # WHY: install the same approved raster set for desktop lookup and AppImage
     # extraction; a desktop Icon name alone leaves Debian launchers unbranded.
     for size in (16, 24, 32, 48, 64, 128, 256, 512):
