@@ -30,11 +30,16 @@ REPOSITORY_FIELDS = {**CORE_REPOSITORY_FIELDS, **OPTIONAL_REPOSITORY_FIELDS}
 
 
 def _git(repo: Path, *args: str, check: bool = True, input_text: str | None = None) -> str:
-    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                            env=git_environment(), input=input_text)
+    # WHY: Git's stdin transaction protocol requires literal LF. Windows text
+    # pipes translate LF to CRLF, so only this optional input uses UTF-8 bytes.
+    pipe = {"text": True} if input_text is None else {"input": input_text.encode("utf-8")}
+    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+                            env=git_environment(), **pipe)
+    stdout = result.stdout if isinstance(result.stdout, str) else result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr if isinstance(result.stderr, str) else result.stderr.decode("utf-8", errors="replace")
     if check and result.returncode:
-        raise RuntimeError(result.stderr.strip() or f"Git {' '.join(args)} failed")
-    return result.stdout.strip() if result.returncode == 0 else ""
+        raise RuntimeError(stderr.strip() or f"Git {' '.join(args)} failed")
+    return stdout.strip() if result.returncode == 0 else ""
 
 
 def _id(value: str) -> str:
