@@ -708,6 +708,37 @@ def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, worksp
         _locked("local-check", execute)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("rust-runtime-stage")
+@click.argument("action", type=click.Choice(["prepare", "publish", "verify", "discard"]))
+@click.option("--rust-repo", type=click.Path(path_type=Path, exists=True), required=True)
+@click.option("--target", default=None, help="Selected native Rust target, defaulting to the compiler host.")
+@click.option("--flavor", type=click.Choice(["fresh", "regular", "diagnostics"]), default="fresh")
+@_common_options
+def rust_runtime_stage(*, action, rust_repo, target, flavor, workspace_options, layout) -> None:
+    """Control a registered runtime bundle under the caller's existing workspace lock."""
+    import json
+    import sys
+    from .rust_runtime_stage import discard_stage, prepare_stage, publish_stage, verify_stage
+
+    if layout.emulebb_rust_repo_root is None or rust_repo.resolve() != layout.emulebb_rust_repo_root.resolve():
+        raise click.ClickException("Runtime source must match the selected registered layout")
+    try:
+        if action == "prepare":
+            result = prepare_stage(layout, target=target, flavor=flavor)
+        elif action == "verify":
+            result = verify_stage(layout, target=target, diagnostics=flavor == "diagnostics")
+        else:
+            description = json.load(sys.stdin)
+            if action == "publish":
+                result = publish_stage(layout, description)
+            else:
+                discard_stage(layout, description)
+                result = {"discarded": True}
+    except (OSError, ValueError, RuntimeError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(json.dumps(result, sort_keys=True))
+
+
 @main.command()
 @click.option("--workspace-name", default=None, help="Workspace name. Defaults to canonical topology.")
 @click.option("--artifacts-seed-root", default=None, help="Optional third-party artifact seed root.")
