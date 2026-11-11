@@ -9,6 +9,7 @@ import re
 
 from .image_security import TRIVY_IMAGE, _material_commits, _verify_spdx_architecture
 from .linux_containers import validate_elf_audit
+from .platform_profiles import PLATFORM_PROFILES, package_layout as platform_package_layout
 from .release import _is_release_version, _sha256, _sha256sums_text
 from .rust_images import image_package_name, image_prefix, verified_smoke_platforms
 from . import android_package
@@ -79,12 +80,17 @@ class CandidateContext:
     channel: str
     source: dict[str, str]
     workflow: dict[str, str]
+    platform_profile: str = "full"
 
     def checked(self) -> CandidateContext:
         if not isinstance(self.version, str) or not _is_release_version(self.version):
             raise RuntimeError("Candidate requires a valid release version")
         if self.channel not in {"beta", "candidate", "nightly"}:
             raise RuntimeError("Candidate requires a supported release channel")
+        if self.platform_profile not in PLATFORM_PROFILES:
+            raise RuntimeError("Candidate requires a supported platform profile")
+        if self.platform_profile != "full" and self.channel != "candidate":
+            raise RuntimeError("Windows/Linux profile is restricted to unpublished manual candidates")
         if set(self.source) != SOURCE_NAMES or any(
             not isinstance(value, str) or SHA.fullmatch(value) is None
             for value in self.source.values()
@@ -125,18 +131,7 @@ def _hosted(data: dict, context: CandidateContext, label: str) -> int:
 
 def package_layout(context: CandidateContext) -> dict[str, tuple[str, ...]]:
     """Return the exact native and static-musl payloads required for each CPU."""
-    suffixes = {
-        "windows-x64": ("windows-x64.zip",),
-        "windows-arm64": ("windows-arm64.zip",),
-        "linux-x64": ("linux-amd64.deb", "linux-x86_64.AppImage"),
-        "linux-arm64": ("linux-arm64.deb", "linux-aarch64.AppImage"),
-        "macos-x64": ("macos-x64.dmg",),
-        "macos-arm64": ("macos-arm64.dmg",),
-        "linux-x64-musl": ("linux-amd64-musl.tar.zst",),
-        "linux-arm64-musl": ("linux-arm64-musl.tar.zst",),
-    }
-    return {platform: tuple(f"{context.stem}-{name}" for name in names)
-            for platform, names in suffixes.items()}
+    return platform_package_layout(context.version, context.platform_profile)
 
 
 def package_sbom(asset: str) -> str:
@@ -543,7 +538,8 @@ def candidate_manifest(*, release_dir: Path, archives_dir: Path, context: Candid
     smoke = _package_smoke(release_dir, context, packages)
     images = _images(release_dir, archives_dir, context, packages, archive_identity)
     _sums(release_dir, "SHA256SUMS", names - {"SHA256SUMS"})
-    result = {"formatVersion": 3, "releaseVersion": context.version, "channel": context.channel,
+    result = {"formatVersion": 4, "releaseVersion": context.version, "channel": context.channel,
+            "platformProfile": context.platform_profile,
             "source": context.source, "workflow": context.workflow,
             "packageSmoke": smoke, "images": images, "artifacts": _records(release_dir, names)}
     if context.channel == "nightly":
@@ -564,8 +560,8 @@ def write_candidate(*, release_dir: Path, archives_dir: Path, context: Candidate
 
 def _original_context(saved: dict, context: CandidateContext) -> CandidateContext:
     context.checked()
-    _fields(saved, {"formatVersion": 3, "releaseVersion": context.version,
-                    "channel": context.channel}, "Saved candidate")
+    _fields(saved, {"formatVersion": 4, "releaseVersion": context.version,
+                    "channel": context.channel, "platformProfile": context.platform_profile}, "Saved candidate")
     _same(saved.get("source"), context.source, "Saved candidate source")
     workflow = _object(saved.get("workflow"), "Saved candidate workflow")
     _hosted({"origin": "github-actions", "workflow": workflow}, context, "Saved candidate")

@@ -20,7 +20,6 @@ from .rust_source_cache import _source_identity
 from .workstreams import _id, _safe_path, resolve_workstream
 
 SCHEMA = "emulebb.rust-runtime-stage/1"
-REGISTERED_RUNTIME_STAGE_ACTIVATED = True
 RECEIPT = "stage.json"
 BINARIES = ("emulebb-rust", "emulebb-rust-diagnostics", "emulebb-nat-diagnostic")
 

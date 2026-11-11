@@ -271,7 +271,8 @@ def test_complete_candidate_covers_all_native_and_musl_cpus_and_both_images(evid
     path = candidate.write_candidate(**args(evidence))
     saved = candidate.verify_candidate(**args(evidence))
     assert len(saved["artifacts"]) == 73
-    assert saved["formatVersion"] == 3
+    assert saved["formatVersion"] == 4
+    assert saved["platformProfile"] == "full"
     assert {item["platform"] for item in saved["packageSmoke"]} == set(PAYLOADS)
     assert set(saved["images"]) == {"ubuntu", "alpine"}
     assert all(set(image["platforms"]) == {"linux/amd64", "linux/arm64"} for image in saved["images"].values())
@@ -292,6 +293,80 @@ def test_missing_supported_platform_proof_is_rejected(evidence, name):
     (evidence["release_dir"] / name).unlink()
     with pytest.raises(RuntimeError, match="exactly the allowed"):
         candidate.write_candidate(**args(evidence))
+
+
+def _scoped_evidence(evidence):
+    """Remove optional producers entirely, exercising the actual strict validator."""
+    from dataclasses import replace
+
+    evidence["context"] = replace(evidence["context"], platform_profile="windows-linux")
+    root = evidence["release_dir"]
+    for path in root.iterdir():
+        if "macos-" in path.name:
+            path.unlink()
+    evidence["refresh_root"]()
+
+
+def test_scoped_candidate_requires_no_optional_files_but_keeps_both_oci_variants(evidence):
+    _scoped_evidence(evidence)
+    candidate.write_candidate(**args(evidence))
+    saved = candidate.verify_candidate(**args(evidence))
+    assert saved["platformProfile"] == "windows-linux"
+    assert len(saved["artifacts"]) == 65
+    assert {row["platform"] for row in saved["packageSmoke"]} == set(PAYLOADS) - {"macos-x64", "macos-arm64"}
+    assert set(saved["images"]) == {"ubuntu", "alpine"}
+    assert all(set(image["platforms"]) == {"linux/amd64", "linux/arm64"} for image in saved["images"].values())
+
+
+@pytest.mark.parametrize("suffix", [
+    "windows-x64.zip", "windows-arm64.zip", "linux-amd64.deb", "linux-x86_64.AppImage",
+    "linux-arm64.deb", "linux-aarch64.AppImage", "linux-amd64-musl.tar.zst", "linux-arm64-musl.tar.zst",
+    "package-smoke-windows-arm64.json", "alpine-image-arm64-security.json",
+])
+def test_scoped_candidate_still_rejects_every_missing_mandatory_producer(evidence, suffix):
+    _scoped_evidence(evidence)
+    (evidence["release_dir"] / f"{STEM}-{suffix}").unlink()
+    with pytest.raises(RuntimeError):
+        candidate.write_candidate(**args(evidence))
+
+
+def test_scoped_candidate_does_not_infer_profile_or_accept_optional_inventory(evidence):
+    from dataclasses import replace
+
+    _scoped_evidence(evidence)
+    candidate.write_candidate(**args(evidence))
+    path = candidate.candidate_path(evidence["release_dir"], evidence["context"])
+    saved = evidence["read"](path.name)
+    saved["platformProfile"] = "full"
+    evidence["save"](path.name, saved)
+    with pytest.raises(RuntimeError, match="Saved candidate"):
+        candidate.verify_candidate(**args(evidence))
+    evidence["context"] = replace(evidence["context"], platform_profile="full")
+    with pytest.raises(RuntimeError):
+        candidate.verify_candidate(**args(evidence))
+
+
+@pytest.mark.parametrize("field,value", [("sourceDirty", True), ("origin", "local-development"),
+                                        ("source", {"emulebbRust": {"commit": "f" * 40}})])
+def test_scoped_profile_keeps_exact_source_and_hosted_provenance_checks(evidence, field, value):
+    _scoped_evidence(evidence)
+    asset = f"{STEM}-windows-x64.zip"
+    name = asset + ".manifest.json"
+    metadata = evidence["read"](name)
+    metadata[field] = value
+    evidence["save"](name, metadata)
+    evidence["rebind_package_manifest"](asset)
+    with pytest.raises(RuntimeError):
+        candidate.write_candidate(**args(evidence))
+
+
+@pytest.mark.parametrize("channel", ["nightly", "beta"])
+def test_scoped_profile_cannot_be_promoted_to_a_published_channel(evidence, channel):
+    from dataclasses import replace
+
+    _scoped_evidence(evidence)
+    with pytest.raises(RuntimeError, match="unpublished manual"):
+        replace(evidence["context"], channel=channel).checked()
 
 
 @pytest.mark.parametrize("name", ["diagnostics.log", "synthetic-private.key", "unexpected-directory"])
@@ -488,10 +563,11 @@ def test_expected_context_must_pin_every_source_and_the_workflow(evidence, fault
         candidate.write_candidate(**{**args(evidence), "context": context})
 
 
-def test_old_candidate_format_cannot_be_verified(evidence):
+@pytest.mark.parametrize("old_format", [2, 3])
+def test_old_candidate_format_cannot_be_verified(evidence, old_format):
     path = candidate.write_candidate(**args(evidence))
     data = evidence["read"](path.name)
-    data["formatVersion"] = 2
+    data["formatVersion"] = old_format
     evidence["save"](path.name, data)
     with pytest.raises(RuntimeError, match="Saved candidate"):
         candidate.verify_candidate(**args(evidence))
