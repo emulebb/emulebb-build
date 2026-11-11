@@ -54,6 +54,9 @@ def layout(tmp_path, monkeypatch):
         ws._git(repo, "push", "-u", "origin", "main")
         anchors[ws.REPOSITORY_FIELDS[name]] = repo
     monkeypatch.setattr(ws, "_open_pull_requests", lambda entry: [])
+    from emule_workspace import rust_runtime_stage
+    monkeypatch.setattr(rust_runtime_stage, "resolve_required_workspace_roots",
+                        lambda: (root, tmp_path / "output"))
     return Layout(root, tmp_path / "output", **anchors)
 
 
@@ -795,3 +798,30 @@ def test_create_ignores_inherited_foreign_git_repository_and_index(layout, monke
     assert source_state(foreign) == before
     assert source_state(layout.emulebb_rust_repo_root) == rust_before
     assert {name: os.environ[name] for name in inherited} == inherited
+
+
+@pytest.mark.parametrize("whole_workstream", [False, True])
+def test_rust_retirement_removes_only_its_owned_runtime_after_preflight(layout, monkeypatch, whole_workstream):
+    from emule_workspace import rust_runtime_stage
+
+    registration = create(layout, repositories=("emulebb-rust", "emulebb-tooling"))
+    rust_path = Path(registration["repositories"]["emulebb-rust"]["path"])
+    layout.workspace_name = "workspace"
+    owned = layout.output_root / "tools/workstreams/alpha/emulebb-rust/native/bin"
+    owned.mkdir(parents=True)
+    (owned / "runtime-fixture").write_bytes(b"registered fixture")
+    operator = layout.output_root / "tools/emulebb-rust/bin"
+    operator.mkdir(parents=True)
+    (operator / "runtime-fixture").write_bytes(b"operator fixture")
+    monkeypatch.setattr(rust_runtime_stage, "resolve_required_workspace_roots",
+                        lambda: (layout.emule_workspace_root, layout.output_root))
+    lock = SimpleNamespace(acquire=lambda: True, release=lambda: None)
+    monkeypatch.setattr(rust_runtime_stage, "WorkspaceLock", lambda *args, **kwargs: lock)
+    if whole_workstream:
+        ws.remove_workstream(layout, "alpha", "parent")
+    else:
+        remaining = ws.remove_repository(layout, "alpha", "emulebb-rust", "parent")
+        assert "emulebb-tooling" in remaining["repositories"]
+    assert not owned.exists()
+    assert (operator / "runtime-fixture").read_bytes() == b"operator fixture"
+    assert not rust_path.exists()

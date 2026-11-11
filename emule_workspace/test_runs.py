@@ -1042,6 +1042,28 @@ def invoke_builder_unit_tests(layout: WorkspaceLayout, *, paths: tuple[str, ...]
         print(f"Builder unit {value['status']}; evidence: {report}", flush=True)
 
 
+def invoke_rust_rest_openapi(layout: WorkspaceLayout) -> None:
+    """Run the persisted REST campaign against selected sources under the CLI lock."""
+    from .workstreams import _safe_path, resolve_workstream
+
+    workspace = layout.emule_workspace_root.resolve()
+    if layout.emulebb_rust_repo_root is None:
+        raise RuntimeError("test rust-rest-openapi requires the selected Rust repository")
+    rust = _safe_path(workspace, layout.emulebb_rust_repo_root)
+    harness = _safe_path(workspace, layout.tests_repo_root)
+    script = _safe_path(workspace, harness / "scripts/rust-rest-openapi-ci.py")
+    contract = _safe_path(workspace, layout.tooling_repo_root /
+                          "docs/products/emulebb-rust/api/REST-API-OPENAPI.yaml")
+    if not rust.is_dir() or not script.is_file() or not contract.is_file():
+        raise RuntimeError("test rust-rest-openapi requires existing selected Rust, Harness script and OpenAPI contract")
+    registration = resolve_workstream(workspace, layout.output_root, repo=rust)
+    arguments = ["-B", script, "--rust-repo", rust, "--openapi-contract", contract]
+    if registration is not None:
+        arguments.append("--registered-stage")
+    run_native(get_python_invocation().command(arguments), label="Rust REST/OpenAPI conformance",
+               cwd=harness, env=_workspace_env(layout))
+
+
 def invoke_rust_unit_tests(
     layout: WorkspaceLayout, *, package: str | None = None, refresh_workspace_lock: bool = False,
 ) -> None:
