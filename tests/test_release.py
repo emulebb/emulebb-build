@@ -1553,7 +1553,18 @@ def _write_rust_release_assembly_inputs(tmp_path: Path):
     return version, names
 
 
-def test_emulebb_rust_release_assembly_requires_native_and_both_musl_assets(tmp_path: Path) -> None:
+@pytest.fixture(params=[False, True], ids=["local-host", "github-host"])
+def local_assembly_origin(monkeypatch, request):
+    """Keep synthetic local manifests independent of the runner's hosted identity."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true" if request.param else "false")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/project")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+    monkeypatch.setenv("GITHUB_WORKFLOW_SHA", "c" * 40)
+    monkeypatch.setattr(release, "_emulebb_rust_artifact_origin", lambda: {"origin": "local-development"})
+
+
+def test_emulebb_rust_release_assembly_requires_native_and_both_musl_assets(tmp_path: Path, local_assembly_origin) -> None:
     version, names = _write_rust_release_assembly_inputs(tmp_path)
     evidence = tmp_path / "package-smoke.json"
     evidence.write_text('{"status":"passed"}\n')
@@ -1570,7 +1581,7 @@ def test_emulebb_rust_release_assembly_requires_native_and_both_musl_assets(tmp_
 
 
 @pytest.mark.parametrize("fault", ["stem-manifest", "old-schema", "dirty", "wrong-version", "payload", "sbom", "nested", "candidate"])
-def test_rust_release_assembly_rejects_ambiguous_or_changed_inputs(tmp_path, fault):
+def test_rust_release_assembly_rejects_ambiguous_or_changed_inputs(tmp_path, fault, local_assembly_origin):
     version, names = _write_rust_release_assembly_inputs(tmp_path)
     asset = tmp_path / names[0]
     manifest_path = asset.with_name(asset.name + ".manifest.json")
