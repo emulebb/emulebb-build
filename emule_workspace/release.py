@@ -403,7 +403,12 @@ def _create_emulebb_rust_linux_packages(
         encoding="utf-8",
         newline="\n",
     )
-    shutil.copy2(appdir / "usr/share/applications/emulebb-rust.desktop", appdir / "emulebb-rust.desktop")
+    desktop_name = "io.github.emulebb.emulebb-rust.desktop"
+    shutil.copy2(appdir / "usr/share/applications" / desktop_name, appdir / desktop_name)
+    # appimagetool 1.9.1 derives this suffix from the root desktop filename.
+    # Rename, rather than duplicate, the component in the AppImage tree.
+    metainfo = appdir / "usr/share/metainfo/io.github.emulebb.emulebb-rust.metainfo.xml"
+    metainfo.rename(metainfo.with_name("io.github.emulebb.emulebb-rust.appdata.xml"))
     shutil.copy2(appdir / "usr/share/icons/hicolor/256x256/apps/emulebb-rust.png", appdir / "emulebb-rust.png")
     for executable_path in (
         deb_root / "usr" / "bin" / "emulebb-rust",
@@ -461,13 +466,15 @@ def _create_emulebb_rust_linux_packages(
         if want_deb:
             shutil.copytree(deb_root, native_deb_root)
             _normalize_emulebb_rust_linux_modes(native_deb_root, is_appdir=False)
+            _validate_emulebb_rust_linux_metadata(native_deb_root)
             _build_emulebb_rust_deb(native_deb_root, deb_path)
         if want_appimage:
             native_appdir = native_root / "AppDir"
             shutil.copytree(appdir, native_appdir)
             _normalize_emulebb_rust_linux_modes(native_appdir, is_appdir=True)
+            _validate_emulebb_rust_linux_metadata(native_appdir)
             _run_packaging_tool(
-                (appimagetool, "--no-appstream", "--runtime-file", str(runtime_path), str(native_appdir), str(appimage_path)),
+                (appimagetool, "--runtime-file", str(runtime_path), str(native_appdir), str(appimage_path)),
                 "appimagetool",
             )
 
@@ -673,7 +680,7 @@ def _stage_emulebb_rust_linux_tree(
         newline="\n",
     )
     desktop_assets = Path(__file__).parent / "release_assets" / "rust_linux"
-    shutil.copy2(desktop_assets / "emulebb-rust.desktop", applications_root)
+    shutil.copy2(desktop_assets / "io.github.emulebb.emulebb-rust.desktop", applications_root)
     shutil.copy2(desktop_assets / "io.github.emulebb.emulebb-rust.metainfo.xml", metainfo_root)
     # WHY: install the same approved raster set for desktop lookup and AppImage
     # extraction; a desktop Icon name alone leaves Debian launchers unbranded.
@@ -771,6 +778,30 @@ def _emulebb_rust_appimage_runtime(output: Path, arch: str) -> tuple[Path, dict[
         raise RuntimeError("AppImage runtime must be a 64-bit ELF for the selected architecture")
     return destination, {"version": version, "sourceRevision": revision, "architecture": arch,
                          "sha256": expected, "url": url}
+
+
+def _validate_emulebb_rust_linux_metadata(root: Path) -> None:
+    """Require real validators for the installed desktop entry and one component."""
+    component = "io.github.emulebb.emulebb-rust"
+    desktop = root / "usr/share/applications" / f"{component}.desktop"
+    metainfo = root / "usr/share/metainfo"
+    if not desktop.is_file() or sum((metainfo / f"{component}.{suffix}.xml").is_file()
+                                    for suffix in ("metainfo", "appdata")) != 1:
+        raise RuntimeError("Linux packaging requires one coherent desktop/AppStream component")
+    if sys.platform == "win32":
+        wsl = shutil.which("wsl.exe")
+        if not wsl:
+            raise RuntimeError("Linux metadata validation requires WSL with desktop-file-utils and appstream")
+        _run_packaging_tool((wsl, "--", "desktop-file-validate", wsl_path(desktop)), "desktop-file-validate")
+        _run_packaging_tool((wsl, "--", "appstreamcli", "validate-tree", "--no-net", wsl_path(root)),
+                            "AppStream tree validation")
+        return
+    validator = shutil.which("desktop-file-validate")
+    appstream = shutil.which("appstreamcli")
+    if not validator or not appstream:
+        raise RuntimeError("Linux metadata validation requires desktop-file-utils and appstream")
+    _run_packaging_tool((validator, str(desktop)), "desktop-file-validate")
+    _run_packaging_tool((appstream, "validate-tree", "--no-net", str(root)), "AppStream tree validation")
 
 
 def _run_packaging_tool(command: tuple[str, ...], label: str) -> None:

@@ -12,7 +12,7 @@
     <p>eMuleBB Rust is a peer-to-peer file sharing client for eD2K and Kad. Search for files, manage downloads and share folders from the browser console.</p>
     <p>The desktop launcher starts the daemon and opens its local WebUI in your default browser when available. Use the authenticated REST API to automate supported client operations.</p>
   </description>
-  <launchable type="desktop-id">emulebb-rust.desktop</launchable>
+  <launchable type="desktop-id">io.github.emulebb.emulebb-rust.desktop</launchable>
   <url type="homepage">https://emulebb.github.io/</url>
   <url type="vcs-browser">https://github.com/emulebb/emulebb-rust</url>
   <url type="bugtracker">https://github.com/emulebb/emulebb-rust/issues</url>

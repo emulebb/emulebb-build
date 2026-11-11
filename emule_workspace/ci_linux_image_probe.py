@@ -15,6 +15,24 @@ from .ubuntu_ci import PROFILES
 from .ci_linux_tools import tool_inputs, REQUIREMENTS, RUNTIME
 
 
+def metadata_tools_probe(directory: Path) -> dict:
+    """Exercise installed metadata validators without network or product execution."""
+    desktop = directory / "synthetic-probe.desktop"
+    desktop.write_text("[Desktop Entry]\nType=Application\nName=Synthetic probe\nExec=true\nTerminal=true\n",
+                       encoding="utf-8")
+    metainfo = directory / "org.example.synthetic-probe.metainfo.xml"
+    metainfo.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<component type="generic">'
+        '<id>org.example.synthetic-probe</id><name>Synthetic probe</name>'
+        '<summary>Verify installed metadata validation tools</summary>'
+        '<metadata_license>CC0-1.0</metadata_license><project_license>MIT</project_license>'
+        '<url type="homepage">https://example.invalid/</url></component>\n', encoding="utf-8")
+    for command in (["desktop-file-validate", str(desktop)],
+                    ["appstreamcli", "validate", "--no-net", str(metainfo)]):
+        subprocess.run(command, check=True, capture_output=True, timeout=20)
+    return {"desktopFileValidation": "passed", "appstreamValidation": "passed"}
+
+
 def probe() -> dict:
     """Require the real installed toolchain and dependency material inventory."""
     architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine().lower())
@@ -89,6 +107,7 @@ def probe() -> dict:
             "Maintainer: Synthetic <fixture@example.invalid>\nDescription: Toolchain probe\n", encoding="utf-8")
         subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(root), str(Path(directory) / "probe.deb")],
                        check=True, capture_output=True, timeout=20)
+        metadata_tools = metadata_tools_probe(Path(directory))
     return {"schema": "emulebb.prepared-linux-probe/1", "status": "passed", "architecture": architecture,
             "uid": os.geteuid(), "rustc": rust, "cargo": cargo, "clippy": clippy, "rustfmt": rustfmt,
             "python": platform.python_version(), "installedPackages": installed.splitlines(),
@@ -97,7 +116,7 @@ def probe() -> dict:
                                "git": output("git", "--version"), "appimagetool": appimage_version,
                                "appimageRuntimeSha256": runtime_pin["sha256"][machine],
                                "requirementsSha256": hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest(),
-                               "nonrootDebPackaging": "passed"},
+                               "nonrootDebPackaging": "passed", **metadata_tools},
             "pythonRuntime": {"openssl": ssl.OPENSSL_VERSION, "sqlite": sqlite3.sqlite_version,
                               "caCertificates": certificates, "venvExecution": "passed",
                               "compressionRoundTrips": ["bz2", "lzma", "zlib", "zstd"]},
