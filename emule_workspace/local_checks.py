@@ -444,9 +444,13 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
         # The imported lifecycle code is a selected validation input too.
         source_paths.setdefault("emulebb-build-tests", root / "repos/emulebb-build-tests")
     snapshot = _source_snapshot(source_paths, clean=stage != "commit")
-    (reports / "sources.json").write_text(json.dumps({"workstream": registration["id"] if registration else None,
-                                                      "sources": snapshot}, indent=2) + "\n", encoding="utf-8")
-    if stage == "full" and registration and repo.name in {"emulebb-rust", "emulebb-build", "emulebb-build-tests"}:
+    (reports / "sources.json").write_text(json.dumps({"stage": stage, "head": checked_head,
+                                                      "workstream": registration["id"] if registration else None,
+                                                      "sources": snapshot,
+                                                      "plan": [{"cwd": str(cwd), "command": command} for cwd, command in plan]},
+                                                     indent=2) + "\n", encoding="utf-8")
+    if stage == "full" and registration and any(
+            "tools/rust_quality_gate.py" in command and "--registered-stage" in command for _, command in plan):
         capabilities = require_runtime_stage_capabilities(source_paths)
         (reports / "runtime-capabilities.json").write_text(json.dumps(capabilities, indent=2) + "\n", encoding="utf-8")
     from .linux_containers import WslValidationSession

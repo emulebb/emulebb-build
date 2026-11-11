@@ -13,7 +13,7 @@ def test_local_check_stage_dispatch_keeps_fast_hooks_outside_heavy_lock(tmp_path
 
     repo = tmp_path / "repos/emulebb-build"
     repo.mkdir(parents=True)
-    options = SimpleNamespace(workspace_root=tmp_path, output_root=tmp_path / "out")
+    options = SimpleNamespace(workspace_root=tmp_path, output_root=tmp_path / "out", workspace_name="workspace")
     monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
     monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: object())
     events = []
