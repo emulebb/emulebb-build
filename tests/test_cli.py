@@ -866,3 +866,41 @@ def test_default_canonical_cli_does_not_require_workstream_registration(tmp_path
     result = CliRunner().invoke(cli.main, ["test", "python"])
     assert result.exit_code == 0, result.output
     assert received == [base]
+
+
+def test_rest_campaign_help_uses_the_fixed_persisted_runner():
+    result = CliRunner().invoke(cli.main, ["test", "rust-rest-openapi", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--workstream" in result.output
+    assert "--executable" not in result.output
+
+
+def test_rest_campaign_uses_selected_sources_and_existing_lock(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from emule_workspace import workstreams
+
+    locked = cli._locked
+    root, output, base, selected, _ = _workstream_cli_fixture(tmp_path, monkeypatch)
+    selected.emule_workspace_root = root
+    monkeypatch.setattr(cli, "_locked", locked)
+    monkeypatch.setattr(workstreams, "resolve_workstream", lambda *args, **kwargs: {"id": "alpha"})
+    before = os.environ.copy()
+    for acquired in (True, False):
+        events = []
+        lock = SimpleNamespace(acquire=lambda: events.append("acquire") or acquired,
+                               release=lambda: events.append("release"), delegation_token="fixture-delegation",
+                               active_owner_text=lambda: "fixture owner")
+        monkeypatch.setattr(cli, "WorkspaceLock", lambda **kwargs: lock)
+        def campaign(layout):
+            assert os.environ[cli.WORKSPACE_LOCK_TOKEN_ENV] == "fixture-delegation"
+            events.append(("campaign", layout))
+        monkeypatch.setattr(cli, "invoke_rust_rest_openapi", campaign)
+        result = CliRunner().invoke(cli.main, ["test", "rust-rest-openapi", "--workstream", "alpha"])
+        if acquired:
+            assert result.exit_code == 0, result.output
+            assert events == ["acquire", ("campaign", selected), "release"]
+        else:
+            assert result.exit_code != 0 and "Workspace busy" in result.output
+            assert events == ["acquire"]
+        assert os.environ == before

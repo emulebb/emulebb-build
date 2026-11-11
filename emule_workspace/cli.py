@@ -71,6 +71,7 @@ from .test_runs import (
     invoke_community_core_coverage,
     invoke_fake_kad_trust_soak,
     invoke_rust_network_proof,
+    invoke_rust_rest_openapi,
     invoke_rust_unit_tests,
     invoke_rust_webui_tests,
     invoke_live_diff_runs,
@@ -1673,6 +1674,14 @@ def test_public_presence(*, repository: str, workspace_options: WorkspaceOptions
     _locked("test public-presence", lambda **kwargs: validate_public_presence(
         kwargs["layout"], repository=repository,
     ))(workspace_options=workspace_options, layout=layout)
+
+
+@test.command("rust-rest-openapi")
+@_common_options
+def test_rust_rest_openapi(*, workspace_options: WorkspaceOptions, layout) -> None:
+    """Gate the selected staged daemon through the persisted REST harness."""
+    _locked("test rust-rest-openapi", lambda **kwargs: invoke_rust_rest_openapi(
+        kwargs["layout"]))(workspace_options=workspace_options, layout=layout)
 
 
 @test.command("rust-unit")
