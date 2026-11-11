@@ -81,6 +81,8 @@ def _source_identity(roots: tuple[Path, ...]) -> list[dict]:
                 while ancestor != root.parent:
                     if ancestor.is_symlink() or getattr(ancestor, "is_junction", lambda: False)():
                         raise RuntimeError("Native source symlink target has a redirected ancestor")
+                    if not ancestor.is_dir():
+                        raise RuntimeError("Native source symlink target cannot resolve through a missing directory")
                     ancestor = ancestor.parent
                 if not target.is_file():
                     raise RuntimeError("Native source symlink target must be a contained regular file")
