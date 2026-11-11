@@ -472,7 +472,8 @@ def workstream_status_command(*, workstream_id, as_json, workspace_options, layo
 @workstream.command("remove")
 @click.argument("workstream_id")
 @click.option("--owner", required=True, help="Assigned parent owner; workers must not invoke removal.")
-@click.option("--abandoned", is_flag=True, help="Parent explicitly abandons published, unmerged work.")
+@click.option("--abandoned", is_flag=True,
+              help="Parent withdraws work with no open PR, archiving exact heads in local recovery refs before removal.")
 @_common_options
 def workstream_remove(*, workstream_id, owner, abandoned, workspace_options, layout) -> None:
     """Remove safe worktrees; retained local branches preserve their history."""

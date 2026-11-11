@@ -308,7 +308,170 @@ def test_explicit_abandonment_removes_checkout_but_preserves_published_branch(la
     ws.remove_workstream(layout, "alpha", "parent", abandoned=True)
     assert not path.exists()
     assert ws._git(layout.emulebb_rust_repo_root, "rev-parse", "chore/alpha") == head
+    assert ws._git(layout.emulebb_rust_repo_root, "rev-parse",
+                   "refs/recovery/abandoned/alpha/emulebb-rust") == head
     assert not ws.workstream_status(layout)
+
+
+def test_abandonment_retains_unpublished_history_after_separate_branch_deletion(layout):
+    registration = create(layout)
+    path = Path(registration["repositories"]["emulebb-rust"]["path"])
+    heads = []
+    for content in ("first private outcome\n", "second private outcome\n"):
+        (path / "sample.txt").write_text(content, encoding="utf-8")
+        ws._git(path, "add", "sample.txt")
+        ws._git(path, "commit", "-m", "fixture unpublished outcome")
+        heads.append(ws._git(path, "rev-parse", "HEAD"))
+    canonical = layout.emulebb_rust_repo_root
+    archive = "refs/recovery/abandoned/alpha/emulebb-rust"
+    ws.remove_workstream(layout, "alpha", "parent", abandoned=True)
+    assert not path.exists() and not ws.workstream_status(layout)
+    assert not ws._git(canonical, "ls-remote", "origin", "refs/heads/chore/alpha")
+    assert ws._git(canonical, "rev-parse", "chore/alpha") == heads[-1]
+    # The operation does not delete a branch. Simulate the parent's separate
+    # exact-head deletion, then traverse real Git history through recovery only.
+    ws._git(canonical, "update-ref", "-d", "refs/heads/chore/alpha", heads[-1])
+    assert set(heads).issubset(set(ws._git(canonical, "rev-list", archive).splitlines()))
+    assert ws._git(canonical, "show", archive + ":sample.txt") == "second private outcome"
+
+
+def test_abandonment_archives_every_repository_before_runtime_or_checkout_removal(layout, monkeypatch):
+    from emule_workspace import rust_runtime_stage
+
+    registration = create(layout, repositories=("emulebb-rust", "emulebb-build"))
+    heads = {}
+    for name, entry in registration["repositories"].items():
+        path = Path(entry["path"])
+        (path / "sample.txt").write_text("private companion outcome\n", encoding="utf-8")
+        ws._git(path, "add", "sample.txt")
+        ws._git(path, "commit", "-m", "fixture companion outcome")
+        heads[name] = ws._git(path, "rev-parse", "HEAD")
+    original = ws._git
+    removals = []
+
+    def verify_archives():
+        for name, entry in registration["repositories"].items():
+            assert original(Path(entry["canonical_path"]), "rev-parse",
+                            f"refs/recovery/abandoned/alpha/{name}") == heads[name]
+
+    @contextmanager
+    def retirement(*_args, **_kwargs):
+        yield verify_archives
+
+    def guarded_git(repo, *args, **kwargs):
+        if args[:2] == ("worktree", "remove"):
+            verify_archives()
+            removals.append(args[2])
+        return original(repo, *args, **kwargs)
+
+    monkeypatch.setattr(rust_runtime_stage, "runtime_stage_retirement", retirement)
+    monkeypatch.setattr(ws, "_git", guarded_git)
+    ws.remove_workstream(layout, "alpha", "parent", abandoned=True)
+    assert len(removals) == 2
+
+
+@pytest.mark.parametrize("blocker", ["dirty", "untracked", "ignored", "owner", "open-pr", "unknown-pr", "malformed-pr"])
+def test_abandonment_keeps_unsafe_unpublished_work_without_archiving(layout, monkeypatch, blocker):
+    registration = create(layout)
+    path = Path(registration["repositories"]["emulebb-rust"]["path"])
+    (path / "sample.txt").write_text("private outcome\n", encoding="utf-8")
+    ws._git(path, "add", "sample.txt")
+    ws._git(path, "commit", "-m", "fixture unpublished outcome")
+    if blocker == "dirty":
+        (path / "sample.txt").write_text("pending edits\n", encoding="utf-8")
+    elif blocker in {"untracked", "ignored"}:
+        if blocker == "ignored":
+            exclude = Path(ws._git(path, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"))
+            exclude.write_text("pending.txt\n", encoding="utf-8")
+        (path / "pending.txt").write_text("pending bytes\n", encoding="utf-8")
+    elif blocker == "open-pr":
+        monkeypatch.setattr(ws, "_open_pull_requests", lambda entry: [{"number": 1}])
+    elif blocker == "malformed-pr":
+        monkeypatch.setattr(ws, "_open_pull_requests", lambda entry: {})
+    elif blocker == "unknown-pr":
+        def unknown(_entry):
+            raise RuntimeError("Cannot establish PR state")
+        monkeypatch.setattr(ws, "_open_pull_requests", unknown)
+    manifest = layout.output_root / "tmp/workstreams/alpha.json"
+    before = manifest.read_bytes()
+    with pytest.raises(RuntimeError):
+        ws.remove_workstream(layout, "alpha", "worker" if blocker == "owner" else "parent", abandoned=True)
+    assert path.exists() and manifest.read_bytes() == before
+    assert not ws._git(layout.emulebb_rust_repo_root, "show-ref", "--verify",
+                       "refs/recovery/abandoned/alpha/emulebb-rust", check=False)
+
+
+@pytest.mark.parametrize("collision", ["different-head", "symbolic"])
+def test_abandonment_recovery_collision_refuses_before_removal(layout, collision):
+    registration = create(layout)
+    path = Path(registration["repositories"]["emulebb-rust"]["path"])
+    canonical = layout.emulebb_rust_repo_root
+    archive = "refs/recovery/abandoned/alpha/emulebb-rust"
+    (path / "sample.txt").write_text("private outcome\n", encoding="utf-8")
+    ws._git(path, "add", "sample.txt")
+    ws._git(path, "commit", "-m", "fixture unpublished outcome")
+    if collision == "symbolic":
+        ws._git(canonical, "symbolic-ref", archive, "refs/heads/chore/alpha")
+    else:
+        ws._git(canonical, "update-ref", archive, "main")
+    before = ws._git(canonical, "rev-parse", archive)
+    with pytest.raises(RuntimeError, match="different identity"):
+        ws.remove_workstream(layout, "alpha", "parent", abandoned=True)
+    assert path.exists() and ws._git(canonical, "rev-parse", archive) == before
+    assert ws.workstream_status(layout, "alpha")[0]["verification"] == "valid"
+
+
+def test_abandonment_reuses_only_an_existing_exact_head_archive(layout):
+    registration = create(layout)
+    path = Path(registration["repositories"]["emulebb-rust"]["path"])
+    (path / "sample.txt").write_text("private outcome\n", encoding="utf-8")
+    ws._git(path, "add", "sample.txt")
+    ws._git(path, "commit", "-m", "fixture unpublished outcome")
+    head = ws._git(path, "rev-parse", "HEAD")
+    archive = "refs/recovery/abandoned/alpha/emulebb-rust"
+    ws._git(layout.emulebb_rust_repo_root, "update-ref", archive, head)
+    ws.remove_workstream(layout, "alpha", "parent", abandoned=True)
+    assert not path.exists() and ws._git(layout.emulebb_rust_repo_root, "rev-parse", archive) == head
+
+
+@pytest.mark.parametrize("changed", ["source-head", "recovery-ref", "owner-after-archive"])
+def test_abandonment_refuses_concurrent_head_ref_or_owner_changes(layout, monkeypatch, changed):
+    registration = create(layout)
+    path = Path(registration["repositories"]["emulebb-rust"]["path"])
+    canonical = layout.emulebb_rust_repo_root
+    (path / "sample.txt").write_text("private outcome\n", encoding="utf-8")
+    ws._git(path, "add", "sample.txt")
+    ws._git(path, "commit", "-m", "fixture unpublished outcome")
+    head, base = ws._git(path, "rev-parse", "HEAD"), ws._git(canonical, "rev-parse", "main")
+    archive = "refs/recovery/abandoned/alpha/emulebb-rust"
+    manifest = layout.output_root / "tmp/workstreams/alpha.json"
+    original = ws._git
+
+    def raced_git(repo, *args, **kwargs):
+        if args == ("update-ref", "--stdin"):
+            if changed == "source-head":
+                original(canonical, "update-ref", "refs/heads/chore/alpha", base, head)
+            elif changed == "recovery-ref":
+                original(canonical, "update-ref", archive, base)
+            value = original(repo, *args, **kwargs)
+            if changed == "owner-after-archive":
+                record = json.loads(manifest.read_text())
+                record["owner"] = "another-parent"
+                manifest.write_text(json.dumps(record), encoding="utf-8")
+            return value
+        if args[:2] == ("worktree", "remove"):
+            pytest.fail("Refused abandonment must not remove any checkout")
+        return original(repo, *args, **kwargs)
+
+    monkeypatch.setattr(ws, "_git", raced_git)
+    with pytest.raises(RuntimeError):
+        ws.remove_workstream(layout, "alpha", "parent", abandoned=True)
+    assert path.exists() and manifest.exists()
+    if changed == "recovery-ref":
+        assert original(canonical, "rev-parse", archive) == base
+    elif changed == "owner-after-archive":
+        assert original(canonical, "rev-parse", archive) == head
+        assert json.loads(manifest.read_text())["owner"] == "another-parent"
 
 
 def test_corrupt_registration_and_path_escape_are_reported(layout):
