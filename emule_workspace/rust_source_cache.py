@@ -29,9 +29,9 @@ MAX_BYTES = 256 * 1024 * 1024
 
 
 def _source_identity(roots: tuple[Path, ...]) -> list[dict]:
-    """Hash material inputs, including dirty/untracked inputs, without trusting mtimes."""
+    """Hash Rust then native inputs; only native tracked file links may be followed."""
     result = []
-    for root in roots:
+    for root_number, root in enumerate(roots):
         listing = subprocess.run(
             ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             env=git_environment(), capture_output=True, check=True, timeout=60,
@@ -40,9 +40,42 @@ def _source_identity(roots: tuple[Path, ...]) -> list[dict]:
         if not names or len(names) > MAX_FILES:
             raise RuntimeError("Cargo source file inventory is empty or exceeds its bound")
         digest, size = hashlib.sha256(), 0
+        tracked_links = None
         for name in names:
-            path = _safe_path(root, root / name)
+            path = root / name
             digest.update(name.encode("utf-8", errors="surrogatepass") + b"\0")
+            if root_number and path.is_symlink():
+                if tracked_links is None:
+                    indexed = subprocess.run(
+                        ["git", "-C", str(root), "ls-files", "--stage", "-z"],
+                        env=git_environment(), capture_output=True, check=True, timeout=60,
+                    ).stdout
+                    tracked_links = set()
+                    for entry in indexed.split(b"\0"):
+                        header, separator, filename = entry.partition(b"\t")
+                        if separator and header.startswith(b"120000 ") and header.endswith(b" 0"):
+                            tracked_links.add(os.fsdecode(filename))
+                if name not in tracked_links:
+                    raise RuntimeError("Native source symlink must be tracked with Git symlink mode")
+                # WHY: upstream native trees contain LICENSE/source links. Bind
+                # their spelling and contained bytes without admitting redirected
+                # source roots, directory ancestors or external material inputs.
+                _safe_path(root.parent, root)
+                if path.parent != root:
+                    _safe_path(root, path.parent)
+                link = os.readlink(path)
+                encoded_link = os.fsencode(link)
+                if os.path.isabs(link) or len(encoded_link) > 4096:
+                    raise RuntimeError("Native source symlink must have a bounded relative target")
+                target = Path(os.path.normpath(path.parent / link))
+                target = _safe_path(root, target)
+                if not target.is_file():
+                    raise RuntimeError("Native source symlink target must be a contained regular file")
+                digest.update(b"symlink\0" + encoded_link + b"\0")
+                size += len(encoded_link)
+                path = target
+            else:
+                path = _safe_path(root, path)
             if not path.exists():
                 digest.update(b"deleted\0")
                 continue
