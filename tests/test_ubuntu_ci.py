@@ -59,7 +59,7 @@ class AptHost:
             return SimpleNamespace(returncode=self.failures.pop(0) if self.failures else 0, stdout="public apt diagnostic")
         if "dpkg-query" in arguments:
             return SimpleNamespace(returncode=0, stdout=(
-                f"dpkg-dev\t1.0\tall\nlibfontconfig1-dev\t2.0\t{self.architecture}\n"
+                "dpkg-dev\t1.0\tall\n"
                 f"appstream\t1.0\t{self.architecture}\ndesktop-file-utils\t1.0\t{self.architecture}\n"))
         return SimpleNamespace(returncode=0, stdout=self.architecture + "\n")
 
@@ -98,7 +98,7 @@ def test_signed_https_architecture_sources_without_rewriting_other_repositories(
         assert "Dir::Etc::sourceparts=-" in args and "APT::Get::List-Cleanup=false" in args
         assert "--allow-unauthenticated" not in args
     assert "--no-install-recommends" in apt[-1]
-    assert apt[-1][-4:] == ["dpkg-dev", "libfontconfig1-dev", "appstream", "desktop-file-utils"]
+    assert apt[-1][-3:] == ["dpkg-dev", "appstream", "desktop-file-utils"]
     assert not list(tmp_path.glob("emulebb-ubuntu-apt-*"))
 
 
@@ -116,7 +116,7 @@ def test_transient_update_retries_then_records_installed_versions(tmp_path):
     result = host.provision()
     assert [(item["operation"], item["attempt"]) for item in result["operations"]] == [
         ("update", 1), ("update", 2), ("install", 1)]
-    assert result["installedPackages"] == ["dpkg-dev\t1.0\tall", "libfontconfig1-dev\t2.0\tamd64",
+    assert result["installedPackages"] == ["dpkg-dev\t1.0\tall",
                                           "appstream\t1.0\tamd64", "desktop-file-utils\t1.0\tamd64"]
 
 
