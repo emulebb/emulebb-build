@@ -118,3 +118,25 @@ def test_rust_source_links_remain_forbidden_even_when_tracked(sources):
     git(rust, "add", "source.rs")
     with pytest.raises(RuntimeError, match="Redirected workstream path"):
         cache._source_identity(sources)
+
+
+@pytest.mark.parametrize("redirect", ["outside", "same-parent", "missing"])
+def test_link_dotdot_cannot_hide_ignored_redirect_or_missing_directory(sources, redirect):
+    _rust, native = sources
+    excluded = native / "ignored-redirect"
+    # The inventory must not reject the directory link first: exercise literal
+    # target resolution even when Git legitimately excludes that separate path.
+    with (native / ".git/info/exclude").open("a", encoding="utf-8") as stream:
+        stream.write("\n/ignored-redirect\n")
+    if redirect == "outside":
+        external = native.parent / "external"
+        (external / "nested").mkdir(parents=True)
+        (external / "LICENSE").write_text("Different external material\n", encoding="utf-8")
+        symlink(excluded, str(external / "nested"), directory=True)
+    elif redirect == "same-parent":
+        symlink(excluded, "miniupnpd", directory=True)
+    link = native / "minissdpd/LICENSE"
+    link.unlink()
+    symlink(link, "../ignored-redirect/../LICENSE")
+    with pytest.raises(RuntimeError, match="resolve|redirected ancestor"):
+        cache._source_identity(sources)
