@@ -93,6 +93,29 @@ def test_partial_flavor_preserves_only_proven_same_source_companions(selected):
     stage.verify_stage(selected, target=TARGET)
 
 
+@pytest.mark.parametrize("flavor,rebuilt,untouched", [
+    ("regular", "emulebb-rust", "emulebb-rust-diagnostics"),
+    ("diagnostics", "emulebb-rust-diagnostics", "emulebb-rust"),
+])
+def test_rebuilt_executable_cannot_inherit_previous_pdb_aliases(selected, flavor, rebuilt, untouched):
+    first = stage.prepare_stage(selected, target=TARGET)
+    pending = bundle(first)
+    for name in stage.BINARIES:
+        (pending / "bin" / (name.replace("-", "_") + ".pdb")).write_bytes(b"previous symbol alias")
+    stage.publish_stage(selected, first)
+    second = stage.prepare_stage(selected, target=TARGET, flavor=flavor)
+    pending = bundle(second, flavor=flavor, value=b"different executable")
+    (pending / "bin" / (rebuilt + ".pdb")).unlink()
+    result = stage.publish_stage(selected, second)
+    root = Path(second["stageRoot"])
+    assert not (root / "bin" / (rebuilt + ".pdb")).exists()
+    assert not (root / "bin" / (rebuilt.replace("-", "_") + ".pdb")).exists()
+    assert (root / "bin" / (untouched + ".pdb")).is_file()
+    assert (root / "bin" / (untouched.replace("-", "_") + ".pdb")).is_file()
+    assert result["producerFlavor"] == flavor
+    stage.verify_stage(selected, target=TARGET, diagnostics=flavor == "diagnostics")
+
+
 def test_new_source_cannot_relabel_old_regular_or_diagnostics_files(selected):
     first = stage.prepare_stage(selected, target=TARGET)
     bundle(first)
@@ -161,6 +184,33 @@ def test_failed_windows_directory_promotion_restores_ready_stage_and_receipt(sel
     stage.verify_stage(selected, target=TARGET)
     stage.discard_stage(selected, second)
     assert snapshot(root) == before
+
+
+def test_cancellation_after_old_stage_rename_restores_previous_ready_bundle(selected, monkeypatch):
+    first = stage.prepare_stage(selected, target=TARGET)
+    bundle(first)
+    stage.publish_stage(selected, first)
+    root = Path(first["stageRoot"])
+    before = snapshot(root)
+    second = stage.prepare_stage(selected, target=TARGET)
+    bundle(second, value=b"replacement")
+    replace = os.replace
+    cancelled = False
+
+    def cancel_after_backup(source, destination):
+        nonlocal cancelled
+        result = replace(source, destination)
+        if Path(source) == root and not cancelled:
+            cancelled = True
+            raise KeyboardInterrupt("synthetic cancellation after backup rename")
+        return result
+
+    monkeypatch.setattr(stage.os, "replace", cancel_after_backup)
+    with pytest.raises(KeyboardInterrupt, match="synthetic cancellation"):
+        stage.publish_stage(selected, second)
+    stage.discard_stage(selected, second)
+    assert snapshot(root) == before
+    stage.verify_stage(selected, target=TARGET)
 
 
 def test_another_output_directory_cannot_be_published_or_discarded(selected):

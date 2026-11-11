@@ -105,6 +105,12 @@ def _pending(layout, description: dict) -> Path:
     return pending
 
 
+def pending_bin_dir(layout, description: dict) -> Path:
+    """Return the admitted unpublished destination for native and WebUI producers."""
+    _require_lock(layout)
+    return _pending(layout, description) / "bin"
+
+
 def _inventory(root: Path, target: str) -> list[dict]:
     """Bind native companions and the installed WebUI to their actual bytes."""
     suffix = ".exe" if "windows" in target else ""
@@ -162,12 +168,17 @@ def publish_stage(layout, description: dict) -> dict:
             # WHY: a partial-flavor build may keep only proven companions from
             # the same material identity. Old regular/diagnostic bytes never
             # inherit a new source receipt merely because their names match.
-            for item in previous["files"]:
-                relative = Path(item["path"])
-                destination = pending / relative
-                if relative.parent == Path("bin") and not destination.exists():
-                    shutil.copy2(root / relative, destination)
-    data = {**context, "files": _inventory(pending, context["target"])}
+            previous_files = {item["path"] for item in previous["files"]}
+            for name in BINARIES:
+                executable = name + suffix
+                if (pending / "bin" / executable).exists() or "bin/" + executable not in previous_files:
+                    continue
+                companions = {executable, name + ".pdb", name.replace("-", "_") + ".pdb"}
+                for companion in companions:
+                    relative = "bin/" + companion
+                    if relative in previous_files:
+                        shutil.copy2(root / relative, pending / relative)
+    data = {**context, "producerFlavor": flavor, "files": _inventory(pending, context["target"])}
     with (pending / RECEIPT).open("x", encoding="utf-8", newline="\n") as stream:
         json.dump(data, stream, indent=2, sort_keys=True)
         stream.write("\n")
@@ -176,9 +187,9 @@ def publish_stage(layout, description: dict) -> dict:
     if _context(layout, context["target"]) != context:
         raise RuntimeError("Runtime source identity changed before ready publication")
     backup = _safe_path(layout.output_root, root.with_name(f".{root.name}.{uuid4().hex}.previous"))
-    if root.exists():
-        os.replace(root, backup)
     try:
+        if root.exists():
+            os.replace(root, backup)
         os.replace(pending, root)
     except BaseException:
         if backup.exists():
