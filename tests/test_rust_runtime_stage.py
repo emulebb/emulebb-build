@@ -240,3 +240,42 @@ def test_changed_receipt_identity_fails_before_executable_admission(selected):
 def test_nonregistered_defaults_keep_their_existing_stage_owner(selected, monkeypatch):
     monkeypatch.setattr(stage, "resolve_workstream", lambda *args, **kwargs: None)
     assert stage.stage_root(selected, TARGET) is None
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_backup_cleanup_failure_keeps_committed_ready_bytes(selected, monkeypatch, capsys, interrupted):
+    first = stage.prepare_stage(selected, target=TARGET)
+    bundle(first)
+    stage.publish_stage(selected, first)
+    second = stage.prepare_stage(selected, target=TARGET)
+    bundle(second, value=b"replacement")
+    backups = []
+
+    def fail_cleanup(path):
+        backups.append(Path(path))
+        (Path(path) / "bin/emulebb-rust.exe").unlink()
+        if interrupted:
+            raise KeyboardInterrupt("synthetic interrupted backup cleanup")
+        raise PermissionError("synthetic locked previous PDB")
+
+    monkeypatch.setattr(stage.shutil, "rmtree", fail_cleanup)
+    if interrupted:
+        with pytest.raises(KeyboardInterrupt, match="interrupted backup cleanup"):
+            stage.publish_stage(selected, second)
+        assert capsys.readouterr().err == ""
+    else:
+        result = stage.publish_stage(selected, second)
+        warning = result["cleanupWarnings"][0]
+        assert warning == {"operation": "remove-previous-runtime-stage", "path": str(backups[0]),
+                           "error": "synthetic locked previous PDB"}
+        assert str(backups[0]) in capsys.readouterr().err
+        assert result["receipt"] == str(Path(second["stageRoot"]) / stage.RECEIPT)
+    root = Path(second["stageRoot"])
+    assert (root / "bin/emulebb-rust.exe").read_bytes() == b"replacementemulebb-rust"
+    assert (root / "bin/webui/index.html").read_bytes() == b"replacement WebUI"
+    stage.verify_stage(selected, target=TARGET)
+    assert not Path(second["pendingRoot"]).exists()
+    assert backups[0].parent == root.parent
+    assert backups[0].name.startswith("." + root.name + ".")
+    assert backups[0].name.endswith(".previous")
+    assert backups[0].exists()
