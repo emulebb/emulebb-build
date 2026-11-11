@@ -511,6 +511,28 @@ def build_emulebb_rust_client(
     target_os: str = "windows",
 ) -> None:
     """Builds and stages the headless Rust eMuleBB client under the output root."""
+    from .rust_runtime_stage import discard_stage, prepare_stage, stage_root
+
+    description = None
+    source = session.layout.emulebb_rust_repo_root
+    if source is not None and source.is_dir():
+        target = rust_client_target(session.options.platform, target_os=target_os)
+        if stage_root(session.layout, target) is not None:
+            description = prepare_stage(session.layout, target=target,
+                                        flavor="diagnostics" if diagnostics else "regular")
+    try:
+        _build_emulebb_rust_client(session, clean=clean, diagnostics=diagnostics,
+                                  target_os=target_os, runtime_description=description)
+    finally:
+        if description is not None:
+            discard_stage(session.layout, description)
+
+
+def _build_emulebb_rust_client(
+    session: BuildSession, *, clean: bool, diagnostics: bool, target_os: str,
+    runtime_description: dict | None,
+) -> None:
+    """Produce the selected native flavor and WebUI before publishing its bundle."""
 
     repo_root = session.layout.emulebb_rust_repo_root
     if repo_root is None:
@@ -522,7 +544,7 @@ def build_emulebb_rust_client(
     cargo_path = None if use_wsl else find_tool(("cargo.exe", "cargo"))
     if not use_wsl and cargo_path is None:
         raise RuntimeError("build clients --client emulebb-rust requires Rust cargo on PATH.")
-    if clean:
+    if clean and runtime_description is None:
         remove_tree_if_present(staged_emulebb_rust_root(session.layout))
 
     flavor = "diagnostics" if diagnostics else "release"
@@ -611,10 +633,14 @@ def build_emulebb_rust_client(
             diagnostics=diagnostics,
             target_os=target_os,
             source_target_root=source_target_root,
+            runtime_description=runtime_description,
         )
         if use_wsl:
             remove_tree_if_present(session.layout.output_rust_target_root / target)
-        build_emulebb_rust_webui(session, repo_root)
+        build_emulebb_rust_webui(session, repo_root, runtime_description=runtime_description)
+        if runtime_description is not None:
+            from .rust_runtime_stage import publish_stage
+            publish_stage(session.layout, runtime_description)
         session.add_step(
             name=f"CLIENT eMuleBB Rust{' diagnostics' if diagnostics else ''}",
             succeeded=True,
@@ -633,9 +659,23 @@ def build_emulebb_rust_client(
         raise
 
 
-def build_emulebb_rust_webui(session: BuildSession, repo_root: Path) -> None:
+def _rust_runtime_bin_dir(layout: WorkspaceLayout, description: dict | None, *, target: str | None = None) -> Path:
+    """Admit writes only to a pending registered bundle or the canonical default."""
+    from .rust_runtime_stage import pending_bin_dir, stage_root
+
+    if description is not None:
+        if target is not None and target != description.get("target"):
+            raise RuntimeError("Runtime producer target must match its owned bundle target")
+        return pending_bin_dir(layout, description)
+    if stage_root(layout, target) is not None:
+        raise RuntimeError("Registered runtime writes require an unpublished owned bundle")
+    return layout.output_tools_root / "emulebb-rust" / "bin"
+
+
+def build_emulebb_rust_webui(session: BuildSession, repo_root: Path, *, runtime_description: dict | None = None) -> None:
     """Builds and stages the embedded Rust WebUI bundle beside the staged daemon."""
 
+    staged_bin = _rust_runtime_bin_dir(session.layout, runtime_description)
     webui_root = repo_root / "webui"
     if not (webui_root / "package.json").is_file():
         raise RuntimeError(f"eMuleBB Rust WebUI package.json was not found: {webui_root / 'package.json'}")
@@ -686,7 +726,7 @@ def build_emulebb_rust_webui(session: BuildSession, repo_root: Path) -> None:
                     )
         if not (build_root / "index.html").is_file():
             raise RuntimeError(f"eMuleBB Rust WebUI build did not produce index.html: {build_root / 'index.html'}")
-        staged_webui = staged_emulebb_rust_root(session.layout) / "bin" / "webui"
+        staged_webui = staged_bin / "webui"
         remove_tree_if_present(staged_webui)
         shutil.copytree(build_root, staged_webui)
         session.add_step(
@@ -793,9 +833,12 @@ def remove_rust_target_runtime_artifacts(layout: WorkspaceLayout) -> None:
                 _remove_rust_runtime_artifact(path)
 
 
-def staged_emulebb_rust_root(layout: WorkspaceLayout) -> Path:
+def staged_emulebb_rust_root(layout: WorkspaceLayout, target: str | None = None) -> Path:
     """Returns the output-root eMuleBB Rust runtime staging root."""
-
+    from .rust_runtime_stage import stage_root
+    selected = stage_root(layout, target)
+    if selected is not None:
+        return selected
     return layout.output_tools_root / "emulebb-rust"
 
 
@@ -806,6 +849,7 @@ def stage_emulebb_rust_runtime(
     diagnostics: bool = False,
     target_os: str = "windows",
     source_target_root: Path | None = None,
+    runtime_description: dict | None = None,
 ) -> None:
     """Stages the built headless Rust client below the output root.
 
@@ -824,8 +868,7 @@ def stage_emulebb_rust_runtime(
     exe = source_root / exe_name
     if not exe.is_file():
         raise RuntimeError(f"Built eMuleBB Rust client executable was not found: {exe}")
-    target_root = staged_emulebb_rust_root(layout)
-    bin_root = target_root / "bin"
+    bin_root = _rust_runtime_bin_dir(layout, runtime_description, target=target)
     bin_root.mkdir(parents=True, exist_ok=True)
     for stale_artifact in STALE_EMULEBB_RUST_UI_ARTIFACTS:
         _remove_rust_runtime_artifact(bin_root / stale_artifact)

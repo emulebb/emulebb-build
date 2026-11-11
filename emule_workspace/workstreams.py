@@ -450,6 +450,14 @@ def _retirement_identity(layout, registration: dict[str, Any], name: str,
 
 @_lifecycle_operation
 def remove_repository(layout, workstream_id: str, name: str, owner: str) -> dict[str, Any]:
+    """Retire sources and their owned runtime together after the normal preflight."""
+    from .rust_runtime_stage import runtime_stage_retirement
+
+    with runtime_stage_retirement(layout, workstream_id, enabled=name == "emulebb-rust") as retire:
+        return _remove_repository(layout, workstream_id, name, owner, retire_runtime=retire)
+
+
+def _remove_repository(layout, workstream_id: str, name: str, owner: str, *, retire_runtime) -> dict[str, Any]:
     """Retire one integrated companion, resuming only its exact atomic journal.
 
     The CLI holds the heavy workspace lock before lifecycle/common-Git guards.
@@ -487,6 +495,7 @@ def remove_repository(layout, workstream_id: str, name: str, owner: str) -> dict
     head = _removal_preflight(entry, checkout_present=present)
     if journal is not None and head != journal["head"]:
         raise RuntimeError("Retained branch changed during repository retirement")
+    retire_runtime()
     if journal is None:
         journal = {"repository": name, "entry": dict(entry), "head": head}
         registration["state"], registration["retirement"] = "retiring-repository", journal
@@ -515,12 +524,21 @@ def remove_repository(layout, workstream_id: str, name: str, owner: str) -> dict
 
 @_lifecycle_operation
 def remove_workstream(layout, workstream_id: str, owner: str, *, abandoned: bool = False) -> None:
+    """Retire an admitted runtime namespace under the same owner as its source cleanup."""
+    from .rust_runtime_stage import runtime_stage_retirement
+
+    with runtime_stage_retirement(layout, workstream_id) as retire:
+        _remove_workstream(layout, workstream_id, owner, abandoned=abandoned, retire_runtime=retire)
+
+
+def _remove_workstream(layout, workstream_id: str, owner: str, *, abandoned: bool, retire_runtime) -> None:
     """Parent-only cleanup refuses dirty, unpublished or open-PR work; never force-removes."""
     registration = resolve_workstream(layout.emule_workspace_root, layout.output_root, workstream_id=workstream_id)
     if owner != registration["owner"]:
         raise RuntimeError("Removal must identify the assigned parent owner")
     for entry in registration["repositories"].values():
         _removal_preflight(entry, abandoned=abandoned)
+    retire_runtime()
     registration["state"] = "removing"
     _write(layout.emule_workspace_root, layout.output_root, registration)
     for entry in registration["repositories"].values():

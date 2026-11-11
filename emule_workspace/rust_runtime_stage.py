@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -16,9 +17,10 @@ from .config import WorkspaceOptions, resolve_required_workspace_roots
 from .git_environment import git_environment
 from .locks import WORKSPACE_LOCK_TOKEN_ENV, WorkspaceLock
 from .rust_source_cache import _source_identity
-from .workstreams import _safe_path, resolve_workstream
+from .workstreams import _id, _safe_path, resolve_workstream
 
 SCHEMA = "emulebb.rust-runtime-stage/1"
+REGISTERED_RUNTIME_STAGE_ACTIVATED = True
 RECEIPT = "stage.json"
 BINARIES = ("emulebb-rust", "emulebb-rust-diagnostics", "emulebb-nat-diagnostic")
 
@@ -231,3 +233,35 @@ def discard_stage(layout, description: dict) -> None:
     pending = _pending(layout, description)
     if pending.exists():
         shutil.rmtree(pending)
+
+
+@contextmanager
+def runtime_stage_retirement(layout, workstream_id: str, *, enabled: bool = True):
+    """Hold the normal heavy lock while the parent retires this lane's generated bundle."""
+    if not enabled:
+        yield lambda: None
+        return
+    workspace, output = resolve_required_workspace_roots()
+    if workspace != layout.emule_workspace_root.resolve() or output != layout.output_root.resolve():
+        raise RuntimeError("Runtime retirement roots must match inherited workspace and OUTPUT")
+    root = _safe_path(output, output / "tools" / "workstreams" / _id(workstream_id) / "emulebb-rust")
+    if not root.exists():
+        yield lambda: None
+        return
+    lock = WorkspaceLock(layout, "workstream runtime retirement", WorkspaceOptions(
+        workspace_root=workspace, output_root=output, workspace_name=layout.workspace_name,
+    ))
+    if not lock.acquire():
+        raise RuntimeError("Runtime stage is busy under the workspace lock; retry retirement after validation")
+
+    def retire():
+        # WHY: remove only this admitted generated namespace after source/PR
+        # preflight, while the same heavy owner excludes live validation.
+        _safe_path(output, root)
+        if root.exists():
+            shutil.rmtree(root)
+
+    try:
+        yield retire
+    finally:
+        lock.release()

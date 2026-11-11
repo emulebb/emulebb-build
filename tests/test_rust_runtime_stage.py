@@ -279,3 +279,62 @@ def test_backup_cleanup_failure_keeps_committed_ready_bytes(selected, monkeypatc
     assert backups[0].name.startswith("." + root.name + ".")
     assert backups[0].name.endswith(".previous")
     assert backups[0].exists()
+
+
+def test_runtime_retirement_holds_heavy_lock_and_preserves_operator_bundle(selected, monkeypatch):
+    description = stage.prepare_stage(selected, target=TARGET)
+    bundle(description)
+    stage.publish_stage(selected, description)
+    operator = selected.output_root / "tools/emulebb-rust"
+    before = snapshot(operator)
+    state = {"held": False, "released": False}
+
+    def acquire():
+        state["held"] = True
+        return True
+
+    def release_lock():
+        assert state["held"]
+        state["held"] = False
+        state["released"] = True
+
+    lock = SimpleNamespace(acquire=acquire, release=release_lock)
+    monkeypatch.setattr(stage, "WorkspaceLock", lambda *args, **kwargs: lock)
+    with stage.runtime_stage_retirement(selected, "sample") as retire:
+        assert state["held"]
+        assert Path(description["stageRoot"]).exists()
+        retire()
+        assert state["held"]
+        assert not Path(description["stageRoot"]).exists()
+    assert state["released"]
+    assert snapshot(operator) == before
+
+
+def test_runtime_retirement_preflight_failure_preserves_ready_stage(selected, monkeypatch):
+    description = stage.prepare_stage(selected, target=TARGET)
+    bundle(description)
+    stage.publish_stage(selected, description)
+    root = Path(description["stageRoot"])
+    before = snapshot(root)
+    released = []
+    lock = SimpleNamespace(acquire=lambda: True, release=lambda: released.append(True))
+    monkeypatch.setattr(stage, "WorkspaceLock", lambda *args, **kwargs: lock)
+    with pytest.raises(RuntimeError, match="synthetic source preflight"):
+        with stage.runtime_stage_retirement(selected, "sample"):
+            raise RuntimeError("synthetic source preflight failure")
+    assert snapshot(root) == before
+    assert released == [True]
+
+
+def test_busy_runtime_retirement_preserves_the_ready_bundle(selected, monkeypatch):
+    description = stage.prepare_stage(selected, target=TARGET)
+    bundle(description)
+    stage.publish_stage(selected, description)
+    root = Path(description["stageRoot"])
+    before = snapshot(root)
+    lock = SimpleNamespace(acquire=lambda: False)
+    monkeypatch.setattr(stage, "WorkspaceLock", lambda *args, **kwargs: lock)
+    with pytest.raises(RuntimeError, match="stage is busy"):
+        with stage.runtime_stage_retirement(selected, "sample"):
+            raise AssertionError("busy runtime entered retirement")
+    assert snapshot(root) == before
