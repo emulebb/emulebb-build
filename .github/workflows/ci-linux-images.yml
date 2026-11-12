@@ -82,10 +82,11 @@ jobs:
             runner: ubuntu-24.04
           - architecture: arm64
             runner: ubuntu-24.04-arm
-    timeout-minutes: 10
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -103,6 +104,18 @@ jobs:
           python -B tests/test_prepared_native_ci.py --docker-conformance
           --architecture ${{ matrix.architecture }}
           --report "${{ runner.temp }}/native-image-conformance/${{ matrix.architecture }}.json"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          version: v0.35.0
+          driver: docker-container
+          driver-opts: image=docker.io/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      - name: Prove complete prepared recipe and actual AppImage assembly without publication
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: >-
+          python -B tests/test_ci_linux_image_probe.py --docker-conformance
+          --architecture ${{ matrix.architecture }}
+          --report "${{ runner.temp }}/native-image-conformance/prepared-${{ matrix.architecture }}.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

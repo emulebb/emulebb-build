@@ -154,6 +154,22 @@ def test_native_builder_uses_actual_buildx_digest_and_nonroot_probe(tmp_path, mo
     assert images.PREPARED + "@" + digest in probe
 
 
+@pytest.mark.parametrize("architecture,source", [("armv7", "a" * 40), ("amd64", "main"), ("amd64", None)])
+def test_shared_native_build_arguments_require_an_exact_cpu_and_source(tmp_path, architecture, source):
+    with pytest.raises(RuntimeError, match="supported CPU and exact source SHA"):
+        images.native_build_arguments(architecture, tmp_path / "metadata.json", source)
+
+
+def test_shared_recipe_arguments_bind_materials_without_selecting_publication(tmp_path):
+    command = images.native_build_arguments("arm64", tmp_path / "metadata.json", "a" * 40)
+    assert command[:5] == ["docker", "buildx", "build", "--platform", "linux/arm64"]
+    assert command[command.index("--file") + 1] == str(images.ROOT / images.RECIPE)
+    assert "io.emulebb.ci.recipe-sha256=" + images.material_hashes()[images.RECIPE] in command
+    for name, value in images.prepared_bases().items():
+        assert name + "=" + value in command
+    assert not any(item in command for item in ("--output", "--push", "--load", "--tag", "--provenance"))
+
+
 def test_cross_runner_cannot_claim_native_builder_proof(tmp_path, monkeypatch):
     monkeypatch.setattr(images.platform, "system", lambda: "Linux")
     monkeypatch.setattr(images.platform, "machine", lambda: "x86_64")
@@ -319,10 +335,20 @@ def test_producer_permissions_and_native_matrix_have_no_untrusted_publication_pa
             assert not any("login-action" in step.get("uses", "") for step in job["steps"])
             checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
             assert checkout["with"]["persist-credentials"] is False
+            assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
+            assert job["timeout-minutes"] == 35
             execution = next(step for step in job["steps"] if "--docker-conformance" in step.get("run", ""))
             assert execution["env"] == {"PYTHONPATH": "${{ github.workspace }}"}
             assert "--architecture ${{ matrix.architecture }}" in execution["run"]
             assert "${{ runner.temp }}/native-image-conformance/" in execution["run"]
+            prepared = next(step for step in job["steps"]
+                            if "tests/test_ci_linux_image_probe.py --docker-conformance" in step.get("run", ""))
+            assert "--architecture ${{ matrix.architecture }}" in prepared["run"]
+            assert "native-image-conformance/prepared-${{ matrix.architecture }}.json" in prepared["run"]
+            buildx = next(step for step in job["steps"] if step.get("uses", "").startswith("docker/setup-buildx-action@"))
+            from emule_workspace.rust_images import BUILDKIT_IMAGE
+            assert buildx["with"]["driver-opts"] == "image=" + BUILDKIT_IMAGE
+            assert "qemu" not in str(job).lower()
             artifact = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
             assert artifact["if"] == "always()"
             continue
