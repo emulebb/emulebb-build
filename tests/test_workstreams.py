@@ -964,15 +964,28 @@ def test_create_ignores_inherited_foreign_git_repository_and_index(layout, monke
 
 
 @pytest.mark.parametrize("whole_workstream", [False, True])
-def test_rust_retirement_removes_only_its_owned_runtime_after_preflight(layout, monkeypatch, whole_workstream):
+@pytest.mark.parametrize("unknown_contents", [False, True])
+def test_rust_retirement_removes_only_its_owned_runtime_after_preflight(layout, monkeypatch, whole_workstream, unknown_contents):
     from emule_workspace import rust_runtime_stage
 
     registration = create(layout, repositories=("emulebb-rust", "emulebb-tooling"))
     rust_path = Path(registration["repositories"]["emulebb-rust"]["path"])
     layout.workspace_name = "workspace"
-    owned = layout.output_root / "tools/workstreams/alpha/emulebb-rust/native/bin"
-    owned.mkdir(parents=True)
-    (owned / "runtime-fixture").write_bytes(b"registered fixture")
+    selected = ws.apply_workstream_layout(layout, registration)
+    selected.workspace_name = "workspace"
+    monkeypatch.setattr(rust_runtime_stage, "_require_lock", lambda layout: None)
+    monkeypatch.setattr("emule_workspace.release._emulebb_rust_native_source_roots", lambda layout: ())
+    description = rust_runtime_stage.prepare_stage(selected, target="x86_64-pc-windows-msvc")
+    pending = rust_runtime_stage.pending_bin_dir(selected, description)
+    (pending / "webui").mkdir()
+    (pending / "webui/index.html").write_bytes(b"generated WebUI")
+    for name in rust_runtime_stage.BINARIES:
+        (pending / (name + ".exe")).write_bytes(b"generated runtime: " + name.encode())
+    published = rust_runtime_stage.publish_stage(selected, description)
+    owned = Path(published["binDir"])
+    if unknown_contents:
+        (owned / "emulebb-rust-settings.toml").write_bytes(b"synthetic operator configuration")
+        (owned / "logs/empty").mkdir(parents=True)
     operator = layout.output_root / "tools/emulebb-rust/bin"
     operator.mkdir(parents=True)
     (operator / "runtime-fixture").write_bytes(b"operator fixture")
@@ -980,6 +993,19 @@ def test_rust_retirement_removes_only_its_owned_runtime_after_preflight(layout, 
                         lambda: (layout.emule_workspace_root, layout.output_root))
     lock = SimpleNamespace(acquire=lambda: True, release=lambda: None)
     monkeypatch.setattr(rust_runtime_stage, "WorkspaceLock", lambda *args, **kwargs: lock)
+    if unknown_contents:
+        before = {str(path.relative_to(owned)): path.read_bytes() for path in owned.rglob("*") if path.is_file()}
+        with pytest.raises(RuntimeError, match="unsupported companion|unowned directory"):
+            if whole_workstream:
+                ws.remove_workstream(layout, "alpha", "parent")
+            else:
+                ws.remove_repository(layout, "alpha", "emulebb-rust", "parent")
+        assert {str(path.relative_to(owned)): path.read_bytes() for path in owned.rglob("*") if path.is_file()} == before
+        assert (owned / "logs/empty").is_dir()
+        assert (operator / "runtime-fixture").read_bytes() == b"operator fixture"
+        assert rust_path.exists()
+        assert ws._read(layout.emule_workspace_root, layout.output_root, "alpha")["state"] == "ready"
+        return
     if whole_workstream:
         ws.remove_workstream(layout, "alpha", "parent")
     else:

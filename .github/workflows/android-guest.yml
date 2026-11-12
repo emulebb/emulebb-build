@@ -140,7 +140,8 @@ jobs:
               exit 1
             fi
             remote_result="$(git ls-remote --exit-code 'https://github.com/emulebb/emulebb-rust.git' 'refs/heads/main')"
-            if [[ ! "$remote_result" =~ ^([0-9a-f]{40})$'\t'refs/heads/main$ ]]; then
+            remote_pattern=$'^([0-9a-f]{40})\trefs/heads/main$'
+            if [[ ! "$remote_result" =~ $remote_pattern ]]; then
               echo 'Official Rust main must resolve to one exact commit SHA' >&2
               exit 1
             fi
