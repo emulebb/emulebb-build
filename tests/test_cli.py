@@ -77,6 +77,35 @@ def test_ci_android_guest_uses_shared_owner_under_lock(tmp_path, monkeypatch):
     assert called == ["locked", "probed"] and os.environ == before
 
 
+def test_ci_android_tls_uses_fixed_proof_and_complete_compile_layout(tmp_path, monkeypatch):
+    from emule_workspace import android_toolchain, release
+
+    workspace = tmp_path / "workspace"
+    harness = workspace / "repos/emulebb-build-tests"
+    harness.mkdir(parents=True)
+    output = tmp_path / "output"
+    output.mkdir()
+    monkeypatch.setenv("EMULEBB_TESTS_REPO", str(harness))
+    monkeypatch.setattr(cli, "resolve_required_workspace_roots", lambda: (workspace, output))
+    monkeypatch.setattr(release, "_emulebb_rust_artifact_origin", lambda: {"origin": "github-actions"})
+    # replace() needs the real immutable layout type from the existing CI owner.
+    from dataclasses import replace
+    layout = replace(cli.build_ci_layout(output_root=output), emulebb_rust_repo_root=workspace / "rust")
+    monkeypatch.setattr(cli, "_android_ci_layout", lambda: (object(), layout))
+    monkeypatch.setattr(cli, "_locked", lambda name, operation: operation)
+
+    def probe(actual, *, image, tls_startup):
+        assert actual.emulebb_rust_repo_root == workspace / "rust" and actual.tests_repo_root == harness
+        assert image == "current" and tls_startup is True
+        return output / "proof.json"
+
+    monkeypatch.setattr(android_toolchain, "probe_emulator_guest", probe)
+    result = CliRunner().invoke(cli.main, ["probe-rust-android-guest-ci", "--image", "current", "--tls-startup"])
+    assert result.exit_code == 0, result.output
+    result = CliRunner().invoke(cli.main, ["probe-rust-android-guest-ci", "--image", "current", "--test-filter", "arbitrary"])
+    assert result.exit_code != 0 and "No such option" in result.output
+
+
 def test_ci_android_validation_rejects_local_execution(monkeypatch):
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     result = CliRunner().invoke(cli.main, ["validate-rust-android-ci"])

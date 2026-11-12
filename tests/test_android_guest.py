@@ -30,7 +30,8 @@ def test_kvm_group_must_be_numeric(monkeypatch, group):
         subject._kvm_group(SimpleNamespace(prefix=[]))
 
 
-@pytest.mark.parametrize("outcome", ["success", "failure", "mismatch", "source-change", "private-extra"])
+@pytest.mark.parametrize("outcome", ["success", "failure", "mismatch", "source-change", "private-extra",
+                                     "tls-success", "tls-missing", "tls-names", "tls-ignored", "tls-source"])
 @pytest.mark.parametrize("image,api,page", [("min", 28, 4096), ("current", 37, 16384)])
 def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_path, monkeypatch, outcome, image, api, page):
     from emule_workspace import release
@@ -41,6 +42,23 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
     (harness / "scripts/probe-android-emulator.py").touch()
     output.mkdir()
     layout = SimpleNamespace(output_root=output, tests_repo_root=harness)
+    tls = outcome.startswith("tls-")
+    if tls:
+        from emule_workspace import android_validation
+        monkeypatch.setattr(subject.shutil, "disk_usage", lambda path: SimpleNamespace(free=30 * 1024**3))
+        layout.emulebb_rust_repo_root = workspace / "repos/emulebb-rust"
+        payload_root = output / "tls-payload"
+        payload_root.mkdir()
+        payload = {"source": {"emulebbRust": {"commit": "5" * 40}},
+                   "files": {"core-tests": {"sha256": "6" * 64}, "daemon-tests": {"sha256": "7" * 64}}}
+        manifest = payload_root / "manifest.json"
+        manifest.write_text(json.dumps(payload))
+        compiled = output / "compile.json"
+        compiled.write_text(json.dumps({"status": "passed", "source": {},
+            "tlsPayload": {"path": "tls-payload/manifest.json", "sha256": release._sha256(manifest)}}))
+        compile_calls = Mock(return_value=compiled)
+        monkeypatch.setattr(android_validation, "validate_android", compile_calls)
+        monkeypatch.setattr(release, "_assert_emulebb_rust_package_provenance", lambda *args: None)
     monkeypatch.setattr(config, "resolve_required_workspace_roots", lambda: (workspace, output))
     source = {"build": {"commit": "1" * 40}, "harness": {"commit": "2" * 40}}
     provenance = Mock(return_value=source)
@@ -67,7 +85,7 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
 
     def run(docker, arguments, log, *, timeout):
         captured.extend(arguments)
-        assert timeout == 480
+        assert timeout == (900 if tls else 480)
         if outcome == "failure":
             raise RuntimeError("private command output")
         guest = log.parent / "guest"
@@ -79,15 +97,23 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
                      "supported64BitAbis": ["x86_64"]}}
         if outcome == "private-extra":
             value["guest"]["localAuthentication"] = "synthetic-private-token"
+        if tls and outcome != "tls-missing":
+            value["tls"] = {"schema": "emulebb.android.tls-execution/1", "status": "passed",
+                "source": payload["source"] if outcome != "tls-source" else {}, "files": payload["files"],
+                "freshProfileRestReadiness": "not-run", "apkQualification": "not-run",
+                "cases": [{"name": name, "passed": 1, "failed": 0, "ignored": 0} for name in sorted(subject.TLS_CASE_NAMES)]}
+            if outcome == "tls-names": value["tls"]["cases"][0]["name"] = "other-test"
+            if outcome == "tls-ignored": value["tls"]["cases"][0]["ignored"] = 1
         (guest / "report.json").write_text(json.dumps(value))
 
     monkeypatch.setattr(linux_containers, "run_owned_container", run)
     before = os.environ.copy()
-    if outcome in {"success", "private-extra"}:
-        subject.probe_emulator_guest(layout, image=image)
+    extra = {"tls_startup": True} if tls else {}
+    if outcome in {"success", "private-extra", "tls-success"}:
+        subject.probe_emulator_guest(layout, image=image, **extra)
     else:
         with pytest.raises(RuntimeError):
-            subject.probe_emulator_guest(layout, image=image)
+            subject.probe_emulator_guest(layout, image=image, **extra)
     assert os.environ == before
     assert captured[captured.index("--device") + 1] == "/dev/kvm"
     assert captured[captured.index("--group-add") + 1] == "108"
@@ -100,9 +126,14 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
     assert len(reports) == 1
     public = reports[0].read_text()
     value = json.loads(public)
-    assert value["status"] == ("passed" if outcome in {"success", "private-extra"} else "failed")
+    assert value["status"] == ("passed" if outcome in {"success", "private-extra", "tls-success"} else "failed")
     assert value["applicationQualification"] == "not-run" and value["source"] == source
     assert "private" not in public and str(tmp_path) not in public
+    if tls:
+        compile_calls.assert_called_once_with(layout, abis=("x86_64",), wsl_distro="Ubuntu", tls_payload=True)
+        assert "--tls-source-sha" in captured and "--tls-manifest-sha256" in captured
+        assert str(payload_root) + ",target=/tls-payload,readonly" in " ".join(captured)
+        assert value["tls"]["status"] == ("passed" if outcome == "tls-success" else "failed")
     prepare.assert_called_once_with(layout, images=(image,), wsl_distro="Ubuntu")
 
 

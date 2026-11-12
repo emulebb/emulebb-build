@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 from urllib.parse import urlsplit
@@ -200,7 +201,7 @@ def _guest_failure_details(directory: Path) -> dict:
         return {"phase": "unknown"}
     if not isinstance(guest, dict) or guest.get("schema") != "emulebb.android.emulator-boot/1":
         return {"phase": "unknown"}
-    phases = {"adb-start", "emulator-start", "guest-boot", "guest-properties", "guest-validation", "complete"}
+    phases = {"adb-start", "emulator-start", "guest-boot", "guest-properties", "guest-validation", "tls-execution", "complete"}
     properties = {"sdk", "codename", "abis64", "qemu", "machine", "pageSize"}
     phase = guest.get("phase")
     value = {"phase": phase if isinstance(phase, str) and phase in phases else "unknown"}
@@ -216,7 +217,17 @@ def _guest_failure_details(directory: Path) -> dict:
     return value
 
 
-def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu") -> Path:
+TLS_CASE_NAMES = frozenset({
+    "http_client::tests::packaged_android_roots_are_nonempty_and_build_without_platform_initialization",
+    "http_client::tests::missing_or_malformed_roots_fail_without_platform_fallback",
+    "http_client::tests::controlled_ca_accepts_valid_tls_but_rejects_wrong_hostname_and_expiry",
+    "http_client::tests::packaged_android_roots_do_not_trust_private_fixture_ca",
+    "ed2k_net_drivers::http_client_tests::url_import_builder_rejects_private_fixture_ca",
+    "discovery_bootstrap::tests::discovery_https_uses_verified_client_and_rejects_private_ca",
+})
+
+
+def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_startup: bool = False) -> Path:
     """Run the shared guest boot harness locally or on hosted KVM, without an APK."""
     from .android_install import emulator_layout
     from .config import resolve_required_workspace_roots
@@ -238,6 +249,36 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu") -> P
         if user.split(":")[0] == "0":
             raise RuntimeError("Android guest boot requires a non-root operator")
     source = _guest_sources(layout)
+    payload_manifest = None
+    payload_value = None
+    payload_identity = None
+    capacity = None
+    if tls_startup:
+        from .android_validation import validate_android
+        from .release import _sha256
+
+        # Both pinned tool images, the native target and one fresh AVD coexist.
+        # Refuse low capacity rather than deleting unrelated runner/host data.
+        capacity = {"freeBytes": shutil.disk_usage(output).free, "requiredFreeBytes": 20 * 1024**3}
+        if capacity["freeBytes"] < capacity["requiredFreeBytes"]:
+            raise RuntimeError("Android TLS runtime requires at least 20 GiB free before compiling and booting")
+        # Reuse the complete supported Android validator. Its default compile
+        # graph is retained; this mode only exports the two fixed test artifacts.
+        compilation = validate_android(layout, abis=("x86_64",), wsl_distro=wsl_distro, tls_payload=True)
+        compiled = json.loads(compilation.read_text(encoding="utf-8"))
+        exported = compiled.get("tlsPayload", {})
+        relative = exported.get("path")
+        if not isinstance(relative, str):
+            raise RuntimeError("Android TLS runtime requires the successful owned payload export")
+        payload_manifest = output / relative
+        if (compiled.get("status") != "passed" or payload_manifest.is_symlink()
+                or not payload_manifest.is_file() or not payload_manifest.resolve().is_relative_to(output)
+                or _sha256(payload_manifest) != exported.get("sha256")):
+            raise RuntimeError("Android TLS runtime payload export identity differs")
+        payload_value = json.loads(payload_manifest.read_text(encoding="utf-8"))
+        payload_identity = exported["sha256"]
+        if _guest_sources(layout) != source:
+            raise RuntimeError("Android TLS guest sources changed during compilation")
     tool_report = prepare_emulator_toolchain(layout, images=(image,), wsl_distro=wsl_distro)
     tools = json.loads(tool_report.read_text(encoding="utf-8"))
     image_id = tools.get("image", {}).get("id", "")
@@ -256,6 +297,8 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu") -> P
     value = {"schema": "emulebb.android.guest-validation/1", "status": "failed", "scope": "guest-boot",
              "applicationQualification": "not-run", "source": source, "inputs": inputs,
              "imageId": image_id, "selectedGuest": image, **_emulebb_rust_artifact_origin()}
+    if tls_startup:
+        value["tls"] = {"status": "failed", "payloadManifestSha256": payload_identity, "capacityBefore": capacity}
     try:
         if _guest_sources(layout) != source:
             raise RuntimeError("Android guest boot sources changed during tool preparation")
@@ -268,10 +311,15 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu") -> P
                 "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
                 "--env", "HOME=/tmp/home", "--mount", f"type=bind,source={docker.path(directory)},target=/output",
                 "--mount", f"type=bind,source={docker.path(harness)},target=/harness,readonly",
+                *(["--mount", f"type=bind,source={docker.path(payload_manifest.parent)},target=/tls-payload,readonly"]
+                  if tls_startup else []),
                 image_id, "python3", "-B", "/harness/scripts/probe-android-emulator.py",
                 "--sdk-root", "/opt/android-emulator", "--image-dir", "/opt/android-emulator/" + image_path,
                 "--api", str(api), "--page-size", str(page_size), "--output-root", "/output",
-                "--report-dir", "/output/guest"], directory / "container.log", timeout=480)
+                "--report-dir", "/output/guest",
+                *(["--tls-source-sha", payload_value["source"]["emulebbRust"]["commit"],
+                   "--tls-manifest-sha256", payload_identity] if tls_startup else [])],
+                directory / "container.log", timeout=900 if tls_startup else 480)
         guest = json.loads((directory / "guest/report.json").read_text(encoding="utf-8"))
         expected = {"sdk": api, "codename": "REL", "machine": "x86_64", "pageSize": page_size, "emulator": True}
         facts = guest.get("guest")
@@ -284,6 +332,25 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu") -> P
             raise RuntimeError("Android boot harness did not prove the requested stable guest")
         if _guest_sources(layout) != source:
             raise RuntimeError("Android guest boot sources changed during qualification")
+        if tls_startup:
+            from .release import _assert_emulebb_rust_package_provenance, _sha256
+
+            _assert_emulebb_rust_package_provenance(layout, layout.emulebb_rust_repo_root, compiled["source"])
+            execution = guest.get("tls", {})
+            cases = execution.get("cases")
+            if (execution.get("schema") != "emulebb.android.tls-execution/1"
+                    or execution.get("status") != "passed"
+                    or execution.get("source") != payload_value["source"]
+                    or execution.get("files") != payload_value["files"]
+                    or _sha256(payload_manifest) != payload_identity
+                    or not isinstance(cases, list) or len(cases) != 6
+                    or {item.get("name") for item in cases if isinstance(item, dict)} != TLS_CASE_NAMES
+                    or any(not isinstance(item, dict) or type(item.get("passed")) is not int or item.get("passed") != 1
+                           or item.get("failed") != 0 or item.get("ignored") != 0 for item in cases)
+                    or execution.get("freshProfileRestReadiness") != "not-run"
+                    or execution.get("apkQualification") != "not-run"):
+                raise RuntimeError("Android TLS guest did not execute every source-bound required case")
+            value["tls"] = {**execution, "payloadManifestSha256": payload_identity, "capacityBefore": capacity}
         # Publish an allowlisted result only; private AVDs and emulator logs can
         # contain local authentication material and must never be uploaded.
         value.update(status="passed", guest=expected, kvm=True)
