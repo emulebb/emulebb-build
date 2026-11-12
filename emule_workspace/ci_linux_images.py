@@ -204,6 +204,22 @@ def prepared_bases() -> dict[str, str]:
             "NODE_IMAGE": NAMESPACE + "/node-toolchain@" + tool_inputs()["node"]["image"].rsplit("@", 1)[1]}
 
 
+def native_build_arguments(arch: str, metadata: Path, source_sha: str) -> list[str]:
+    """Share the exact recipe, source labels and pinned bases without selecting publication."""
+    if (arch not in {"amd64", "arm64"} or not isinstance(source_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", source_sha)):
+        raise RuntimeError("Prepared image build requires a supported CPU and exact source SHA")
+    materials = material_hashes()
+    command = ["docker", "buildx", "build", "--platform", "linux/" + arch,
+               "--file", str(ROOT / RECIPE), "--metadata-file", str(metadata),
+               "--label", "org.opencontainers.image.source=https://github.com/emulebb/emulebb-build",
+               "--label", "org.opencontainers.image.revision=" + source_sha,
+               "--label", "io.emulebb.ci.recipe-sha256=" + materials[RECIPE]]
+    for name, value in prepared_bases().items():
+        command += ["--build-arg", name + "=" + value]
+    return command
+
+
 def build_platform(arch: str, report_dir: Path, identity: dict, *, client=execute) -> dict:
     """Build and probe a native compiler image, publishing by actual digest only."""
     native = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine().lower())
@@ -215,14 +231,8 @@ def build_platform(arch: str, report_dir: Path, identity: dict, *, client=execut
     metadata = report_dir / ("buildx-metadata-" + arch + ".json")
     materials = material_hashes()
     bases = prepared_bases()
-    command = ["docker", "buildx", "build", "--platform", "linux/" + arch,
-               "--file", str(ROOT / RECIPE), "--metadata-file", str(metadata), "--provenance", "mode=max",
-               "--label", "org.opencontainers.image.source=https://github.com/emulebb/emulebb-build",
-               "--label", "org.opencontainers.image.revision=" + identity["sourceSha"],
-               "--label", "io.emulebb.ci.recipe-sha256=" + materials[RECIPE],
+    command = [*native_build_arguments(arch, metadata, identity["sourceSha"]), "--provenance", "mode=max",
                "--output", "type=image,name=" + PREPARED + ",push-by-digest=true,name-canonical=true,push=true"]
-    for name, value in bases.items():
-        command += ["--build-arg", name + "=" + value]
     client([*command, str(ROOT)], timeout=1800)
     digest = json.loads(metadata.read_text(encoding="utf-8"))["containerimage.digest"]
     if not DIGEST.fullmatch(digest):
