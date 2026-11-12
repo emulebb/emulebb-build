@@ -256,6 +256,25 @@ def _guest_failure_details(directory: Path) -> dict:
             public_progress["completedCases"] = completed
         if type(progress.get("daemonExitCode")) is int and -255 <= progress["daemonExitCode"] <= 255:
             public_progress["daemonExitCode"] = progress["daemonExitCode"]
+        startup = progress.get("startupFailure")
+        if isinstance(startup, dict):
+            safe_startup = {}
+            contexts = {"unknown", "dynamic-linker", "shell-launch", "platform-verifier-uninitialized",
+                        "interface-enumeration", "profile-lock", "profile-in-use", "profile-lock-open",
+                        "profile-resolution", "profile-directory", "executable-location", "metadata-open",
+                        "bootstrap-parse", "bootstrap-permissions", "bootstrap-key-validation", "bootstrap-template",
+                        "bootstrap-read", "bootstrap-file-error", "logging-initialization", "settings-load", "secure-ident-state",
+                        "nat-settings", "incoming-directory", "bootstrap-http-client", "daemon-run-error"}
+            conditions = {"unknown", "permission-denied", "operation-not-permitted", "operation-not-supported",
+                          "not-implemented", "read-only-filesystem", "address-in-use", "missing-file",
+                          "out-of-memory", "no-space", "file-limit", "invalid-argument", "temporarily-unavailable"}
+            for key, allowed in (("context", contexts), ("systemCondition", conditions)):
+                if isinstance(startup.get(key), str) and startup[key] in allowed:
+                    safe_startup[key] = startup[key]
+            for key in ("privateOutputAvailable", "bootstrapCreated", "runtimeEntered", "bootstrapExists", "leaseExists", "metadataExists"):
+                if type(startup.get(key)) is bool:
+                    safe_startup[key] = startup[key]
+            public_progress["startupFailure"] = safe_startup
         value["tlsProgress"] = public_progress
     if isinstance(guest.get("property"), str) and guest["property"] in properties:
         value["property"] = guest["property"]

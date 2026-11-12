@@ -215,3 +215,21 @@ def test_tls_failure_diagnostics_allow_only_fixed_owner_codes_and_stages(tmp_pat
         assert value["reason"] == "daemon-executable-path"
         assert value["tlsProgress"] == {key: progress[key] for key in ("stage", "failureStage", "activeCase", "completedCases", "daemonExitCode", "errorType")}
     assert "synthetic-private" not in json.dumps(value) and "failureMessage" not in json.dumps(value)
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_native_startup_failure_context_is_enum_and_bool_only(tmp_path, invalid):
+    directory = tmp_path / "guest"
+    directory.mkdir()
+    startup = {"context": "interface-enumeration", "systemCondition": "operation-not-permitted",
+               "bootstrapCreated": True, "runtimeEntered": True, "leaseExists": True, "metadataExists": False,
+               "rawLog": "synthetic-private-key-and-profile"}
+    if invalid:
+        startup = {"context": ["synthetic-private"], "systemCondition": "synthetic-private",
+                   "bootstrapCreated": 1, "metadataExists": "synthetic-private", "rawLog": "synthetic-private"}
+    (directory / "report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1",
+        "phase": "tls-execution", "tlsProgress": {"startupFailure": startup}}))
+    value = subject._guest_failure_details(tmp_path)
+    expected = {} if invalid else {key: item for key, item in startup.items() if key != "rawLog"}
+    assert value["tlsProgress"]["startupFailure"] == expected
+    assert "synthetic-private" not in json.dumps(value) and "rawLog" not in json.dumps(value)
