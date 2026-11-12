@@ -180,6 +180,14 @@ def test_android_tls_actual_checkout_must_be_exact_and_clean(tmp_path):
     git("checkout", "--", "source.txt")
     (tmp_path / "unexpected.txt").write_text("untracked\n", encoding="utf-8")
     assert _run_tls_script(verify["run"], tmp_path, EXPECTED_RUST_SHA=sha).returncode != 0
+    (tmp_path / "unexpected.txt").unlink()
+    # WHY: failed git-status output must not be mistaken for an empty clean
+    # tree when HEAD is still valid. Exercise the real Git failure boundary.
+    (tmp_path / ".git" / "index").write_bytes(b"invalid synthetic index")
+    assert git("rev-parse", "HEAD") == sha
+    assert subprocess.run(["git", "-C", str(tmp_path), "status", "--porcelain=v1"],
+                          capture_output=True, timeout=20).returncode != 0
+    assert _run_tls_script(verify["run"], tmp_path, EXPECTED_RUST_SHA=sha).returncode != 0
 
 
 def test_branch_check_leaves_concurrency_to_reusable_workflow() -> None:

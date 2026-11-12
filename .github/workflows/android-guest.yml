@@ -156,9 +156,11 @@ jobs:
           EXPECTED_RUST_SHA: ${{ steps.rust-source.outputs.rust_sha }}
         run: |
           set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          source_status="$(git status --porcelain=v1 --untracked-files=all)"
           if [[ ! "$EXPECTED_RUST_SHA" =~ ^[0-9a-f]{40}$ ]] ||
-             [[ "$(git rev-parse HEAD)" != "$EXPECTED_RUST_SHA" ]] ||
-             [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+             [[ "$actual_sha" != "$EXPECTED_RUST_SHA" ]] ||
+             [[ -n "$source_status" ]]; then
             echo 'Rust TLS checkout must match the requested commit and be clean' >&2
             exit 1
           fi
