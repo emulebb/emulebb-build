@@ -191,3 +191,26 @@ def test_missing_or_invalid_failure_receipt_cannot_claim_a_boot_phase(tmp_path, 
     (tmp_path / "guest").mkdir()
     (tmp_path / "guest/report.json").write_text(payload)
     assert subject._guest_failure_details(tmp_path) == {"phase": "unknown"}
+
+
+@pytest.mark.parametrize("private", [False, True])
+def test_tls_failure_diagnostics_allow_only_fixed_owner_codes_and_stages(tmp_path, private):
+    directory = tmp_path / "guest"
+    directory.mkdir()
+    case = sorted(subject.TLS_CASE_NAMES)[0]
+    progress = {"stage": "cleanup-forward", "failureStage": "daemon-admission", "activeCase": case,
+                "completedCases": sorted(subject.TLS_CASE_NAMES), "daemonExitCode": 101,
+                "failureMessage": "Android daemon executable path differs; refusing to signal it"}
+    if private:
+        progress = {"stage": "synthetic-private-token", "failureStage": "synthetic-private-token",
+                    "activeCase": ["synthetic-private-token"], "completedCases": ["synthetic-private-token"],
+                    "daemonExitCode": True, "failureMessage": "synthetic-private-token"}
+    (directory / "report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1",
+        "phase": "tls-execution", "error": "synthetic-private-cleanup-error", "tlsProgress": progress}))
+    value = subject._guest_failure_details(tmp_path)
+    if private:
+        assert value == {"phase": "tls-execution", "tlsProgress": {}}
+    else:
+        assert value["reason"] == "daemon-executable-path"
+        assert value["tlsProgress"] == {key: progress[key] for key in ("stage", "failureStage", "activeCase", "completedCases", "daemonExitCode")}
+    assert "synthetic-private" not in json.dumps(value) and "failureMessage" not in json.dumps(value)

@@ -205,6 +205,54 @@ def _guest_failure_details(directory: Path) -> dict:
     properties = {"sdk", "codename", "abis64", "qemu", "machine", "pageSize"}
     phase = guest.get("phase")
     value = {"phase": phase if isinstance(phase, str) and phase in phases else "unknown"}
+    # Only fixed owner messages become public reason codes. Raw tracebacks,
+    # bootstrap contents, keys and daemon output remain private to the guest.
+    reasons = {
+        "Owned Android ADB command failed": "owned-adb-command-failed",
+        "Android TLS proof did not execute exactly one successful required test": "tls-case-incomplete",
+        "Android guest TLS payload hash differs from its source-bound bytes": "guest-payload-hash-mismatch",
+        "Android production daemon exited before fresh-profile REST readiness": "daemon-exited-before-rest",
+        "Android REST forward did not allocate a private loopback port": "rest-forward-invalid",
+        "Android fresh-profile REST did not become ready within its bound": "rest-startup-timeout",
+        "Android unauthenticated REST must reject access with HTTP 401": "rest-unauthenticated-status",
+        "Android authenticated REST must accept the generated API key": "rest-authentication-rejected",
+        "Android authenticated REST does not identify the requested running production daemon": "app-identity-mismatch",
+        "Android daemon PID is invalid": "daemon-pid-invalid",
+        "Android daemon executable path differs; refusing to signal it": "daemon-executable-path",
+        "Android daemon working directory differs; refusing to signal it": "daemon-working-directory",
+        "Android daemon executable hash differs; refusing to signal it": "daemon-executable-hash",
+        "Android daemon invocation differs; refusing to signal it": "daemon-invocation",
+        "Android daemon has no verifiable kernel process identity": "daemon-kernel-identity",
+        "Android daemon PID was reused before graceful shutdown": "daemon-pid-reused",
+        "Android generated bootstrap is not owner-only": "bootstrap-permissions",
+        "Android generated bootstrap must use the current loopback snake_case contract": "bootstrap-contract",
+        "Android generated bootstrap must provide a valid private API key": "bootstrap-key-contract",
+        "Android generated bootstrap is not valid TOML": "bootstrap-toml",
+        "Android production daemon did not exit gracefully after SIGTERM": "daemon-ungraceful-exit",
+    }
+    progress = guest.get("tlsProgress")
+    message = progress.get("failureMessage") if isinstance(progress, dict) else None
+    if not isinstance(message, str):
+        message = guest.get("error")
+    reason = reasons.get(message) if isinstance(message, str) else None
+    if reason is not None:
+        value["reason"] = reason
+    if isinstance(progress, dict):
+        stages = {"payload-upload", "tls-test", "daemon-prepare", "daemon-launch", "rest-forward",
+                  "rest-wait-unauthenticated", "daemon-admission", "bootstrap-check", "rest-authenticated",
+                  "app-identity", "shutdown-identity", "shutdown-term", "shutdown-wait", "cleanup-forward"}
+        public_progress = {key: progress[key] for key in ("stage", "failureStage")
+                           if isinstance(progress.get(key), str) and progress[key] in stages}
+        if isinstance(progress.get("activeCase"), str) and progress["activeCase"] in TLS_CASE_NAMES:
+            public_progress["activeCase"] = progress["activeCase"]
+        completed = progress.get("completedCases")
+        if (isinstance(completed, list) and len(completed) <= 6
+                and all(isinstance(item, str) and item in TLS_CASE_NAMES for item in completed)
+                and len(set(completed)) == len(completed)):
+            public_progress["completedCases"] = completed
+        if type(progress.get("daemonExitCode")) is int and -255 <= progress["daemonExitCode"] <= 255:
+            public_progress["daemonExitCode"] = progress["daemonExitCode"]
+        value["tlsProgress"] = public_progress
     if isinstance(guest.get("property"), str) and guest["property"] in properties:
         value["property"] = guest["property"]
     observed = guest.get("observedGuest")
