@@ -200,11 +200,12 @@ def test_tls_failure_diagnostics_allow_only_fixed_owner_codes_and_stages(tmp_pat
     case = sorted(subject.TLS_CASE_NAMES)[0]
     progress = {"stage": "cleanup-forward", "failureStage": "daemon-admission", "activeCase": case,
                 "completedCases": sorted(subject.TLS_CASE_NAMES), "daemonExitCode": 101,
+                "errorType": "RuntimeError",
                 "failureMessage": "Android daemon executable path differs; refusing to signal it"}
     if private:
         progress = {"stage": "synthetic-private-token", "failureStage": "synthetic-private-token",
                     "activeCase": ["synthetic-private-token"], "completedCases": ["synthetic-private-token"],
-                    "daemonExitCode": True, "failureMessage": "synthetic-private-token"}
+                    "daemonExitCode": True, "failureMessage": "synthetic-private-token", "errorType": "synthetic-private-token"}
     (directory / "report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1",
         "phase": "tls-execution", "error": "synthetic-private-cleanup-error", "tlsProgress": progress}))
     value = subject._guest_failure_details(tmp_path)
@@ -212,5 +213,5 @@ def test_tls_failure_diagnostics_allow_only_fixed_owner_codes_and_stages(tmp_pat
         assert value == {"phase": "tls-execution", "tlsProgress": {}}
     else:
         assert value["reason"] == "daemon-executable-path"
-        assert value["tlsProgress"] == {key: progress[key] for key in ("stage", "failureStage", "activeCase", "completedCases", "daemonExitCode")}
+        assert value["tlsProgress"] == {key: progress[key] for key in ("stage", "failureStage", "activeCase", "completedCases", "daemonExitCode", "errorType")}
     assert "synthetic-private" not in json.dumps(value) and "failureMessage" not in json.dumps(value)

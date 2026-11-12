@@ -243,6 +243,10 @@ def _guest_failure_details(directory: Path) -> dict:
                   "app-identity", "shutdown-identity", "shutdown-term", "shutdown-wait", "cleanup-forward"}
         public_progress = {key: progress[key] for key in ("stage", "failureStage")
                            if isinstance(progress.get(key), str) and progress[key] in stages}
+        if isinstance(progress.get("errorType"), str) and progress["errorType"] in {"RuntimeError", "ValueError", "TypeError", "KeyError", "NameError",
+                                          "AttributeError", "AssertionError", "OSError", "PermissionError",
+                                          "FileNotFoundError", "TimeoutExpired", "TimeoutError", "JSONDecodeError"}:
+            public_progress["errorType"] = progress["errorType"]
         if isinstance(progress.get("activeCase"), str) and progress["activeCase"] in TLS_CASE_NAMES:
             public_progress["activeCase"] = progress["activeCase"]
         completed = progress.get("completedCases")
