@@ -2,6 +2,12 @@ name: Android guest boot
 
 on:
   workflow_dispatch:
+    inputs:
+      rust_ref:
+        description: Exact lowercase 40-character Rust commit for the fixed TLS proof
+        required: true
+        type: string
+        default: '5aba7940cc53eeae20dd3fb19bbb1c275717b7f2'
   push:
     branches: [main, 'feature/**', 'fix/**', 'chore/**']
     paths:
@@ -117,13 +123,45 @@ jobs:
         with:
           persist-credentials: false
           path: repos/emulebb-build
+      - name: Select exact Rust TLS source
+        id: rust-source
+        shell: bash
+        env:
+          SOURCE_EVENT: ${{ github.event_name }}
+          REQUESTED_RUST_SHA: ${{ inputs.rust_ref }}
+        run: |
+          set -euo pipefail
+          # WHY: manual data must never become shell code or a floating ref;
+          # automatic events always exercise the reviewed literal baseline.
+          rust_sha='5aba7940cc53eeae20dd3fb19bbb1c275717b7f2'
+          if [[ "$SOURCE_EVENT" == 'workflow_dispatch' ]]; then
+            rust_sha="$REQUESTED_RUST_SHA"
+          fi
+          if [[ ! "$rust_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Rust source must be an exact lowercase 40-character commit SHA' >&2
+            exit 1
+          fi
+          printf 'rust_sha=%s\n' "$rust_sha" >> "$GITHUB_OUTPUT"
       - name: Checkout source-bound Rust TLS repair
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           repository: emulebb/emulebb-rust
-          ref: b84ee2d80349d752a4578dcce4fbdcbe52262ed9
+          ref: ${{ steps.rust-source.outputs.rust_sha }}
           path: repos/emulebb-rust
+      - name: Verify exact clean Rust TLS source before execution
+        shell: bash
+        working-directory: repos/emulebb-rust
+        env:
+          EXPECTED_RUST_SHA: ${{ steps.rust-source.outputs.rust_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_RUST_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ "$(git rev-parse HEAD)" != "$EXPECTED_RUST_SHA" ]] ||
+             [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo 'Rust TLS checkout must match the requested commit and be clean' >&2
+            exit 1
+          fi
       - name: Checkout pinned product documentation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
