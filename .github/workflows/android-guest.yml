@@ -65,7 +65,7 @@ jobs:
         with:
           persist-credentials: false
           repository: emulebb/emulebb-build-tests
-          ref: db468245313504959146b6222544acf34c0cb53b
+          ref: c6d0e5838d97c8e7bef3c15aa81001a7476acd02
           path: repos/emulebb-build-tests
       - name: Set up pinned Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -157,14 +157,14 @@ jobs:
         with:
           persist-credentials: false
           repository: emulebb/emulebb-tooling
-          ref: 3a1361364dcf01bdec07f7df65107ee9a80e0375
+          ref: 26abd1eab97b28977f2d55adba17e6ba28821498
           path: repos/emulebb-tooling
       - name: Checkout pinned TLS runtime harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           repository: emulebb/emulebb-build-tests
-          ref: db468245313504959146b6222544acf34c0cb53b
+          ref: c6d0e5838d97c8e7bef3c15aa81001a7476acd02
           path: repos/emulebb-build-tests
       - name: Checkout pinned MiniUPnP source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
