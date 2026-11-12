@@ -152,13 +152,27 @@ def public_metadata_bytes(request, *, deadline: float | None = None) -> bytes:
 
 def public_index(reference: str, expected: str, *, deadline: float | None = None) -> dict:
     """Prove anonymous GHCR readability; credentials remain transient in memory."""
+    return _public_registry_object(reference, expected, kind="manifests", deadline=deadline)
+
+
+def public_blob(reference: str, expected: str, *, deadline: float | None = None) -> dict:
+    """Read bounded public OCI configuration bytes and verify their exact hash."""
+    return _public_registry_object(reference, expected, kind="blobs", deadline=deadline)
+
+
+def _public_registry_object(reference: str, expected: str, *, kind: str,
+                            deadline: float | None = None) -> dict:
+    """Share anonymous authority, deadlines and byte verification for OCI objects."""
+    if not isinstance(expected, str) or not DIGEST.fullmatch(expected):
+        raise RuntimeError("Public registry object requires an exact source digest")
     deadline = time.monotonic() + 60 if deadline is None else deadline
     repository = reference.removeprefix("ghcr.io/").split("@", 1)[0]
     url = "https://ghcr.io/token?service=ghcr.io&scope=repository:" + repository + ":pull"
     try:
         token = json.loads(public_metadata_bytes(url, deadline=deadline))["token"]
-        request = urllib.request.Request("https://ghcr.io/v2/" + repository + "/manifests/" + expected,
-                                         headers={"Authorization": "Bearer " + token, "Accept": ACCEPT})
+        accept = ACCEPT if kind == "manifests" else "application/vnd.oci.image.config.v1+json, application/octet-stream"
+        request = urllib.request.Request("https://ghcr.io/v2/" + repository + "/" + kind + "/" + expected,
+                                         headers={"Authorization": "Bearer " + token, "Accept": accept})
         raw = public_metadata_bytes(request, deadline=deadline)
         if len(raw) > 1024 * 1024:
             raise RuntimeError("Public registry index exceeds its metadata bound")

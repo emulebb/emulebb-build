@@ -14,7 +14,9 @@ import time
 import urllib.request
 from uuid import uuid4
 
-from .ci_linux_images import PREPARED, RECIPE, ROOT, material_hashes, public_index, cpu_descriptors, public_metadata_bytes
+from .ci_linux_images import (
+    DIGEST, PREPARED, RECIPE, ROOT, material_hashes, public_index, public_blob, cpu_descriptors, public_metadata_bytes,
+)
 from .ci_linux_tools import tool_inputs, RUNTIME
 from .config import resolve_required_workspace_roots, resolve_required_cargo_target_dir
 from .git_environment import git_environment
@@ -129,6 +131,131 @@ def seed_runtime(output: Path, architecture: str) -> None:
     shutil.copy2(source, destination)
 
 
+def native_image_graph(image: str, architecture: str, *, deadline: float) -> tuple[dict, dict, dict]:
+    """Read the hash-verified index, selected native manifest and configuration."""
+    repository, index_digest = image.rsplit("@", 1)
+    index = public_index(repository, index_digest, deadline=deadline)
+    descriptor = cpu_descriptors(index)[architecture]
+    manifest = public_index(repository, descriptor["digest"], deadline=deadline)
+    configuration = public_blob(repository, manifest["config"]["digest"], deadline=deadline)
+    return descriptor, manifest, configuration
+
+
+class ImageIdentityError(RuntimeError):
+    """Expose bounded public identity evidence without an inspect environment dump."""
+
+    def __init__(self, fields: list[str], evidence: dict):
+        self.evidence = evidence
+        super().__init__("Pulled native image identity differs at " + ", ".join(fields) + ": "
+                         + json.dumps(evidence, sort_keys=True))
+
+
+def _identity_text(value) -> str:
+    return value[:200] if isinstance(value, str) else "<" + type(value).__name__ + ">"
+
+
+def _layer_identity(value) -> dict:
+    if not isinstance(value, list):
+        return {"type": type(value).__name__}
+    return {"count": len(value), "sha256": hashlib.sha256(json.dumps(value).encode()).hexdigest()}
+
+
+def verify_native_image_identity(inspected: dict, *, image: str, architecture: str,
+                                 descriptor: dict, manifest: dict, configuration: dict,
+                                 required_labels: dict[str, str]) -> dict:
+    """Bind Docker's storage identity and selected configuration to one OCI leaf."""
+    def mapping(value):
+        return value if isinstance(value, dict) else {}
+    def digest(value):
+        return isinstance(value, str) and DIGEST.fullmatch(value) is not None
+    selected = mapping(descriptor)
+    expected_config = mapping(mapping(manifest).get("config"))
+    config = mapping(configuration)
+    labels = mapping(mapping(config.get("config")).get("Labels"))
+    expected_layers = mapping(config.get("rootfs")).get("diff_ids")
+    actual = mapping(inspected)
+    actual_labels = mapping(mapping(actual.get("Config")).get("Labels"))
+    actual_layers = mapping(actual.get("RootFS")).get("Layers")
+    local_descriptor = actual.get("Descriptor")
+    described = mapping(local_descriptor)
+    manifest_digest, config_digest = selected.get("digest"), expected_config.get("digest")
+    execution_image = image.rsplit("@", 1)[0] + "@" + str(manifest_digest)
+    errors = []
+    if (not digest(manifest_digest) or selected.get("mediaType") not in {
+            "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"}
+            or mapping(manifest).get("mediaType") != selected.get("mediaType")
+            or type(selected.get("size")) is not int or selected["size"] <= 0):
+        errors.append("manifest descriptor")
+    if not digest(config_digest) or expected_config.get("mediaType") not in {
+            "application/vnd.oci.image.config.v1+json", "application/vnd.docker.container.image.v1+json"}:
+        errors.append("config descriptor")
+    if config.get("os") != "linux" or config.get("architecture") != architecture:
+        errors.append("verified config platform")
+    if (mapping(config.get("rootfs")).get("type") != "layers" or not isinstance(expected_layers, list)
+            or any(not digest(layer) for layer in expected_layers)):
+        errors.append("verified config rootfs")
+    if actual.get("Os") != "linux" or actual.get("Architecture") != architecture:
+        errors.append("local platform")
+    if not isinstance(config.get("config"), dict) or not isinstance(actual.get("Config"), dict):
+        errors.append("config types")
+    for name, value in (("verified config", mapping(config.get("config")).get("Labels")),
+                        ("local config", mapping(actual.get("Config")).get("Labels"))):
+        if value is not None and (not isinstance(value, dict)
+                                  or any(not isinstance(key, str) or not isinstance(item, str)
+                                         for key, item in value.items())):
+            errors.append(name + " label types")
+    if any(labels.get(name) != value for name, value in required_labels.items()):
+        errors.append("verified source labels")
+    if actual_labels != labels:
+        errors.append("local config labels")
+    if mapping(actual.get("RootFS")).get("Type") != "layers" or actual_layers != expected_layers:
+        errors.append("local rootfs")
+    # WHY: containerd identifies a native manifest; classic Docker identifies its
+    # config. Both must belong to this exact verified graph, never another index.
+    if local_descriptor is not None:
+        identity_kind = "containerd-manifest"
+        if (not isinstance(local_descriptor, dict) or described.get("digest") != manifest_digest
+                or described.get("mediaType") != selected.get("mediaType")
+                or type(described.get("size")) is not int or described.get("size") != selected.get("size")
+                or ("platform" in described and (mapping(described["platform"]).get("os") != "linux"
+                                                 or mapping(described["platform"]).get("architecture") != architecture))):
+            errors.append("local manifest descriptor")
+        if actual.get("Id") != manifest_digest:
+            errors.append("local manifest Id")
+    else:
+        identity_kind = "classic-config"
+        if actual.get("Id") != config_digest:
+            errors.append("local config Id")
+    repositories = actual.get("RepoDigests")
+    if (not isinstance(repositories, list) or any(not isinstance(item, str) for item in repositories)
+            or execution_image not in repositories):
+        errors.append("local repository digest")
+    evidence = {
+        "schema": "emulebb.native-image-identity/1", "kind": identity_kind,
+        "image": _identity_text(image), "executionImage": _identity_text(execution_image),
+        "platformManifestDigest": _identity_text(manifest_digest), "configDigest": _identity_text(config_digest),
+        "expected": {"architecture": architecture, "os": "linux",
+                     "manifestMediaType": _identity_text(selected.get("mediaType")),
+                     "manifestSize": selected.get("size") if type(selected.get("size")) is int else None,
+                     "sourceSha": _identity_text(labels.get("org.opencontainers.image.revision")),
+                     "recipeSha256": _identity_text(labels.get("io.emulebb.ci.recipe-sha256"))},
+        "observed": {"Id": _identity_text(actual.get("Id")),
+                     "manifestDigest": _identity_text(described.get("digest")),
+                     "manifestMediaType": _identity_text(described.get("mediaType")),
+                     "manifestSize": described.get("size") if type(described.get("size")) is int else None,
+                     "architecture": _identity_text(actual.get("Architecture")),
+                     "os": _identity_text(actual.get("Os")),
+                     "sourceSha": _identity_text(actual_labels.get("org.opencontainers.image.revision")),
+                     "recipeSha256": _identity_text(actual_labels.get("io.emulebb.ci.recipe-sha256")),
+                     "repoDigests": [_identity_text(item) for item in repositories[:4]]
+                     if isinstance(repositories, list) else [], "rootfs": _layer_identity(actual_layers)},
+        "expectedRootfs": _layer_identity(expected_layers), "mismatches": errors,
+    }
+    if errors:
+        raise ImageIdentityError(errors, evidence)
+    return evidence
+
+
 def package(*, image: str, release_version: str, target_platform: str) -> Path:
     """No host fallback: preserve package artifacts, source roots and Rust origin."""
     if (os.environ.get("GITHUB_ACTIONS") != "true" or platform.system() != "Linux"
@@ -168,10 +295,8 @@ def package(*, image: str, release_version: str, target_platform: str) -> Path:
             or product_tools.get("python") != "3.15.2" or rust_channel != "1.98.1"):
         raise RuntimeError("Prepared frontend pins differ from the selected Rust toolchain")
     producer = verify_attestation(image, sources["build"], timeout=budget(180))
-    index_digest = image.rsplit("@", 1)[1]
-    index = public_index(PREPARED, index_digest, deadline=deadline - 90)
-    descriptor = cpu_descriptors(index)[architecture]
-    manifest = public_index(PREPARED, descriptor["digest"], deadline=deadline - 90)
+    descriptor, manifest, configuration = native_image_graph(image, architecture, deadline=deadline - 90)
+    execution_image = PREPARED + "@" + descriptor["digest"]
     report_dir = output / "reports/prepared-native" / uuid4().hex
     if report_dir.exists() or not report_dir.resolve().is_relative_to(output):
         raise RuntimeError("Prepared reports must be new owned output below the inherited root")
@@ -183,29 +308,38 @@ def package(*, image: str, release_version: str, target_platform: str) -> Path:
         user = _builder_user(docker)
         if user.split(":")[0] == "0":
             raise RuntimeError("Prepared package must use the actual non-root runner UID")
-        docker.run("pull", "--platform", "linux/" + architecture, image, timeout=budget(600))
-        inspected = json.loads(docker.run("image", "inspect", image, "--format", "{{json .}}", capture=True, timeout=budget(30)).stdout)
-        labels = inspected.get("Config", {}).get("Labels", {})
-        if (inspected.get("Architecture") != architecture or inspected.get("Os") != "linux"
-                or inspected.get("Id") != manifest["config"]["digest"]
-                or image not in inspected.get("RepoDigests", [])
-                or labels.get("org.opencontainers.image.revision") != sources["build"]
-                or labels.get("io.emulebb.ci.recipe-sha256") != material_hashes()[RECIPE]):
-            raise RuntimeError("Pulled prepared config differs from its attested source and CPU graph")
+        docker.run("pull", "--platform", "linux/" + architecture, execution_image, timeout=budget(600))
+        raw = docker.run("image", "inspect", "--platform", "linux/" + architecture, execution_image,
+                         "--format", "{{json .}}", capture=True, timeout=budget(30)).stdout
+        if len(raw) > 2 * 1024 * 1024:
+            raise RuntimeError("Prepared image inspection exceeds its metadata bound")
+        inspected = json.loads(raw)
+        try:
+            identity = verify_native_image_identity(
+                inspected, image=image, architecture=architecture, descriptor=descriptor, manifest=manifest,
+                configuration=configuration, required_labels={
+                    "org.opencontainers.image.source": "https://github.com/emulebb/emulebb-build",
+                    "org.opencontainers.image.revision": sources["build"],
+                    "io.emulebb.ci.recipe-sha256": material_hashes()[RECIPE]})
+        except ImageIdentityError as error:
+            receipt.write_text(json.dumps({"schema": "emulebb.prepared-native-execution/1", "status": "rejected",
+                                          "imageIdentity": error.evidence}, indent=2) + "\n", encoding="utf-8")
+            raise
         common = ["--rm", "--platform", "linux/" + architecture, "--user", user,
                   "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                   "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=1g,mode=1777"]
         probe = json.loads(docker.run("run", *common, "--network", "none", "--env", "HOME=/tmp",
-                                      "--env", "NPM_CONFIG_CACHE=/tmp/npm", image,
+                                      "--env", "NPM_CONFIG_CACHE=/tmp/npm", execution_image,
                                       "python3", "-B", "-m", "emule_workspace.ci_linux_image_probe",
                                       capture=True, timeout=budget(180)).stdout)
         if probe.get("status") != "passed" or probe.get("architecture") != architecture or probe.get("uid") != int(user.split(":")[0]):
             raise RuntimeError("Prepared environment failed the actual native non-root packaging probe")
         environment = {"schema": "emulebb.prepared-build-environment/1", "image": image,
-                       "platformManifestDigest": descriptor["digest"], "configDigest": inspected["Id"],
+                       "executionImage": execution_image, "platformManifestDigest": descriptor["digest"],
+                       "configDigest": manifest["config"]["digest"],
                        "producer": producer, "runtimeProbe": probe}
         value = {"schema": "emulebb.prepared-native-execution/1", "status": "verified",
-                 "buildRoot": str(ROOT), "buildEnvironment": environment}
+                 "buildRoot": str(ROOT), "buildEnvironment": environment, "imageIdentity": identity}
         receipt.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
         owner = user.replace(":", "-")
         cache = output / "cache/prepared-native" / owner
@@ -221,7 +355,7 @@ def package(*, image: str, release_version: str, target_platform: str) -> Path:
                      # A fixed read-only-source policy, never inherited hook context.
                      "--env", "GIT_OPTIONAL_LOCKS=0",
                      "--env", "ARCH=" + ("x86_64" if architecture == "amd64" else "aarch64"),
-                     "--workdir", str(ROOT), image, "python3", "-B", "-m", "emule_workspace",
+                     "--workdir", str(ROOT), execution_image, "python3", "-B", "-m", "emule_workspace",
                      "package-emulebb-rust-ci", "--release-version", release_version, "--target-os", "linux",
                      "--platform", target_platform, "--prepared-image-receipt", str(receipt)]
         run_owned_container(docker, arguments, report_dir / "package.log", timeout=budget(2100))
