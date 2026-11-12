@@ -128,7 +128,7 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
     value = json.loads(public)
     assert value["status"] == ("passed" if outcome in {"success", "private-extra", "tls-success"} else "failed")
     assert value["applicationQualification"] == "not-run" and value["source"] == source
-    assert "private" not in public and str(tmp_path) not in public
+    assert "synthetic-private-token" not in public and "localAuthentication" not in public and str(tmp_path) not in public
     if tls:
         compile_calls.assert_called_once_with(layout, abis=("x86_64",), wsl_distro="Ubuntu", tls_payload=True)
         assert "--tls-source-sha" in captured and "--tls-manifest-sha256" in captured
