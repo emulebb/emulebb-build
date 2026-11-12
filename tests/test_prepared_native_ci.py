@@ -52,6 +52,21 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setattr(prepared, "_builder_user", lambda docker: "1001:1001")
     image = prepared.PREPARED + "@sha256:" + "1" * 64
     config = "sha256:" + "2" * 64
+    descriptor = {"digest": "sha256:" + "3" * 64, "size": 1234,
+                  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                  "platform": {"os": "linux", "architecture": "amd64"}}
+    manifest = {"mediaType": descriptor["mediaType"], "config": {
+        "digest": config, "mediaType": "application/vnd.oci.image.config.v1+json", "size": 500}}
+    labels = {"org.opencontainers.image.source": "https://github.com/emulebb/emulebb-build",
+              "org.opencontainers.image.revision": sources["build"],
+              "io.emulebb.ci.recipe-sha256": prepared.material_hashes()[prepared.RECIPE]}
+    layers = ["sha256:" + "5" * 64]
+    configuration = {"architecture": "amd64", "os": "linux", "config": {"Labels": labels},
+                     "rootfs": {"type": "layers", "diff_ids": layers}}
+    execution_image = prepared.PREPARED + "@" + descriptor["digest"]
+    inspected = {"Architecture": "amd64", "Os": "linux", "Id": config,
+                 "RepoDigests": [execution_image], "Config": {"Labels": dict(labels)},
+                 "RootFS": {"Type": "layers", "Layers": list(layers)}}
     calls, executed = [], []
     clock = [0.0]
     def verify(*args, **kwargs):
@@ -63,10 +78,16 @@ def host(tmp_path, monkeypatch):
         assert kwargs["deadline"] == 2010
         clock[0] += 20
         if digest.endswith("1" * 64):
-            return {"manifests": [{"digest": "sha256:" + "3" * 64, "platform": {"os": "linux", "architecture": "amd64"}},
-                                  {"digest": "sha256:" + "4" * 64, "platform": {"os": "linux", "architecture": "arm64"}}]}
-        return {"config": {"digest": config}}
+            return {"manifests": [descriptor, {**descriptor, "digest": "sha256:" + "4" * 64,
+                                                "platform": {"os": "linux", "architecture": "arm64"}}]}
+        assert digest == descriptor["digest"]
+        return manifest
+    def blob(repository, digest, **kwargs):
+        assert digest == config and kwargs["deadline"] == 2010
+        clock[0] += 20
+        return configuration
     monkeypatch.setattr(prepared, "public_index", public)
+    monkeypatch.setattr(prepared, "public_blob", blob)
     monkeypatch.setattr(prepared.time, "monotonic", lambda: clock[0])
     class Docker:
         def __enter__(self):
@@ -81,10 +102,7 @@ def host(tmp_path, monkeypatch):
                 clock[0] += 600
                 return SimpleNamespace(stdout="")
             if args[0] == "image":
-                return SimpleNamespace(stdout=json.dumps({"Architecture": "amd64", "Os": "linux", "Id": config,
-                    "RepoDigests": [image], "Config": {"Labels": {
-                        "org.opencontainers.image.revision": sources["build"],
-                        "io.emulebb.ci.recipe-sha256": prepared.material_hashes()[prepared.RECIPE]}}}))
+                return SimpleNamespace(stdout=json.dumps(inspected))
             if args[0] == "run":
                 clock[0] += 180
                 return SimpleNamespace(stdout=json.dumps({"status": "passed", "architecture": "amd64", "uid": 1001}))
@@ -92,7 +110,9 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setattr(prepared, "LinuxDocker", Docker)
     monkeypatch.setattr(prepared, "run_owned_container", lambda docker, args, log, **kwargs: executed.append((args, log, kwargs)))
     return SimpleNamespace(workspace=workspace, output=output, build=build, sources=sources,
-                           image=image, calls=calls, executed=executed, clock=clock)
+                           image=image, calls=calls, executed=executed, clock=clock, inspected=inspected,
+                           descriptor=descriptor, manifest=manifest, configuration=configuration,
+                           execution_image=execution_image, config_digest=config)
 
 
 def test_existing_pipeline_same_paths_nonroot_and_no_credential_forwarding(host):
@@ -110,11 +130,89 @@ def test_existing_pipeline_same_paths_nonroot_and_no_credential_forwarding(host)
     assert "GIT_OPTIONAL_LOCKS=0" in args
     assert "package-emulebb-rust-ci" in args and "--prepared-image-receipt" in args
     assert args[-1] == str(receipt) and "--skip-build" not in args
-    assert kwargs["timeout"] == 1010  # 2100 - 180 attest - 40 HTTP - 600 pull - 180 probe - 90 cleanup
+    assert kwargs["timeout"] == 990  # 2100 - 180 attest - 60 HTTP - 600 pull - 180 probe - 90 cleanup
     assert log.resolve().is_relative_to(host.output)
     value = json.loads(receipt.read_text())
     assert value["buildEnvironment"]["producer"]["sourceSha"] == host.sources["build"]
+    assert value["buildEnvironment"]["configDigest"] == host.config_digest
+    assert value["buildEnvironment"]["executionImage"] == host.execution_image
+    assert host.execution_image in args and host.image not in args
+    pull = next(args for args, _kwargs in host.calls if isinstance(args, tuple) and args[0] == "pull")
+    inspect = next(args for args, _kwargs in host.calls if isinstance(args, tuple) and args[0] == "image")
+    probe = next(args for args, _kwargs in host.calls if isinstance(args, tuple) and args[0] == "run")
+    assert pull[-1] == host.execution_image and host.execution_image in inspect and host.execution_image in probe
+    assert inspect[inspect.index("--platform") + 1] == "linux/amd64"
     assert "buildRoot" not in value["buildEnvironment"]
+
+
+def test_containerd_manifest_identity_is_not_misreported_as_config_digest(host):
+    host.inspected["Id"] = host.descriptor["digest"]
+    host.inspected["Descriptor"] = dict(host.descriptor)
+    receipt = prepared.package(image=host.image, release_version="synthetic", target_platform="x64")
+    result = json.loads(receipt.read_text())
+    assert result["imageIdentity"]["kind"] == "containerd-manifest"
+    assert result["buildEnvironment"]["configDigest"] == host.config_digest != host.inspected["Id"]
+    assert host.execution_image in host.executed[0][0]
+
+
+@pytest.mark.parametrize("field,value,diagnostic", [
+    ("Id", "sha256:" + "9" * 64, "local config Id"),
+    ("Architecture", "arm64", "local platform"),
+    ("Os", "windows", "local platform"),
+    ("RepoDigests", [], "local repository digest"),
+    ("RepoDigests", "not a list", "local repository digest"),
+    ("RootFS", {"Type": "layers", "Layers": ["sha256:" + "9" * 64]}, "local rootfs"),
+    ("Config", {"Labels": {"org.opencontainers.image.revision": "unrelated"}}, "local config labels"),
+    ("Config", {"Labels": "not a mapping"}, "local config label types"),
+])
+def test_unrelated_native_identity_starts_no_probe_or_product_and_retains_diagnostics(host, field, value, diagnostic):
+    host.inspected[field] = value
+    with pytest.raises(prepared.ImageIdentityError, match=diagnostic):
+        prepared.package(image=host.image, release_version="synthetic", target_platform="x64")
+    assert not host.executed and not any(args[0] == "run" for args, _kwargs in host.calls)
+    receipts = list((host.output / "reports/prepared-native").glob("*/execution.json"))
+    evidence = json.loads(receipts[0].read_text())
+    assert evidence["status"] == "rejected" and diagnostic in evidence["imageIdentity"]["mismatches"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("digest", "sha256:" + "9" * 64), ("mediaType", "application/vnd.oci.image.index.v1+json"),
+    ("size", True), ("size", 99),
+])
+def test_containerd_descriptor_must_be_exact_native_leaf(host, field, value):
+    host.inspected["Id"] = host.descriptor["digest"]
+    host.inspected["Descriptor"] = {**host.descriptor, field: value}
+    with pytest.raises(prepared.ImageIdentityError, match="local manifest descriptor"):
+        prepared.package(image=host.image, release_version="synthetic", target_platform="x64")
+    assert not host.executed
+
+
+def test_containerd_parent_index_cannot_substitute_for_the_selected_native_manifest(host):
+    parent = host.image.rsplit("@", 1)[1]
+    host.inspected["Id"] = parent
+    host.inspected["Descriptor"] = {**host.descriptor, "digest": parent}
+    with pytest.raises(prepared.ImageIdentityError, match="local manifest"):
+        prepared.package(image=host.image, release_version="synthetic", target_platform="x64")
+    assert not host.executed
+
+
+@pytest.mark.parametrize("label", ["org.opencontainers.image.source", "org.opencontainers.image.revision",
+                                   "io.emulebb.ci.recipe-sha256"])
+def test_verified_config_labels_still_bind_selected_source_and_materials(host, label):
+    host.configuration["config"]["Labels"][label] = "unrelated"
+    host.inspected["Config"]["Labels"][label] = "unrelated"
+    with pytest.raises(prepared.ImageIdentityError, match="verified source labels"):
+        prepared.package(image=host.image, release_version="synthetic", target_platform="x64")
+    assert not host.executed
+
+
+def test_identity_failure_diagnostics_are_bounded_and_never_dump_inspect_environment(host):
+    host.inspected["Id"] = "x" * 10000
+    host.inspected["Config"]["Env"] = ["TOKEN=synthetic-private-token"]
+    with pytest.raises(prepared.ImageIdentityError) as caught:
+        prepared.package(image=host.image, release_version="synthetic", target_platform="x64")
+    assert len(str(caught.value)) < 4096 and "synthetic-private-token" not in str(caught.value)
+    assert not host.executed
 
 
 def test_attestation_failure_starts_no_docker_or_product(host, monkeypatch):

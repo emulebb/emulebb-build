@@ -102,6 +102,28 @@ def test_private_package_is_actionable_failure_without_credential_changes(monkey
         images.public_index(images.PREPARED, "sha256:" + "a" * 64)
 
 
+@pytest.mark.parametrize("tampered", [False, True])
+def test_anonymous_config_blob_is_hash_verified_without_exposing_its_transient_token(monkeypatch, tampered):
+    value = {"architecture": "arm64", "os": "linux", "rootfs": {"type": "layers", "diff_ids": []}}
+    expected, raw = encoded(value)
+    calls = []
+    def read(request, **kwargs):
+        calls.append(request)
+        if isinstance(request, str):
+            return json.dumps({"token": "synthetic-public-token"}).encode()
+        assert request.full_url == "https://ghcr.io/v2/emulebb/emulebb-build-ci/ubuntu-rust/blobs/" + expected
+        assert request.get_header("Authorization") == "Bearer synthetic-public-token"
+        return b"{}" if tampered else raw
+    monkeypatch.setattr(images, "public_metadata_bytes", read)
+    if tampered:
+        with pytest.raises(RuntimeError, match="exact source digest") as caught:
+            images.public_blob(images.PREPARED, expected)
+        assert "synthetic-public-token" not in str(caught.value)
+    else:
+        assert images.public_blob(images.PREPARED, expected) == value
+    assert len(calls) == 2
+
+
 def test_native_builder_uses_actual_buildx_digest_and_nonroot_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(images.platform, "system", lambda: "Linux")
     monkeypatch.setattr(images.platform, "machine", lambda: "x86_64")
