@@ -264,14 +264,25 @@ def _guest_failure_details(directory: Path) -> dict:
                         "profile-resolution", "profile-directory", "executable-location", "metadata-open",
                         "bootstrap-parse", "bootstrap-permissions", "bootstrap-key-validation", "bootstrap-template",
                         "bootstrap-read", "bootstrap-file-error", "logging-initialization", "settings-load", "secure-ident-state",
-                        "nat-settings", "incoming-directory", "bootstrap-http-client", "daemon-run-error"}
+                        "nat-settings", "incoming-directory", "bootstrap-http-client", "daemon-run-error",
+                        "p2p-default-route-missing", "p2p-default-route-ambiguous", "p2p-vpn-binding-required", "rest-listener-bind",
+                        "kad-listener-required", "ed2k-listener-required", "secure-ident-generation", "secure-ident-decode",
+                        "secure-ident-encode", "secure-ident-size", "ip-filter-read", "transfer-root-create", "core-settings-missing",
+                        "settings-snapshot-missing", "transfer-root-scan-task", "transfer-root-inventory", "transfer-root-recheck-task", "web-root-invalid",
+                        "sqlite-fts-unavailable", "sqlite-schema-table", "sqlite-schema-column", "sqlite-busy", "sqlite-corrupt",
+                        "sqlite-open", "sqlite-read-only", "sqlite-constraint"}
             conditions = {"unknown", "permission-denied", "operation-not-permitted", "operation-not-supported",
                           "not-implemented", "read-only-filesystem", "address-in-use", "missing-file",
-                          "out-of-memory", "no-space", "file-limit", "invalid-argument", "temporarily-unavailable"}
+                          "out-of-memory", "no-space", "file-limit", "invalid-argument", "temporarily-unavailable",
+                          "missing-device", "network-unreachable", "address-unavailable"}
             for key, allowed in (("context", contexts), ("systemCondition", conditions)):
                 if isinstance(startup.get(key), str) and startup[key] in allowed:
                     safe_startup[key] = startup[key]
-            for key in ("privateOutputAvailable", "bootstrapCreated", "runtimeEntered", "bootstrapExists", "leaseExists", "metadataExists"):
+            for key, allowed in (("errorSource", {"retained-jsonl", "private-console"}),
+                                 ("fatalRecordStatus", {"matched", "missing", "unbounded", "changed", "malformed", "ambiguous", "unavailable"})):
+                if isinstance(startup.get(key), str) and startup[key] in allowed:
+                    safe_startup[key] = startup[key]
+            for key in ("privateOutputAvailable", "bootstrapCreated", "runtimeEntered", "daemonRunErrorReported", "bootstrapExists", "leaseExists", "metadataExists"):
                 if type(startup.get(key)) is bool:
                     safe_startup[key] = startup[key]
             public_progress["startupFailure"] = safe_startup

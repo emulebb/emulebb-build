@@ -223,10 +223,12 @@ def test_native_startup_failure_context_is_enum_and_bool_only(tmp_path, invalid)
     directory.mkdir()
     startup = {"context": "interface-enumeration", "systemCondition": "operation-not-permitted",
                "bootstrapCreated": True, "runtimeEntered": True, "leaseExists": True, "metadataExists": False,
+               "errorSource": "retained-jsonl", "fatalRecordStatus": "matched",
                "rawLog": "synthetic-private-key-and-profile"}
     if invalid:
         startup = {"context": ["synthetic-private"], "systemCondition": "synthetic-private",
-                   "bootstrapCreated": 1, "metadataExists": "synthetic-private", "rawLog": "synthetic-private"}
+                   "bootstrapCreated": 1, "metadataExists": "synthetic-private", "rawLog": "synthetic-private",
+                   "errorSource": "synthetic-private", "fatalRecordStatus": {"private": "synthetic-private"}}
     (directory / "report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1",
         "phase": "tls-execution", "tlsProgress": {"startupFailure": startup}}))
     value = subject._guest_failure_details(tmp_path)
