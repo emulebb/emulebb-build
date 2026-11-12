@@ -312,6 +312,20 @@ def test_producer_permissions_and_native_matrix_have_no_untrusted_publication_pa
             install = next(step["run"] for step in job["steps"] if "pytest==" in step.get("run", ""))
             assert "pytest==" + pytest_pin in install
             continue
+        if name == "docker-conformance":
+            assert "permissions" not in job
+            assert job["needs"] == "tests"
+            assert job["strategy"]["matrix"] == workflow["jobs"]["native"]["strategy"]["matrix"]
+            assert not any("login-action" in step.get("uses", "") for step in job["steps"])
+            checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+            assert checkout["with"]["persist-credentials"] is False
+            execution = next(step for step in job["steps"] if "--docker-conformance" in step.get("run", ""))
+            assert execution["env"] == {"PYTHONPATH": "${{ github.workspace }}"}
+            assert "--architecture ${{ matrix.architecture }}" in execution["run"]
+            assert "${{ runner.temp }}/native-image-conformance/" in execution["run"]
+            artifact = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
+            assert artifact["if"] == "always()"
+            continue
         assert "github.event_name == 'workflow_dispatch'" in job["if"]
         assert "github.ref == 'refs/heads/main'" in job["if"]
         assert "github.repository == 'emulebb/emulebb-build'" in job["if"]
@@ -321,10 +335,12 @@ def test_producer_permissions_and_native_matrix_have_no_untrusted_publication_pa
                 assert step["with"]["ref"] == "${{ github.workflow_sha }}"
                 assert step["with"]["persist-credentials"] is False
     native = workflow["jobs"]["native"]
-    for name in ("native", "verify"):
+    assert workflow["jobs"]["mirrors"]["needs"] == ["tests", "docker-conformance"]
+    for name in ("native", "verify", "docker-conformance"):
         docker = next(step for step in workflow["jobs"][name]["steps"]
                       if step.get("uses", "").startswith("docker/setup-docker-action@"))
         assert docker["with"]["version"] == "v29.6.1"
+        assert json.loads(docker["with"]["daemon-config"])["features"]["containerd-snapshotter"] is True
     from emule_workspace.rust_images import BUILDKIT_IMAGE
     buildx = next(step for step in native["steps"] if step.get("uses", "").startswith("docker/setup-buildx-action@"))
     assert buildx["with"]["driver-opts"] == "image=" + BUILDKIT_IMAGE

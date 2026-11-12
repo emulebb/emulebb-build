@@ -71,8 +71,47 @@ jobs:
           python -B -m pytest tests/test_ubuntu_ci.py tests/test_ci_linux_images.py tests/test_ci_linux_image_probe.py tests/test_ci_linux_tools.py tests/test_prepared_native_ci.py
           -p no:cacheprovider --basetemp "${{ runner.temp }}/ci-image-unit"
 
-  mirrors:
+  docker-conformance:
     needs: tests
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.15.2'
+      - name: Install focused conformance dependencies
+        run: python -m pip install click==8.4.1 pydantic==2.14.3 PyYAML==6.0.3 pytest==9.1.1
+      - uses: docker/setup-docker-action@7ec28a010822b4626af4874f9448a4b05ac6f3e5 # v5.6.0
+        with:
+          version: v29.6.1
+          daemon-config: '{"features":{"containerd-snapshotter":true}}'
+      - name: Prove pinned native leaf identity and non-root execution on containerd
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: >-
+          python -B tests/test_prepared_native_ci.py --docker-conformance
+          --architecture ${{ matrix.architecture }}
+          --report "${{ runner.temp }}/native-image-conformance/${{ matrix.architecture }}.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: native-image-conformance-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/native-image-conformance/*
+          if-no-files-found: warn
+
+  mirrors:
+    needs: [tests, docker-conformance]
     if: github.event_name == 'workflow_dispatch' && github.repository == 'emulebb/emulebb-build' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
