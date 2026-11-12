@@ -31,7 +31,8 @@ def test_kvm_group_must_be_numeric(monkeypatch, group):
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "mismatch", "source-change", "private-extra",
-                                     "tls-success", "tls-missing", "tls-names", "tls-ignored", "tls-source"])
+                                     "tls-success", "tls-missing", "tls-names", "tls-ignored", "tls-source",
+                                     "tls-bool", "tls-pre-source", "tls-post-source", "tls-manifest"])
 @pytest.mark.parametrize("image,api,page", [("min", 28, 4096), ("current", 37, 16384)])
 def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_path, monkeypatch, outcome, image, api, page):
     from emule_workspace import release
@@ -58,7 +59,10 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
             "tlsPayload": {"path": "tls-payload/manifest.json", "sha256": release._sha256(manifest)}}))
         compile_calls = Mock(return_value=compiled)
         monkeypatch.setattr(android_validation, "validate_android", compile_calls)
-        monkeypatch.setattr(release, "_assert_emulebb_rust_package_provenance", lambda *args: None)
+        source_check = Mock()
+        if outcome == "tls-pre-source": source_check.side_effect = RuntimeError("source moved before guest")
+        if outcome == "tls-post-source": source_check.side_effect = [None, RuntimeError("source moved after guest")]
+        monkeypatch.setattr(release, "_assert_emulebb_rust_package_provenance", source_check)
     monkeypatch.setattr(config, "resolve_required_workspace_roots", lambda: (workspace, output))
     source = {"build": {"commit": "1" * 40}, "harness": {"commit": "2" * 40}}
     provenance = Mock(return_value=source)
@@ -104,6 +108,8 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
                 "cases": [{"name": name, "passed": 1, "failed": 0, "ignored": 0} for name in sorted(subject.TLS_CASE_NAMES)]}
             if outcome == "tls-names": value["tls"]["cases"][0]["name"] = "other-test"
             if outcome == "tls-ignored": value["tls"]["cases"][0]["ignored"] = 1
+            if outcome == "tls-bool": value["tls"]["cases"][0]["failed"] = False
+            if outcome == "tls-manifest": manifest.write_text(manifest.read_text() + "\n")
         (guest / "report.json").write_text(json.dumps(value))
 
     monkeypatch.setattr(linux_containers, "run_owned_container", run)
@@ -115,6 +121,11 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
         with pytest.raises(RuntimeError):
             subject.probe_emulator_guest(layout, image=image, **extra)
     assert os.environ == before
+    if outcome == "tls-pre-source":
+        assert not captured
+        result = json.loads(next((output / "reports/android-emulator-boot").rglob("validation.json")).read_text())
+        assert result["status"] == "failed" and result["tls"]["status"] == "failed"
+        return
     assert captured[captured.index("--device") + 1] == "/dev/kvm"
     assert captured[captured.index("--group-add") + 1] == "108"
     assert captured[captured.index("--user") + 1] == "1000:1000"

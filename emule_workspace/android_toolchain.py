@@ -302,6 +302,10 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
     try:
         if _guest_sources(layout) != source:
             raise RuntimeError("Android guest boot sources changed during tool preparation")
+        if tls_startup:
+            from .release import _assert_emulebb_rust_package_provenance
+
+            _assert_emulebb_rust_package_provenance(layout, layout.emulebb_rust_repo_root, compiled["source"])
         with LinuxDocker(wsl_distro) as docker:
             # WHY: only this fresh run directory is writable. ADB has no host
             # ports, USB access, Docker socket, credentials or shared server.
@@ -346,7 +350,8 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
                     or not isinstance(cases, list) or len(cases) != 6
                     or {item.get("name") for item in cases if isinstance(item, dict)} != TLS_CASE_NAMES
                     or any(not isinstance(item, dict) or type(item.get("passed")) is not int or item.get("passed") != 1
-                           or item.get("failed") != 0 or item.get("ignored") != 0 for item in cases)
+                           or type(item.get("failed")) is not int or item.get("failed") != 0
+                           or type(item.get("ignored")) is not int or item.get("ignored") != 0 for item in cases)
                     or execution.get("freshProfileRestReadiness") != "not-run"
                     or execution.get("apkQualification") != "not-run"):
                 raise RuntimeError("Android TLS guest did not execute every source-bound required case")
