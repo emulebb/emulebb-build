@@ -83,7 +83,7 @@ def test_android_tls_runtime_is_additional_pinned_source_bound_guest_proof():
     assert set(inputs) == {"rust_ref"}
     assert inputs["rust_ref"]["type"] == "string" and inputs["rust_ref"]["required"] is True
     baseline = "5aba7940cc53eeae20dd3fb19bbb1c275717b7f2"
-    assert inputs["rust_ref"]["default"] == baseline
+    assert "default" not in inputs["rust_ref"]
     assert f"rust_sha='{baseline}'" in select["run"]
     assert select["env"] == {
         "SOURCE_EVENT": "${{ github.event_name }}", "REQUESTED_RUST_SHA": "${{ inputs.rust_ref }}"}

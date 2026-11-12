@@ -7,7 +7,6 @@ on:
         description: Exact lowercase 40-character current Rust main commit for the fixed TLS proof
         required: true
         type: string
-        default: '5aba7940cc53eeae20dd3fb19bbb1c275717b7f2'
   push:
     branches: [main, 'feature/**', 'fix/**', 'chore/**']
     paths:
