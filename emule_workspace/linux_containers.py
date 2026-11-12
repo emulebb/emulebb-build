@@ -118,7 +118,7 @@ def _builder_user(docker) -> str:
 
 
 def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int, append: bool = False,
-                        capture: bool = False) -> str:
+                        capture: bool = False, ownership: dict | None = None) -> str:
     """@brief Retain failure output and stop only this invocation's container on interruption."""
     name = f"emulebb-linux-{uuid4().hex}"
     command = [*docker.prefix, "docker", "run", "--name", name, *arguments]
@@ -135,6 +135,12 @@ def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int
     finally:
         # WHY: terminating wsl.exe does not reliably terminate its Docker job.
         subprocess.run([*docker.prefix, "docker", "rm", "--force", name], capture_output=True, timeout=60)
+        if ownership is not None:
+            remaining = subprocess.run([*docker.prefix, "docker", "ps", "--all", "--filter", f"name={name}",
+                                        "--format", "{{.Names}}"], check=True, capture_output=True, text=True, timeout=30)
+            ownership.update(name=name, absent=not remaining.stdout.strip())
+            if not ownership["absent"]:
+                raise RuntimeError("Owned proof container survived cleanup")
 
 
 class LinuxDocker:
@@ -477,6 +483,98 @@ class WslValidationSession:
         return False
 
 
+def verify_linux_profile_scratch(layout) -> Path:
+    """@brief Prove two fixed GNU/AMD64 profile cases without claiming full validation."""
+    from .local_checks import _source_snapshot
+    from .release import _emulebb_rust_native_source_roots
+    from .workstreams import _safe_path
+
+    mini, pcp = _emulebb_rust_native_source_roots(layout)
+    sources = {"emulebb-build": layout.build_repo_root, "emulebb-rust": layout.emulebb_rust_repo_root,
+               "emulebb-tooling": layout.tooling_repo_root, "emulebb-build-tests": layout.tests_repo_root,
+               "emulebb-miniupnp": mini, "emulebb-libpcpnatpmp": pcp}
+    before = _source_snapshot(sources, clean=True)
+    output = layout.output_root.resolve()
+    if output.is_relative_to(layout.emule_workspace_root.resolve()):
+        raise RuntimeError("Profile scratch proof requires output outside source")
+    report = _safe_path(output, output / "reports/linux-profile-scratch" / uuid4().hex / "results.json")
+    report.parent.mkdir(parents=True)
+    value = {"schema": "emulebb.linux-profile-scratch-proof/1", "qualification": "focused-profile-scratch-only",
+             "sources": before, "status": "failed", "tests": [], "containers": []}
+    try:
+        with LinuxDocker() as docker:
+            _build_linux_artifacts(layout, docker, libc="gnu", architecture="amd64", webui_dist=None,
+                                   release_version=None, test_scope="portable", profile_scratch_proof=(report, value))
+        if (len(value["tests"]) != 2 or len(value["containers"]) != 3
+                or any(owner.get("absent") is not True for owner in value["containers"])
+                or value.get("hostScratchUnchanged") is not True):
+            raise RuntimeError("Profile scratch proof is incomplete")
+        after = _source_snapshot(sources, clean=True)
+        if after != before:
+            raise RuntimeError("Selected sources changed during profile scratch proof")
+        value.update(status="passed", sourcesAfter=after)
+        return report
+    except BaseException as error:
+        value["error"] = str(error)
+        raise
+    finally:
+        report.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+        print(f"Focused profile scratch proof {value['status']}: {report}", flush=True)
+
+
+def _prove_profile_test_scratch(docker, test_cargo: list[str], target: str, target_root: str,
+                                scratch: Path, user: str, logs: Path, proof: tuple[Path, dict]) -> Path:
+    """Exercise the production test mount and exactly two fixed daemon library cases."""
+    report, value = proof
+    def entries():
+        return sorted((entry.name, entry.lstat().st_mode, entry.lstat().st_size, entry.lstat().st_mtime_ns)
+                      for entry in scratch.iterdir())
+    before = entries()
+    marker = "proof-" + uuid4().hex
+    container_scratch = target_root + "/tmp/profile-ownership-tests"
+    probe = (
+        "import json,os,stat,subprocess,sys\nfrom pathlib import Path\n"
+        "root=Path(sys.argv[1]); uid,gid=map(int,sys.argv[3].split(':'))\n"
+        "kind=subprocess.check_output(['stat','-f','-c','%T',str(root)],text=True).strip()\n"
+        "info=root.stat(); assert kind=='tmpfs'; assert (os.getuid(),os.getgid())==(uid,gid)\n"
+        "assert (info.st_uid,info.st_gid,stat.S_IMODE(info.st_mode))==(uid,gid,0o700)\n"
+        "fd=os.open(root/sys.argv[2],os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)\n"
+        "try:\n os.write(fd,b'synthetic proof'); file=os.fstat(fd); assert stat.S_IMODE(file.st_mode)==0o600; "
+        "assert (file.st_uid,file.st_gid)==(uid,gid)\n"
+        "finally:\n os.close(fd)\n"
+        "print(json.dumps(dict(filesystem=kind,uid=info.st_uid,gid=info.st_gid,"
+        "directoryMode=format(stat.S_IMODE(info.st_mode),'04o'),fileMode=format(stat.S_IMODE(file.st_mode),'04o'),"
+        "fileUid=file.st_uid,fileGid=file.st_gid)))\n"
+    )
+    value.update(user=user, scratch=container_scratch, cargoTarget=target_root, logs=str(logs), hostScratchEntries=len(before))
+    ownership = {}
+    value["containers"].append(ownership)
+    try:
+        output = run_owned_container(docker, [*test_cargo[:-1], "python3", "-B", "-c", probe,
+                                              container_scratch, marker, user], logs / "profile-scratch-mode.log",
+                                     timeout=120, capture=True, ownership=ownership)
+        value["filesystem"] = json.loads(output)
+        for case in ("tests::retargeted_profile_alias_keeps_io_in_the_leased_directory",
+                     "tests::load_rejects_group_or_world_readable_bootstrap_settings"):
+            log = logs / (case.removeprefix("tests::") + ".log")
+            ownership = {}
+            value["containers"].append(ownership)
+            run_owned_container(docker, [*test_cargo, "test", "--locked", "--target", target,
+                                         "-p", "emulebb-daemon", "--lib", case, "--", "--exact"],
+                                log, timeout=600, ownership=ownership)
+            text = log.read_text(encoding="utf-8")
+            if (f"test {case} ... ok" not in text
+                    or re.findall(r"(?m)^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;", text)
+                    != [("1", "0", "0")]):
+                raise RuntimeError(f"Profile proof did not execute exactly one passing case: {case}; inspect {log}")
+            value["tests"].append({"name": case, "passed": 1, "log": str(log)})
+    finally:
+        value["hostScratchUnchanged"] = entries() == before and not (scratch / marker).exists()
+        if not value["hostScratchUnchanged"]:
+            raise RuntimeError("Profile test scratch leaked into the host output directory")
+    return report
+
+
 def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: Path | None = None,
                           release_version: str | None = None, smoke: bool = False, test_scope: str = "portable",
                           use_ci_image_mirrors: bool = False) -> Path:
@@ -618,7 +716,8 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
 
 def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architecture: str,
                            webui_dist: Path | None, release_version: str | None, test_scope: str,
-                           use_ci_image_mirrors: bool = False) -> Path:
+                           use_ci_image_mirrors: bool = False,
+                           profile_scratch_proof: tuple[Path, dict] | None = None) -> Path:
     from . import release
     from .workstreams import _safe_path
     if libc not in RUST_IMAGES or architecture not in {"amd64", "arm64"}:
@@ -640,12 +739,16 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
             raise RuntimeError("Update the pinned Linux builder images with the Rust toolchain")
     target = f"{'x86_64' if architecture == 'amd64' else 'aarch64'}-unknown-linux-{libc}"
     engine_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True).stdout.strip()
+    if profile_scratch_proof is not None and (libc, architecture, engine_arch) != ("gnu", "amd64", "amd64"):
+        raise RuntimeError("Profile scratch proof requires native GNU AMD64")
     hosted_environment = _hosted_linux_environment(architecture, engine_arch)
     base, build_arch, cross = build_configuration(libc, architecture, engine_arch, use_ci_image_mirrors=use_ci_image_mirrors)
     test_plan = linux_test_plan(test_scope, cross=cross, rust_root=rust)
     quality_plan = linux_quality_plan(rust, target) if test_scope == "full" else []
     user = _builder_user(docker)
     uid, gid = user.split(":")
+    if profile_scratch_proof is not None and uid == "0":
+        raise RuntimeError("Profile scratch proof requires the selected non-root builder user")
     owner = f"{uid}-{gid}"
     target_directory = output / "builds/rust" / f"target-linux-{libc}-{architecture}-uid-{uid}-gid-{gid}"
     profile_test_scratch = _safe_path(output, target_directory / "tmp/profile-ownership-tests")
@@ -696,6 +799,11 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     user_options = ["--user", user, "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
     cargo = ["--rm", "--platform", f"linux/{build_arch}", *user_options, *mounts, *environment,
              "--workdir", "/source", builder, "cargo"]
+    # WHY: DrvFS cannot preserve the 0600 bootstrap mode checked by Unix profile
+    # tests. Only disposable fixtures use native tmpfs; Cargo caches stay on disk.
+    profile_test_mount = (f"{target_root}/tmp/profile-ownership-tests:rw,exec,nosuid,nodev,"
+                          f"size=8g,uid={uid},gid={gid},mode=0700")
+    test_cargo = ["--tmpfs", profile_test_mount, *cargo]
     from .rust_source_cache import ensure_rust_source_cache
     cache_invocation = 0
     def cache_cargo(arguments):
@@ -709,6 +817,12 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                              native_roots=(miniupnp, pcpnatpmp),
                              execution_identity={"base": base, "target": target, "buildArchitecture": build_arch},
                              prefetch=True)
+    if profile_scratch_proof is not None:
+        profile_scratch_proof[1].update(builderImage=builder, hostArchitecture=engine_arch,
+                                       imageId=docker.run("image", "inspect", builder, "--format", "{{.Id}}",
+                                                          capture=True, timeout=30).stdout.strip())
+        return _prove_profile_test_scratch(docker, test_cargo, target, target_root,
+                                          profile_test_scratch, user, log_root, profile_scratch_proof)
     for label, arguments in quality_plan:
         print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
         run_owned_container(docker, [*cargo, *arguments], log_root / f"{label}.log", timeout=3600)
@@ -717,12 +831,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     log = log_root / "build.log"
     print(f"Building Linux {architecture}/{libc}; log: {log}", flush=True)
     run_owned_container(docker, command[1:], log, timeout=7200)
-    # WHY: DrvFS cannot preserve the 0600 bootstrap mode checked by Unix profile
-    # tests. Keep only their disposable fixtures on owned, bounded native tmpfs;
-    # Cargo artifacts, dependency caches and retained reports stay on disk.
-    profile_test_mount = (f"{target_root}/tmp/profile-ownership-tests:rw,exec,nosuid,nodev,"
-                          f"size=8g,uid={uid},gid={gid},mode=0700")
-    tests = ["run", "--tmpfs", profile_test_mount, *cargo, "test", "--locked", "--target", target]
+    tests = ["run", *test_cargo, "test", "--locked", "--target", target]
     for label, arguments in test_plan:
         print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
         run_owned_container(docker, [*tests[1:], *arguments], log_root / f"{label}.log", timeout=3600)

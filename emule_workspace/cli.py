@@ -2097,6 +2097,16 @@ def linux_containers(*, wsl_distro: str, setup_arm64: bool, workspace_options: W
     _locked("linux containers", verify)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("verify-linux-profile-scratch")
+@_common_options
+def verify_linux_profile_scratch(*, workspace_options: WorkspaceOptions, layout) -> None:
+    """Prove native GNU/AMD64 profile permissions and alias isolation only."""
+    from .linux_containers import verify_linux_profile_scratch as verify
+
+    _locked("verify Linux profile scratch", lambda **kwargs: verify(kwargs["layout"]))(
+        workspace_options=workspace_options, layout=layout)
+
+
 @main.command("validate-emulebb-rust-image")
 @_common_options
 @click.option("--archive", type=click.Path(path_type=Path), required=True)

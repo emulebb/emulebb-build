@@ -501,7 +501,7 @@ def diagnostics_step():
         linux_quality_plan(tmp_path, target)
 
 
-@pytest.mark.parametrize("outcome", ["success", "failed", "timeout"])
+@pytest.mark.parametrize("outcome", ["success", "failed", "timeout", "remaining"])
 def test_owned_container_removes_only_its_invocation_and_retains_log(tmp_path, monkeypatch, outcome):
     calls = []
     def run(command, **kwargs):
@@ -512,18 +512,140 @@ def test_owned_container_removes_only_its_invocation_and_retains_log(tmp_path, m
                 raise subprocess.TimeoutExpired(command, 1)
             if outcome == "failed":
                 raise subprocess.CalledProcessError(3, command)
-        return SimpleNamespace(stdout="")
+        return SimpleNamespace(stdout="remaining-owned-container" if outcome == "remaining" and "ps" in command else "")
     monkeypatch.setattr("emule_workspace.linux_containers.subprocess.run", run)
     docker = LinuxDocker()
     path = tmp_path / "build.log"
+    ownership = {}
     if outcome == "success":
-        run_owned_container(docker, ["--rm", "image", "cargo", "test"], path, timeout=1)
+        run_owned_container(docker, ["--rm", "image", "cargo", "test"], path, timeout=1, ownership=ownership)
     else:
-        with pytest.raises(RuntimeError, match="inspect"):
-            run_owned_container(docker, ["--rm", "image", "cargo", "test"], path, timeout=1)
+        with pytest.raises(RuntimeError, match="survived" if outcome == "remaining" else "inspect"):
+            run_owned_container(docker, ["--rm", "image", "cargo", "test"], path, timeout=1, ownership=ownership)
     name = calls[0][calls[0].index("--name") + 1]
-    assert calls[-1][-3:] == ["rm", "--force", name]
+    assert calls[-2][-3:] == ["rm", "--force", name]
+    assert f"name={name}" in calls[-1]
+    assert ownership == {"name": name, "absent": outcome != "remaining"}
     assert path.read_text() == "retained container output\n"
+
+
+@pytest.mark.parametrize("counts", [(0, 0, 0), (1, 0, 0), (2, 0, 0), (1, 1, 0), (1, 0, 1)])
+def test_profile_scratch_proof_runs_exact_fixed_library_cases_and_rejects_wrong_counts(tmp_path, monkeypatch, counts):
+    scratch, logs = tmp_path / "scratch", tmp_path / "logs"
+    scratch.mkdir()
+    logs.mkdir()
+    cargo = ["--tmpfs", "fixed-native-scratch", "--user", "1001:1002", "image", "cargo"]
+    calls = []
+    def run(docker, arguments, log, **kwargs):
+        calls.append(arguments)
+        kwargs["ownership"].update(name=f"owned-{len(calls)}", absent=True)
+        assert arguments[:len(cargo) - 1] == cargo[:-1]
+        if "python3" in arguments:
+            assert kwargs["capture"] is True
+            return '{"filesystem":"tmpfs","uid":1001,"gid":1002,"directoryMode":"0700","fileMode":"0600"}'
+        assert "--lib" in arguments and "--bin" not in arguments
+        assert arguments[-2:] == ["--", "--exact"]
+        case = arguments[arguments.index("--lib") + 1]
+        passed, failed, ignored = counts
+        log.write_text(f"test {case} ... ok\ntest result: ok. {passed} passed; {failed} failed; {ignored} ignored;\n")
+        return ""
+    monkeypatch.setattr(linux_containers, "run_owned_container", run)
+    receipt = {"tests": [], "containers": []}
+    arguments = (object(), cargo, "x86_64-unknown-linux-gnu", "/output/target", scratch,
+                 "1001:1002", logs, (logs / "proof.json", receipt))
+    if counts == (1, 0, 0):
+        assert linux_containers._prove_profile_test_scratch(*arguments) == logs / "proof.json"
+        assert [test["name"] for test in receipt["tests"]] == [
+            "tests::retargeted_profile_alias_keeps_io_in_the_leased_directory",
+            "tests::load_rejects_group_or_world_readable_bootstrap_settings"]
+        assert len(calls) == 3
+    else:
+        with pytest.raises(RuntimeError, match="exactly one passing case"):
+            linux_containers._prove_profile_test_scratch(*arguments)
+        assert len(calls) == 2
+    assert receipt["hostScratchUnchanged"] is True
+
+
+@pytest.mark.parametrize("fault", ["mode", "host-leak"])
+def test_profile_scratch_proof_does_not_hide_mode_failure_or_host_leak(tmp_path, monkeypatch, fault):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    def run(docker, arguments, log, **kwargs):
+        kwargs["ownership"].update(name="owned", absent=True)
+        if "python3" in arguments:
+            if fault == "host-leak":
+                (scratch / "unexpected").write_text("synthetic leak")
+            raise RuntimeError("synthetic mode probe failure")
+    monkeypatch.setattr(linux_containers, "run_owned_container", run)
+    receipt = {"tests": [], "containers": []}
+    with pytest.raises(RuntimeError, match="leaked" if fault == "host-leak" else "mode probe failure"):
+        linux_containers._prove_profile_test_scratch(object(), ["image", "cargo"], "target", "/output/target",
+                                                    scratch, "1001:1002", tmp_path, (tmp_path / "proof.json", receipt))
+    assert receipt["hostScratchUnchanged"] is (fault != "host-leak")
+
+
+@pytest.mark.parametrize("outcome", ["passed", "changed", "empty", "cleanup"])
+def test_fixed_profile_proof_fences_sources_and_retains_honest_receipt(tmp_path, monkeypatch, outcome):
+    workspace, output = tmp_path / "workspace", tmp_path / "output"
+    output.mkdir()
+    layout = SimpleNamespace(emule_workspace_root=workspace, output_root=output, build_repo_root=workspace / "builder",
+                             emulebb_rust_repo_root=workspace / "rust", tooling_repo_root=workspace / "tooling",
+                             tests_repo_root=workspace / "harness")
+    snapshots = []
+    def snapshot(sources, **kwargs):
+        assert kwargs == {"clean": True}
+        snapshots.append(sources)
+        return {"revision": "changed" if outcome == "changed" and len(snapshots) > 1 else "fixed"}
+    class Docker:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    def prove(*args, **kwargs):
+        assert kwargs["libc"] == "gnu" and kwargs["architecture"] == "amd64"
+        report, value = kwargs["profile_scratch_proof"]
+        if outcome != "empty":
+            value.update(tests=[{}, {}], containers=[{"absent": outcome != "cleanup"}] * 3,
+                         hostScratchUnchanged=True)
+        return report
+    monkeypatch.setattr("emule_workspace.local_checks._source_snapshot", snapshot)
+    monkeypatch.setattr("emule_workspace.release._emulebb_rust_native_source_roots",
+                        lambda layout: (workspace / "mini", workspace / "pcp"))
+    monkeypatch.setattr(linux_containers, "LinuxDocker", Docker)
+    monkeypatch.setattr(linux_containers, "_build_linux_artifacts", prove)
+    if outcome == "passed":
+        report = linux_containers.verify_linux_profile_scratch(layout)
+    else:
+        with pytest.raises(RuntimeError):
+            linux_containers.verify_linux_profile_scratch(layout)
+        report = next((output / "reports/linux-profile-scratch").glob("*/results.json"))
+    value = json.loads(report.read_text())
+    assert value["qualification"] == "focused-profile-scratch-only"
+    assert value["status"] == ("passed" if outcome == "passed" else "failed")
+
+
+def test_fixed_profile_proof_cli_uses_the_existing_lock_without_arbitrary_filters(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from emule_workspace import cli
+
+    options = SimpleNamespace(workspace_root=tmp_path, output_root=tmp_path / "output", workspace_name="workspace")
+    selected = object()
+    events = []
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: selected)
+    monkeypatch.setattr(linux_containers, "verify_linux_profile_scratch", lambda layout: events.append(("proof", layout)))
+    def locked(name, function):
+        def invoke(**kwargs):
+            events.append(("lock", name))
+            return function(**kwargs)
+        return invoke
+    monkeypatch.setattr(cli, "_locked", locked)
+    result = CliRunner().invoke(cli.main, ["verify-linux-profile-scratch"])
+    assert result.exit_code == 0, result.output
+    assert events == [("lock", "verify Linux profile scratch"), ("proof", selected)]
+    events.clear()
+    result = CliRunner().invoke(cli.main, ["verify-linux-profile-scratch", "--case", "arbitrary"])
+    assert result.exit_code != 0 and not events
 
 
 def test_arm64_build_is_native_on_ci_and_cross_compiled_locally():
