@@ -869,7 +869,8 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     shutil.copy2(layout.tooling_repo_root / "docs/products/emulebb-rust/RELEASE-SCOPE.md", stage / "RELEASE-SCOPE.md")
     (stage / "README.txt").write_text(
         f"eMuleBB Rust {version}, Linux {architecture} {libc}.\n"
-        "Run ./emulebb-rust for a fresh platform profile, or ./emulebb-rust --profile . here.\n"
+        "Run ./emulebb-rust: its executable directory is the default profile, independent of the shell working directory.\n"
+        "Use --profile <writable-directory> to select another profile; relative paths use the shell working directory.\n"
         "Open http://127.0.0.1:20017/ and enter change_me_123change_me_123change_me_123.\n"
         "Replace the shared starter key before exposing the API outside this computer.\n"
         "The adjacent webui directory is required.\n"

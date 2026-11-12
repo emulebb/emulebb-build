@@ -145,6 +145,7 @@ def write_bundle(layout, *, root: Path, scratch: Path, binary: Path, webui: Path
         "For controlled developer/ADB use only; this is not an installable application.\n"
         "Use ./run-developer.sh so any bundled pinned runtime is found before Android system libraries.\n"
         "Run ./run-developer.sh from this writable unpacked directory (or add --profile .).\n"
+        "The default profile is the executable directory; --profile paths resolve from the shell working directory.\n"
         "Open http://127.0.0.1:20017/ and enter change_me_123change_me_123change_me_123.\n"
         "Replace the shared starter key before exposing the API outside this computer.\n"
         "The adjacent webui directory supplies the browser console. Never publish profile secrets.\n",

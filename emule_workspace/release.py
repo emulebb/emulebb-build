@@ -565,7 +565,7 @@ def _create_emulebb_rust_macos_package(
         f"# eMuleBB Rust {version}\n\nUnsigned macOS {arch} beta. Open the app to start the daemon and browser WebUI. "
         "The app is not notarized; approve its first launch in macOS Privacy & Security. "
         "Open http://127.0.0.1:20017/ and enter change_me_123change_me_123change_me_123. "
-        "The first run creates private settings in ~/Library/Application Support/emulebb-rust/. "
+        "The app launcher explicitly passes --profile ~/Library/Application Support/emulebb-rust/; direct daemon execution defaults to the executable directory. "
         "Replace the shared starter key before exposing the API outside this computer. "
         "Quit the app to stop its daemon.\n",
         encoding="utf-8",
@@ -573,7 +573,12 @@ def _create_emulebb_rust_macos_package(
     )
     (macos_root / "launch").write_text(
         '#!/bin/sh\nHERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
-        '"$HERE/emulebb-rust" &\nPID=$!\n'
+        '# WHY: app installations may be read-only; select an explicit writable profile, keeping the daemon default unchanged.\n'
+        'profile_set=0\nfor arg in "$@"; do\n'
+        '  case "$arg" in --profile|--profile=*|-p|-p?*) profile_set=1;; esac\ndone\n'
+        'if [ "$profile_set" = 0 ]; then\n'
+        '  set -- --profile "${HOME:?HOME is required by the app launcher}/Library/Application Support/emulebb-rust" "$@"\nfi\n'
+        '"$HERE/emulebb-rust" "$@" &\nPID=$!\n'
         'trap \'kill -TERM "$PID" 2>/dev/null || true\' INT TERM HUP\n'
         '(for i in 1 2 3 4 5 6 7 8 9 10; do\n'
         '  kill -0 "$PID" 2>/dev/null || exit 0\n'
@@ -693,10 +698,10 @@ def _stage_emulebb_rust_linux_tree(
     shutil.copy2(tooling_root / "docs" / "products" / "emulebb-rust" / "RELEASE-SCOPE.md", doc_root)
     (doc_root / "README.md").write_text(
         f"# eMuleBB Rust {version}\n\nUnsigned Linux {arch} beta package.\n"
-        "Run `emulebb-rust` for the platform-default profile, or pass `--profile <profile-dir>`; "
+        "The command-line daemon defaults to its executable directory; installed CLI users must pass a writable `--profile <profile-dir>`. "
         "the daemon serves the packaged WebUI beside its binary. "
         "Open http://127.0.0.1:20017/ and enter change_me_123change_me_123change_me_123. "
-        "The first run copies the canonical bootstrap into a private platform profile. "
+        "The desktop launcher explicitly selects $XDG_CONFIG_HOME/emulebb-rust (or ~/.config/emulebb-rust), unless --profile is supplied. "
         "Replace the shared starter key before exposing the API outside this computer.\n",
         encoding="utf-8",
         newline="\n",
@@ -721,7 +726,14 @@ def _stage_emulebb_rust_linux_tree(
         icon_root.mkdir(parents=True)
         shutil.copy2(rust_root / "resources" / "icons" / f"donkey-{size}.png", icon_root / "emulebb-rust.png")
     (lib_root / "launch").write_text(
-        '#!/bin/sh\nBIN="$1"\nshift\n"$BIN" "$@" &\nPID=$!\n'
+        '#!/bin/sh\nBIN="$1"\nshift\n'
+        '# WHY: desktop installations may be read-only; select an explicit writable profile, keeping the daemon default unchanged.\n'
+        'profile_set=0\nfor arg in "$@"; do\n'
+        '  case "$arg" in --profile|--profile=*|-p|-p?*) profile_set=1;; esac\ndone\n'
+        'if [ "$profile_set" = 0 ]; then\n'
+        '  config_home=${XDG_CONFIG_HOME:-${HOME:?HOME is required by the desktop launcher}/.config}\n'
+        '  set -- --profile "$config_home/emulebb-rust" "$@"\nfi\n'
+        '"$BIN" "$@" &\nPID=$!\n'
         'trap \'kill -TERM "$PID" 2>/dev/null || true\' INT TERM HUP\n'
         'if command -v xdg-open >/dev/null 2>&1; then\n'
         '  (for i in 1 2 3 4 5 6 7 8 9 10; do\n'
@@ -1202,8 +1214,9 @@ def _write_emulebb_rust_readme(package_root: Path, version: str, arch: str) -> N
         f"eMuleBB Rust {version}\n"
         "====================\n\n"
         f"This is the unsigned Windows {arch} beta package for the headless emulebb-rust daemon.\n\n"
-        "Run `emulebb-rust.exe` for the platform-default profile, or pass `--profile <profile-dir>`.\n"
-        "For a portable profile, run `emulebb-rust.exe --profile .` from this unpacked directory.\n"
+        "Run `emulebb-rust.exe`; its executable directory contains the default TOML and database, regardless of the shell working directory.\n"
+        "Use `--profile <profile-dir>` for a different writable profile; relative paths use the shell working directory. Missing profiles are created.\n"
+        "`--profile .` selects the shell working directory, and equals the default only when run from the executable directory.\n"
         "Open http://127.0.0.1:20017/ and enter `change_me_123change_me_123change_me_123`.\n"
         "Replace this shared starter key before exposing the API outside this computer.\n"
         "The daemon serves the embedded browser WebUI from the packaged `webui` directory beside the executable.\n\n"
