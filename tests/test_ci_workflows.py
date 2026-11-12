@@ -49,8 +49,8 @@ def test_android_tls_runtime_is_additional_pinned_source_bound_guest_proof():
                  if step.get("uses", "").startswith("actions/checkout@") and "repository" in step["with"]}
     assert {name: value["ref"] for name, value in checkouts.items()} == {
         "emulebb/emulebb-rust": "${{ steps.rust-source.outputs.rust_sha }}",
-        "emulebb/emulebb-tooling": "f682dba9f2e3251e89b06313c8fea5cb391296ae",
-        "emulebb/emulebb-build-tests": "3d4db76ea1790f877a18c18d95a5187b0cdc5115",
+        "emulebb/emulebb-tooling": "3a1361364dcf01bdec07f7df65107ee9a80e0375",
+        "emulebb/emulebb-build-tests": "db468245313504959146b6222544acf34c0cb53b",
         "emulebb/emulebb-miniupnp": "4e7a10948004ca2085ac8103e14fc77edb898b4c",
         "emulebb/emulebb-libpcpnatpmp": "a6e787f837e507336a8774522c33b54264ef4a4b",
     }
