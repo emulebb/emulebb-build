@@ -50,7 +50,7 @@ def test_android_tls_runtime_is_additional_pinned_source_bound_guest_proof():
     assert {name: value["ref"] for name, value in checkouts.items()} == {
         "emulebb/emulebb-rust": "${{ steps.rust-source.outputs.rust_sha }}",
         "emulebb/emulebb-tooling": "26abd1eab97b28977f2d55adba17e6ba28821498",
-        "emulebb/emulebb-build-tests": "c6d0e5838d97c8e7bef3c15aa81001a7476acd02",
+        "emulebb/emulebb-build-tests": "cba4612f0cdc8182215a0e4b8bfc18faa6094ab2",
         "emulebb/emulebb-miniupnp": "4e7a10948004ca2085ac8103e14fc77edb898b4c",
         "emulebb/emulebb-libpcpnatpmp": "a6e787f837e507336a8774522c33b54264ef4a4b",
     }
