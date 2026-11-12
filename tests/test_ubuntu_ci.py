@@ -61,7 +61,8 @@ class AptHost:
         if "dpkg-query" in arguments:
             return SimpleNamespace(returncode=0, stdout=(
                 "dpkg-dev\t1.0\tall\n"
-                f"appstream\t1.0\t{self.architecture}\ndesktop-file-utils\t1.0\t{self.architecture}\n"))
+                f"appstream\t1.0\t{self.architecture}\ndesktop-file-utils\t1.0\t{self.architecture}\n"
+                f"file\t1.0\t{self.architecture}\n"))
         return SimpleNamespace(returncode=0, stdout=self.architecture + "\n")
 
     def provision(self, **kwargs):
@@ -99,7 +100,7 @@ def test_signed_https_architecture_sources_without_rewriting_other_repositories(
         assert "Dir::Etc::sourceparts=-" in args and "APT::Get::List-Cleanup=false" in args
         assert "--allow-unauthenticated" not in args
     assert "--no-install-recommends" in apt[-1]
-    assert apt[-1][-3:] == ["dpkg-dev", "appstream", "desktop-file-utils"]
+    assert apt[-1][-4:] == ["dpkg-dev", "appstream", "desktop-file-utils", "file"]
     assert not list(tmp_path.glob("emulebb-ubuntu-apt-*"))
 
 
@@ -119,7 +120,7 @@ def test_transient_update_retries_then_records_installed_versions(tmp_path):
     assert [(item["operation"], item["attempt"]) for item in result["operations"]] == [
         ("update", 1), ("update", 2), ("install", 1)]
     assert result["installedPackages"] == ["dpkg-dev\t1.0\tall",
-                                          "appstream\t1.0\tamd64", "desktop-file-utils\t1.0\tamd64"]
+                                          "appstream\t1.0\tamd64", "desktop-file-utils\t1.0\tamd64", "file\t1.0\tamd64"]
 
 
 @pytest.mark.parametrize("architecture,mirror", [

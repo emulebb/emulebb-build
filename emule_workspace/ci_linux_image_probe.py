@@ -10,6 +10,7 @@ import tempfile
 import venv
 import hashlib
 import importlib.metadata
+import shutil
 
 from .ubuntu_ci import PROFILES
 from .ci_linux_tools import tool_inputs, REQUIREMENTS, RUNTIME
@@ -31,6 +32,53 @@ def metadata_tools_probe(directory: Path) -> dict:
                     ["appstreamcli", "validate", "--no-net", str(metainfo)]):
         subprocess.run(command, check=True, capture_output=True, timeout=20)
     return {"desktopFileValidation": "passed", "appstreamValidation": "passed"}
+
+
+def appimage_tools_probe(directory: Path, appimagetool: Path, runtime: Path) -> dict:
+    """Assemble and extract neutral bytes with the production tool, offline and without FUSE."""
+    from .release import _run_packaging_tool
+    native_true = shutil.which("true")
+    if native_true is None:
+        raise RuntimeError("Synthetic AppImage requires the installed native coreutils true binary")
+    appdir = directory / "Synthetic.AppDir"
+    appdir.mkdir()
+    shutil.copy2(native_true, appdir / "AppRun")
+    (appdir / "AppRun").chmod(0o755)
+    (appdir / "synthetic-probe.desktop").write_text(
+        "[Desktop Entry]\nType=Application\nName=Synthetic probe\nExec=AppRun\n"
+        "Icon=synthetic-probe\nTerminal=true\nCategories=Utility;\n", encoding="utf-8")
+    (appdir / "synthetic-probe.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">'
+        '<rect width="16" height="16" fill="#336699"/></svg>\n', encoding="utf-8")
+    (appdir / "synthetic-payload.txt").write_bytes(b"Synthetic AppImage packaging proof\n")
+    expected = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in appdir.iterdir()}
+    image = directory / "synthetic-probe.AppImage"
+    runtime_digest = hashlib.sha256(runtime.read_bytes()).hexdigest()
+    # WHY: the real assembly path exercises file(1) and the bundled squashfs
+    # builder. Its pinned runtime prevents downloads; GNU timeout bounds this
+    # existing packaging helper and its process group without a second runner.
+    _run_packaging_tool(("timeout", "--signal=TERM", "--kill-after=3s", "45s",
+                         str(appimagetool), "--runtime-file", str(runtime), str(appdir), str(image)),
+                        "Synthetic appimagetool")
+    if not image.is_file() or image.is_symlink():
+        raise RuntimeError("Synthetic AppImage assembly produced no regular image")
+    # appimagetool embeds the image MD5 in the output runtime's .digest_md5
+    # section. Bind its verified input; the output prefix is intentionally changed.
+    if hashlib.sha256(runtime.read_bytes()).hexdigest() != runtime_digest:
+        raise RuntimeError("Synthetic AppImage assembly changed its pinned runtime input")
+    image.chmod(0o755)
+    extracted = directory / "extracted"
+    extracted.mkdir()
+    subprocess.run([str(image), "--appimage-extract"], cwd=extracted,
+                   check=True, capture_output=True, timeout=30)
+    root = extracted / "squashfs-root"
+    for name, digest in expected.items():
+        path = root / name
+        if not path.is_file() or path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise RuntimeError("Synthetic AppImage extracted payload differs: " + name)
+    return {"nonrootAppImagePackaging": "passed", "appimageExtraction": "no-fuse",
+            "appimagePayloadFiles": sorted(expected), "appimageAppRunSha256": expected["AppRun"],
+            "appimageRuntimeSha256": runtime_digest}
 
 
 def probe() -> dict:
@@ -108,6 +156,7 @@ def probe() -> dict:
         subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(root), str(Path(directory) / "probe.deb")],
                        check=True, capture_output=True, timeout=20)
         metadata_tools = metadata_tools_probe(Path(directory))
+        appimage_tools = appimage_tools_probe(Path(directory), appimage, runtime)
     return {"schema": "emulebb.prepared-linux-probe/1", "status": "passed", "architecture": architecture,
             "uid": os.geteuid(), "rustc": rust, "cargo": cargo, "clippy": clippy, "rustfmt": rustfmt,
             "python": platform.python_version(), "installedPackages": installed.splitlines(),
@@ -116,7 +165,7 @@ def probe() -> dict:
                                "git": output("git", "--version"), "appimagetool": appimage_version,
                                "appimageRuntimeSha256": runtime_pin["sha256"][machine],
                                "requirementsSha256": hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest(),
-                               "nonrootDebPackaging": "passed", **metadata_tools},
+                               "nonrootDebPackaging": "passed", **metadata_tools, **appimage_tools},
             "pythonRuntime": {"openssl": ssl.OPENSSL_VERSION, "sqlite": sqlite3.sqlite_version,
                               "caCertificates": certificates, "venvExecution": "passed",
                               "compressionRoundTrips": ["bz2", "lzma", "zlib", "zstd"]},

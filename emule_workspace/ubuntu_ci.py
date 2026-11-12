@@ -12,12 +12,14 @@ import time
 
 
 PROFILES = {
-    "rust-native-release": ("dpkg-dev", "appstream", "desktop-file-utils"),
+    # WHY: appimagetool invokes external file(1) during assembly, even when its
+    # own --version succeeds. Both native AppImage paths need it explicitly.
+    "rust-native-release": ("dpkg-dev", "appstream", "desktop-file-utils", "file"),
     "rust-prepared-builder": (
         "build-essential", "ca-certificates", "cmake", "curl", "dpkg-dev", "git", "libatomic1",
         "libssl-dev", "perl", "pkg-config", "zstd",
         "libbz2-1.0", "libffi8", "liblzma5", "libncursesw6", "libreadline8t64",
-        "libsqlite3-0", "libuuid1", "zlib1g", "appstream", "desktop-file-utils",
+        "libsqlite3-0", "libuuid1", "zlib1g", "appstream", "desktop-file-utils", "file",
     ),
 }
 KEYRING = Path("/usr/share/keyrings/ubuntu-archive-keyring.gpg")
