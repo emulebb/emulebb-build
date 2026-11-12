@@ -385,3 +385,137 @@ def test_producer_upstream_authority_cannot_recursively_become_a_consumer_mirror
     monkeypatch.setitem(linux_containers.RUST_IMAGES, "gnu", "ghcr.io/synthetic/mirror@sha256:" + "1" * 64)
     assert ci_linux_images.SOURCES["rust-gnu"] == original
     assert linux_containers.build_configuration("musl", "arm64", "amd64", use_ci_image_mirrors=True)[0] == linux_containers.MUSL_CROSS_IMAGE
+
+
+def docker_conformance(architecture: str, report: Path) -> None:
+    """Opt-in hosted Docker proof; ordinary pytest remains entirely mock-only."""
+    from emule_workspace.ci_image_sources import UPSTREAM_ALPINE, select_image
+    image = select_image("alpine-runtime", UPSTREAM_ALPINE, True)
+    if (not report.is_absolute() or report.is_symlink()
+            or report.resolve().is_relative_to(prepared.ROOT)):
+        raise RuntimeError("Docker conformance evidence must stay outside the source checkout")
+    report.parent.mkdir(parents=True, exist_ok=True)
+    value = {"schema": "emulebb.native-image-conformance/1", "status": "running",
+             "image": image, "architecture": architecture}
+    deadline = prepared.time.monotonic() + 300
+    def budget(cap):
+        remaining = deadline - prepared.time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("Native Docker conformance deadline expired")
+        return min(cap, remaining)
+    try:
+        native = {"x86_64": "amd64", "aarch64": "arm64"}.get(prepared.platform.machine().lower())
+        if prepared.platform.system() != "Linux" or architecture != native:
+            raise RuntimeError("Docker conformance requires its actual native Linux CPU")
+        descriptor, manifest, configuration = prepared.native_image_graph(image, architecture, deadline=deadline)
+        execution_image = image.rsplit("@", 1)[0] + "@" + descriptor["digest"]
+        value["executionImage"] = execution_image
+        with prepared.LinuxDocker() as docker:
+            raw_version = docker.run("version", "--format", "{{json .Server}}",
+                                     capture=True, timeout=budget(30)).stdout
+            if len(raw_version) > 64 * 1024:
+                raise RuntimeError("Docker version metadata exceeds its bound")
+            server = json.loads(raw_version)
+            value["docker"] = {key: prepared._identity_text(server.get(key)) for key in ("Version", "Arch", "Os")}
+            if server.get("Version") != "29.6.1" or server.get("Arch") != architecture or server.get("Os") != "linux":
+                raise RuntimeError("Docker conformance requires pinned 29.6.1 on the matching Linux CPU")
+            docker.run("pull", "--platform", "linux/" + architecture, execution_image, timeout=budget(180))
+            raw = docker.run("image", "inspect", "--platform", "linux/" + architecture, execution_image,
+                             "--format", "{{json .}}", capture=True, timeout=budget(30)).stdout
+            if len(raw) > 2 * 1024 * 1024:
+                raise RuntimeError("Docker inspection exceeds its metadata bound")
+            # WHY: this uses the production identity admission on the actual
+            # containerd backend, which mock .Id=config fixtures cannot prove.
+            value["imageIdentity"] = prepared.verify_native_image_identity(
+                json.loads(raw), image=image, architecture=architecture, descriptor=descriptor,
+                manifest=manifest, configuration=configuration, required_labels={})
+            if value["imageIdentity"]["kind"] != "containerd-manifest":
+                raise RuntimeError("Hosted conformance must exercise containerd manifest identity")
+            result = prepared.run_owned_container(docker, [
+                "--rm", "--platform", "linux/" + architecture, "--user", "65534:65534",
+                "--read-only", "--network", "none", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges", execution_image,
+                "sh", "-c", "uname -m; id -u"], report.with_suffix(".log"), timeout=budget(30), capture=True)
+            lines = result.strip().splitlines()
+            value["nativeProbe"] = [prepared._identity_text(line) for line in lines[:4]]
+            if lines != [{"amd64": "x86_64", "arm64": "aarch64"}[architecture], "65534"]:
+                raise RuntimeError("Native leaf execution failed its actual CPU/non-root proof")
+        value["status"] = "passed"
+    except Exception as error:
+        value["status"] = "failed"
+        value["failureType"] = type(error).__name__
+        if isinstance(error, prepared.ImageIdentityError):
+            value["imageIdentity"] = error.evidence
+        raise
+    finally:
+        report.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+@pytest.fixture
+def conformance_host(host, monkeypatch):
+    import copy
+    from emule_workspace.ci_image_sources import UPSTREAM_ALPINE, select_image
+    image = select_image("alpine-runtime", UPSTREAM_ALPINE, True)
+    native_image = image.rsplit("@", 1)[0] + "@" + host.descriptor["digest"]
+    inspected = copy.deepcopy(host.inspected)
+    inspected.update(Id=host.descriptor["digest"], Descriptor=dict(host.descriptor), RepoDigests=[native_image])
+    server = {"Version": "29.6.1", "Arch": "amd64", "Os": "linux"}
+    calls = []
+    class Docker:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def run(self, *args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(stdout=json.dumps(server if args[0] == "version" else inspected))
+    def probe(docker, args, log, **kwargs):
+        calls.append(("run", *args))
+        return "x86_64\n65534\n"
+    monkeypatch.setattr(prepared, "LinuxDocker", Docker)
+    monkeypatch.setattr(prepared, "native_image_graph", lambda *a, **k: (host.descriptor, host.manifest, host.configuration))
+    monkeypatch.setattr(prepared, "run_owned_container", probe)
+    return SimpleNamespace(report=host.output / "conformance.json", calls=calls, server=server,
+                           inspected=inspected, native_image=native_image)
+
+
+def test_conformance_executes_the_verified_leaf_nonroot(conformance_host):
+    host = conformance_host
+    docker_conformance("amd64", host.report)
+    report = json.loads(host.report.read_text())
+    assert report["status"] == "passed" and report["imageIdentity"]["kind"] == "containerd-manifest"
+    assert report["nativeProbe"] == ["x86_64", "65534"]
+    pull, inspect, probe = host.calls[1:]
+    assert pull[-1] == inspect[4] == host.native_image
+    assert host.native_image in probe and "65534:65534" in probe and "--read-only" in probe
+
+
+@pytest.mark.parametrize("failure", ["version", "cpu", "classic", "identity"])
+def test_conformance_failure_retains_evidence_and_never_executes_unverified_image(conformance_host, failure):
+    host = conformance_host
+    if failure == "version":
+        host.server["Version"] = "29.0.0"
+    elif failure == "cpu":
+        host.server["Arch"] = "arm64"
+    elif failure == "classic":
+        host.inspected.pop("Descriptor")
+        host.inspected["Id"] = "sha256:" + "2" * 64
+    else:
+        host.inspected["Id"] = "sha256:" + "9" * 64
+    with pytest.raises(RuntimeError):
+        docker_conformance("amd64", host.report)
+    report = json.loads(host.report.read_text())
+    assert report["status"] == "failed"
+    assert not any(args[0] == "run" for args in host.calls)
+    if failure == "identity":
+        assert "local manifest Id" in report["imageIdentity"]["mismatches"]
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Explicit native Docker conformance; never part of local pytest")
+    parser.add_argument("--docker-conformance", action="store_true", required=True)
+    parser.add_argument("--architecture", choices=("amd64", "arm64"), required=True)
+    parser.add_argument("--report", type=Path, required=True)
+    arguments = parser.parse_args()
+    docker_conformance(arguments.architecture, arguments.report)
