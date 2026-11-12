@@ -180,6 +180,7 @@ def test_android_tls_manual_selector_emits_independently_resolved_official_main(
     ("", 0), ("", 128), ("a" * 40 + "\trefs/heads/another", 0),
     ("A" * 40 + "\trefs/heads/main", 0), ("a" * 39 + "\trefs/heads/main", 0),
     ("a" * 40 + " refs/heads/main", 0), ("a" * 40 + "\trefs/heads/main extra", 0),
+    ("a" * 40 + "\\trefs/heads/main", 0),
     ("a" * 40 + "\trefs/heads/main\n" + "b" * 40 + "\trefs/heads/main", 0),
     ("b" * 40 + "\trefs/heads/main", 0), ("$(touch injected)\trefs/heads/main", 0),
 ])
