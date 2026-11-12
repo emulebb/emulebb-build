@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -461,3 +463,52 @@ def test_canonical_clean_accepts_absent_or_empty_directory(tmp_path):
     root.mkdir()
     stage.remove_empty_canonical_runtime(root)
     assert not root.exists()
+
+
+def directory_alias(path, target):
+    if os.name == "nt":
+        # A junction exercises real ancestor redirection without requiring the
+        # operator's Windows symbolic-link privilege or launching WSL.
+        subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(path), str(target)],
+                       capture_output=True, text=True, check=True, timeout=20)
+        assert path.is_junction()
+    else:
+        path.symlink_to(target, target_is_directory=True)
+
+
+def test_ancestor_redirected_after_preflight_cannot_delete_foreign_matching_bytes(selected, monkeypatch):
+    first = stage.prepare_stage(selected, target=TARGET)
+    bundle(first)
+    result = stage.publish_stage(selected, first)
+    root = Path(first["stageRoot"])
+    foreign = selected.output_root / "foreign"
+    shutil.copytree(root / "bin", foreign)
+    before = tree_snapshot(foreign)
+    original = stage._owned_stage
+    displaced = root / "displaced-bin"
+
+    def redirect_after_preflight(*args, **kwargs):
+        data = original(*args, **kwargs)
+        (root / "bin").rename(displaced)
+        directory_alias(root / "bin", foreign)
+        return data
+
+    monkeypatch.setattr(stage, "_owned_stage", redirect_after_preflight)
+    with pytest.raises(RuntimeError, match="Redirected"):
+        stage._remove_owned_stage(root, {key: value for key, value in result.items()
+                                         if key not in {"receipt", "binDir"}})
+    assert tree_snapshot(foreign) == before
+    assert tree_snapshot(displaced) == before
+    assert (root / stage.RECEIPT).exists()
+
+
+def test_canonical_clean_rejects_dangling_directory_alias(tmp_path):
+    target = tmp_path / "vanished-target"
+    target.mkdir()
+    root = tmp_path / "canonical"
+    directory_alias(root, target)
+    target.rmdir()
+    assert not root.exists()
+    with pytest.raises(RuntimeError, match="Redirected|redirected"):
+        stage.remove_empty_canonical_runtime(root)
+    assert root.is_symlink() or root.is_junction()

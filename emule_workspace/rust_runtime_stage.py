@@ -148,9 +148,10 @@ def _inventory(root: Path, target: str) -> list[dict]:
 
 def _owned_stage(root: Path, *, workstream: str, target: str, identity_root: Path | None = None) -> dict:
     """Prove deletion ownership from the stored bytes, not the current source revision."""
+    _safe_path(root.parent, root)
     if root.is_symlink() or root.is_junction() or not root.is_dir():
         raise RuntimeError("Runtime deletion requires a regular owned bundle directory")
-    receipt = root / RECEIPT
+    receipt = _safe_path(root, root / RECEIPT)
     if receipt.is_symlink() or not receipt.is_file():
         raise RuntimeError("Runtime deletion requires its intact ownership receipt; preserving existing data")
     data = json.loads(receipt.read_text(encoding="utf-8"))
@@ -171,28 +172,32 @@ def _remove_owned_stage(root: Path, data: dict, *, identity_root: Path | None = 
     directories = {root / parent for item in data["files"] for parent in Path(item["path"]).parents
                    if parent != Path(".")}
     for item in data["files"]:
-        path = root / item["path"]
+        path = _safe_path(root, root / item["path"])
         if path.is_symlink() or path.is_junction() or not path.is_file():
             raise RuntimeError("Runtime member changed before cleanup; preserving existing data")
         with path.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
         if digest != item["sha256"] or path.stat().st_size != item["size"]:
             raise RuntimeError("Runtime member changed before cleanup; preserving existing data")
-        path.unlink()
+        _safe_path(root, path).unlink()
     # WHY: a running naked EXE can create a profile after the preflight. Never
     # recursively delete a previously generated directory: rmdir fails closed.
     for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
-        directory.rmdir()
+        _safe_path(root, directory).rmdir()
+    _safe_path(root.parent, root)
     if set(root.iterdir()) != {root / RECEIPT}:
         raise RuntimeError("Runtime cleanup found new unowned data; preserving it")
-    if json.loads((root / RECEIPT).read_text(encoding="utf-8")) != data:
+    if json.loads(_safe_path(root, root / RECEIPT).read_text(encoding="utf-8")) != data:
         raise RuntimeError("Runtime receipt changed before cleanup; preserving it")
-    (root / RECEIPT).unlink()
-    root.rmdir()
+    _safe_path(root, root / RECEIPT).unlink()
+    _safe_path(root.parent, root).rmdir()
 
 
 def remove_empty_canonical_runtime(root: Path) -> None:
     """Clean only an empty canonical stage, which has no generated ownership receipt."""
+    _safe_path(root.parent, root)
+    if root.is_symlink() or root.is_junction():
+        raise RuntimeError("Canonical runtime clean refuses redirected directories")
     if not root.exists():
         return
     if root.is_symlink() or root.is_junction() or not root.is_dir():
