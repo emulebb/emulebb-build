@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       rust_ref:
-        description: Exact lowercase 40-character Rust commit for the fixed TLS proof
+        description: Exact lowercase 40-character current Rust main commit for the fixed TLS proof
         required: true
         type: string
         default: '5aba7940cc53eeae20dd3fb19bbb1c275717b7f2'
@@ -131,39 +131,28 @@ jobs:
           REQUESTED_RUST_SHA: ${{ inputs.rust_ref }}
         run: |
           set -euo pipefail
-          # WHY: manual data must never become shell code or a floating ref;
-          # automatic events always exercise the reviewed literal baseline.
+          # WHY: a main-branch job can write the default-branch Actions cache.
+          # Execute only independently resolved official main code on dispatch,
+          # never arbitrary input-selected code; automatic events stay pinned.
           rust_sha='5aba7940cc53eeae20dd3fb19bbb1c275717b7f2'
           if [[ "$SOURCE_EVENT" == 'workflow_dispatch' ]]; then
-            rust_sha="$REQUESTED_RUST_SHA"
-          fi
-          if [[ ! "$rust_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo 'Rust source must be an exact lowercase 40-character commit SHA' >&2
-            exit 1
+            if [[ ! "$REQUESTED_RUST_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo 'Rust source must be an exact lowercase 40-character commit SHA' >&2
+              exit 1
+            fi
+            remote_result="$(git ls-remote --exit-code 'https://github.com/emulebb/emulebb-rust.git' 'refs/heads/main')"
+            if [[ ! "$remote_result" =~ ^([0-9a-f]{40})$'\t'refs/heads/main$ ]]; then
+              echo 'Official Rust main must resolve to one exact commit SHA' >&2
+              exit 1
+            fi
+            trusted_sha="${BASH_REMATCH[1]}"
+            if [[ "$REQUESTED_RUST_SHA" != "$trusted_sha" ]]; then
+              echo 'Requested Rust source must equal current official main' >&2
+              exit 1
+            fi
+            rust_sha="$trusted_sha"
           fi
           printf 'rust_sha=%s\n' "$rust_sha" >> "$GITHUB_OUTPUT"
-      - name: Checkout source-bound Rust TLS repair
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          repository: emulebb/emulebb-rust
-          ref: ${{ steps.rust-source.outputs.rust_sha }}
-          path: repos/emulebb-rust
-      - name: Verify exact clean Rust TLS source before execution
-        shell: bash
-        working-directory: repos/emulebb-rust
-        env:
-          EXPECTED_RUST_SHA: ${{ steps.rust-source.outputs.rust_sha }}
-        run: |
-          set -euo pipefail
-          actual_sha="$(git rev-parse HEAD)"
-          source_status="$(git status --porcelain=v1 --untracked-files=all)"
-          if [[ ! "$EXPECTED_RUST_SHA" =~ ^[0-9a-f]{40}$ ]] ||
-             [[ "$actual_sha" != "$EXPECTED_RUST_SHA" ]] ||
-             [[ -n "$source_status" ]]; then
-            echo 'Rust TLS checkout must match the requested commit and be clean' >&2
-            exit 1
-          fi
       - name: Checkout pinned product documentation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -209,6 +198,28 @@ jobs:
           version: v0.35.0
           driver: docker
           use: false
+      - name: Checkout source-bound Rust TLS repair
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: emulebb/emulebb-rust
+          ref: ${{ steps.rust-source.outputs.rust_sha }}
+          path: repos/emulebb-rust
+      - name: Verify exact clean Rust TLS source before execution
+        shell: bash
+        working-directory: repos/emulebb-rust
+        env:
+          EXPECTED_RUST_SHA: ${{ steps.rust-source.outputs.rust_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          source_status="$(git status --porcelain=v1 --untracked-files=all)"
+          if [[ ! "$EXPECTED_RUST_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ "$actual_sha" != "$EXPECTED_RUST_SHA" ]] ||
+             [[ -n "$source_status" ]]; then
+            echo 'Rust TLS checkout must match the requested commit and be clean' >&2
+            exit 1
+          fi
       - name: Compile and execute the fixed TLS proof on the isolated Android guest
         working-directory: repos/emulebb-build
         env:

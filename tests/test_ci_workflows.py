@@ -69,6 +69,9 @@ def test_android_tls_runtime_is_additional_pinned_source_bound_guest_proof():
     verify = next(step for step in steps if step.get("name") == "Verify exact clean Rust TLS source before execution")
     checkout = next(step for step in steps if step.get("with", {}).get("repository") == "emulebb/emulebb-rust")
     assert steps.index(select) < steps.index(checkout) < steps.index(verify) < steps.index(command)
+    for step in steps:
+        if step.get("uses", "").startswith(("actions/setup-python@", "docker/setup-docker-action@", "docker/setup-buildx-action@")):
+            assert steps.index(step) < steps.index(checkout)
     assert verify["working-directory"] == "repos/emulebb-rust"
     assert verify["env"] == {"EXPECTED_RUST_SHA": "${{ steps.rust-source.outputs.rust_sha }}"}
     assert not any("run" in step for step in steps[steps.index(checkout) + 1:steps.index(verify)])
@@ -116,8 +119,20 @@ def _native_bash() -> str:
     return bash
 
 
-def _run_tls_script(script: str, cwd: Path, **values: str):
+def _run_tls_script(script: str, cwd: Path, *, mock_remote: str | None = None, remote_exit: int = 0, **values: str):
     env = {**os.environ, **values}
+    if mock_remote is not None:
+        commands = cwd / "commands"
+        commands.mkdir(exist_ok=True)
+        git = commands / "git"
+        git.write_text("#!/usr/bin/env bash\nset -euo pipefail\n"
+                       "printf '%s\\n' \"$*\" > \"$PWD/git-called\"\n"
+                       "[[ $# == 4 && $1 == ls-remote && $2 == --exit-code && "
+                       "$3 == https://github.com/emulebb/emulebb-rust.git && $4 == refs/heads/main ]] || exit 99\n"
+                       "printf '%s' \"$MOCK_GIT_OUTPUT\"\nexit \"$MOCK_GIT_EXIT\"\n", encoding="utf-8")
+        git.chmod(0o755)
+        env.update(MOCK_GIT_OUTPUT=mock_remote, MOCK_GIT_EXIT=str(remote_exit))
+        script = 'export PATH="$PWD/commands:$PATH"\n' + script
     return subprocess.run([_native_bash(), "--noprofile", "--norc", "-c", script],
                           cwd=cwd, env=env, capture_output=True, text=True, timeout=20)
 
@@ -141,20 +156,41 @@ def test_android_tls_automatic_selector_ignores_manual_data(tmp_path, event):
     select, _ = _trusted_tls_steps()
     output = tmp_path / "step-output"
     result = _run_tls_script(select["run"], tmp_path, SOURCE_EVENT=event,
-                             REQUESTED_RUST_SHA="$(touch injected)", GITHUB_OUTPUT=output.as_posix())
+                             REQUESTED_RUST_SHA="$(touch injected)", GITHUB_OUTPUT=output.as_posix(), mock_remote="untrusted")
     assert result.returncode == 0, result.stderr
     assert output.read_text() == "rust_sha=5aba7940cc53eeae20dd3fb19bbb1c275717b7f2\n"
     assert not (tmp_path / "injected").exists()
+    assert not (tmp_path / "git-called").exists()
 
 
-def test_android_tls_manual_selector_keeps_requested_exact_commit(tmp_path):
+def test_android_tls_manual_selector_emits_independently_resolved_official_main(tmp_path):
     select, _ = _trusted_tls_steps()
     output = tmp_path / "step-output"
     requested = "0123456789abcdef" * 2 + "01234567"
     result = _run_tls_script(select["run"], tmp_path, SOURCE_EVENT="workflow_dispatch",
-                             REQUESTED_RUST_SHA=requested, GITHUB_OUTPUT=output.as_posix())
+                             REQUESTED_RUST_SHA=requested, GITHUB_OUTPUT=output.as_posix(),
+                             mock_remote=f"{requested}\trefs/heads/main\n")
     assert result.returncode == 0, result.stderr
     assert output.read_text() == f"rust_sha={requested}\n"
+    assert (tmp_path / "git-called").read_text().strip() == (
+        "ls-remote --exit-code https://github.com/emulebb/emulebb-rust.git refs/heads/main")
+
+
+@pytest.mark.parametrize("remote,exit_code", [
+    ("", 0), ("", 128), ("a" * 40 + "\trefs/heads/another", 0),
+    ("A" * 40 + "\trefs/heads/main", 0), ("a" * 39 + "\trefs/heads/main", 0),
+    ("a" * 40 + " refs/heads/main", 0), ("a" * 40 + "\trefs/heads/main extra", 0),
+    ("a" * 40 + "\trefs/heads/main\n" + "b" * 40 + "\trefs/heads/main", 0),
+    ("b" * 40 + "\trefs/heads/main", 0), ("$(touch injected)\trefs/heads/main", 0),
+])
+def test_android_tls_manual_selector_rejects_unavailable_ambiguous_or_different_main(tmp_path, remote, exit_code):
+    select, _ = _trusted_tls_steps()
+    output = tmp_path / "step-output"
+    result = _run_tls_script(select["run"], tmp_path, SOURCE_EVENT="workflow_dispatch",
+                             REQUESTED_RUST_SHA="a" * 40, GITHUB_OUTPUT=output.as_posix(),
+                             mock_remote=remote, remote_exit=exit_code)
+    assert result.returncode != 0
+    assert not output.exists() and not (tmp_path / "injected").exists()
 
 
 def test_android_tls_actual_checkout_must_be_exact_and_clean(tmp_path):
