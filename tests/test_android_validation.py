@@ -236,18 +236,20 @@ def test_tls_export_hashes_copied_bytes_and_preserves_source_identity(tmp_path, 
     directory = output / "report"
     directory.mkdir()
     executables = {}
-    for role in ("core", "daemon"):
+    for role in ("core", "daemon", "runtime"):
         root = output / role
         root.mkdir()
         executables[role] = elf(root, machine=62)
     monkeypatch.setattr(android, "_runtime_dependencies", lambda *args: {"needed": ["libc.so"], "bundled": []})
     provenance = {"source": {"emulebbRust": {"commit": "1" * 40}}, "origin": "local-development", "workflow": None}
-    result = android._export_tls_payload(None, [], "pinned", output, directory, provenance, executables)
+    result = android._export_tls_payload(None, [], "pinned", output, directory, provenance, executables,
+                                         version="0.1.0-beta.2", channel="development")
     manifest = output / result["path"]
     assert release._sha256(manifest) == result["sha256"]
     value = json.loads(manifest.read_text())
     assert value["source"] == provenance["source"] and value["runtimeExecution"] == "not-run"
-    assert set(value["files"]) == {"core-tests", "daemon-tests"}
+    assert value["schema"] == "emulebb.android.tls-payload/2"
+    assert set(value["files"]) == {"core-tests", "daemon-tests", "emulebb-rust"}
     for name, identity in value["files"].items():
         assert identity["sha256"] == release._sha256(manifest.parent / name)
         assert identity["elf"]["elfMachine"] == 62 and identity["elf"]["pageSize"] == 16384

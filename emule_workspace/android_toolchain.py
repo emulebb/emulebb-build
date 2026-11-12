@@ -276,6 +276,10 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
                 or _sha256(payload_manifest) != exported.get("sha256")):
             raise RuntimeError("Android TLS runtime payload export identity differs")
         payload_value = json.loads(payload_manifest.read_text(encoding="utf-8"))
+        if (payload_value.get("schema") != "emulebb.android.tls-payload/2"
+                or payload_value.get("status") != "passed"
+                or not {"core-tests", "daemon-tests", "emulebb-rust"} <= set(payload_value.get("files", {}))):
+            raise RuntimeError("Android first-launch requires the current production-daemon TLS payload schema")
         payload_identity = exported["sha256"]
         if _guest_sources(layout) != source:
             raise RuntimeError("Android TLS guest sources changed during compilation")
@@ -342,7 +346,7 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
             _assert_emulebb_rust_package_provenance(layout, layout.emulebb_rust_repo_root, compiled["source"])
             execution = guest.get("tls", {})
             cases = execution.get("cases")
-            if (execution.get("schema") != "emulebb.android.tls-execution/1"
+            if (execution.get("schema") != "emulebb.android.tls-execution/2"
                     or execution.get("status") != "passed"
                     or execution.get("source") != payload_value["source"]
                     or execution.get("files") != payload_value["files"]
@@ -352,9 +356,23 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
                     or any(not isinstance(item, dict) or type(item.get("passed")) is not int or item.get("passed") != 1
                            or type(item.get("failed")) is not int or item.get("failed") != 0
                            or type(item.get("ignored")) is not int or item.get("ignored") != 0 for item in cases)
-                    or execution.get("freshProfileRestReadiness") != "not-run"
+                    or execution.get("freshProfileRestReadiness") != "passed"
                     or execution.get("apkQualification") != "not-run"):
                 raise RuntimeError("Android TLS guest did not execute every source-bound required case")
+            startup = execution.get("startup", {})
+            if (not isinstance(startup, dict) or startup.get("schema") != "emulebb.android.first-launch/1"
+                    or startup.get("status") != "passed"
+                    or startup.get("app") != {**payload_value["buildIdentity"], "name": "eMuleBB", "apiVersion": "v1", "lifecycleState": "running"}
+                    or startup.get("profilePlacement") != "executable-directory"
+                    or startup.get("callerCwdDifferent") is not True
+                    or startup.get("bootstrapSnakeCase") is not True or startup.get("bootstrapOwnerOnly") is not True
+                    or type(startup.get("unauthenticatedStatus")) is not int or startup.get("unauthenticatedStatus") != 401
+                    or type(startup.get("authenticatedStatus")) is not int or startup.get("authenticatedStatus") != 200
+                    or startup.get("shutdown") != {"signal": "SIGTERM", "identityVerified": True, "exitCode": 0, "graceful": True, "forwardRemoved": True}
+                    or type(startup["shutdown"].get("exitCode")) is not int
+                    or any(startup["shutdown"].get(key) is not True for key in ("identityVerified", "graceful", "forwardRemoved"))
+                    or any(startup.get(key) != "not-run" for key in ("webuiReadiness", "apkQualification", "physicalDeviceQualification"))):
+                raise RuntimeError("Android guest did not prove fresh-profile authenticated production REST and graceful shutdown")
             value["tls"] = {**execution, "payloadManifestSha256": payload_identity, "capacityBefore": capacity}
         # Publish an allowlisted result only; private AVDs and emulator logs can
         # contain local authentication material and must never be uploaded.

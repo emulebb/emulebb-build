@@ -32,7 +32,8 @@ def test_kvm_group_must_be_numeric(monkeypatch, group):
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "mismatch", "source-change", "private-extra",
                                      "tls-success", "tls-missing", "tls-names", "tls-ignored", "tls-source",
-                                     "tls-bool", "tls-pre-source", "tls-post-source", "tls-manifest"])
+                                     "tls-bool", "tls-pre-source", "tls-post-source", "tls-manifest",
+                                     "tls-startup-missing", "tls-startup-source", "tls-startup-auth", "tls-startup-shutdown", "tls-old-schema"])
 @pytest.mark.parametrize("image,api,page", [("min", 28, 4096), ("current", 37, 16384)])
 def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_path, monkeypatch, outcome, image, api, page):
     from emule_workspace import release
@@ -50,8 +51,9 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
         layout.emulebb_rust_repo_root = workspace / "repos/emulebb-rust"
         payload_root = output / "tls-payload"
         payload_root.mkdir()
-        payload = {"source": {"emulebbRust": {"commit": "5" * 40}},
-                   "files": {"core-tests": {"sha256": "6" * 64}, "daemon-tests": {"sha256": "7" * 64}}}
+        payload = {"schema": "emulebb.android.tls-payload/2", "status": "passed", "source": {"emulebbRust": {"commit": "5" * 40}},
+                   "files": {"core-tests": {"sha256": "6" * 64}, "daemon-tests": {"sha256": "7" * 64}, "emulebb-rust": {"sha256": "8" * 64}},
+                   "buildIdentity": {"version": "0.1.0-beta.2", "channel": "development", "sourceRevision": "5" * 40, "platform": "x64", "build": "release"}}
         manifest = payload_root / "manifest.json"
         manifest.write_text(json.dumps(payload))
         compiled = output / "compile.json"
@@ -102,14 +104,26 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
         if outcome == "private-extra":
             value["guest"]["localAuthentication"] = "synthetic-private-token"
         if tls and outcome != "tls-missing":
-            value["tls"] = {"schema": "emulebb.android.tls-execution/1", "status": "passed",
+            value["tls"] = {"schema": "emulebb.android.tls-execution/2", "status": "passed",
                 "source": payload["source"] if outcome != "tls-source" else {}, "files": payload["files"],
-                "freshProfileRestReadiness": "not-run", "apkQualification": "not-run",
+                "freshProfileRestReadiness": "passed", "apkQualification": "not-run",
+                "startup": {"schema": "emulebb.android.first-launch/1", "status": "passed",
+                    "app": {**payload["buildIdentity"], "name": "eMuleBB", "apiVersion": "v1", "lifecycleState": "running"},
+                    "profilePlacement": "executable-directory", "callerCwdDifferent": True,
+                    "bootstrapSnakeCase": True, "bootstrapOwnerOnly": True,
+                    "unauthenticatedStatus": 401, "authenticatedStatus": 200,
+                    "shutdown": {"signal": "SIGTERM", "identityVerified": True, "exitCode": 0, "graceful": True, "forwardRemoved": True},
+                    "webuiReadiness": "not-run", "apkQualification": "not-run", "physicalDeviceQualification": "not-run"},
                 "cases": [{"name": name, "passed": 1, "failed": 0, "ignored": 0} for name in sorted(subject.TLS_CASE_NAMES)]}
             if outcome == "tls-names": value["tls"]["cases"][0]["name"] = "other-test"
             if outcome == "tls-ignored": value["tls"]["cases"][0]["ignored"] = 1
             if outcome == "tls-bool": value["tls"]["cases"][0]["failed"] = False
             if outcome == "tls-manifest": manifest.write_text(manifest.read_text() + "\n")
+            if outcome == "tls-old-schema": value["tls"]["schema"] = "emulebb.android.tls-execution/1"
+            if outcome == "tls-startup-missing": del value["tls"]["startup"]
+            if outcome == "tls-startup-source": value["tls"]["startup"]["app"]["sourceRevision"] = "9" * 40
+            if outcome == "tls-startup-auth": value["tls"]["startup"]["authenticatedStatus"] = 401
+            if outcome == "tls-startup-shutdown": value["tls"]["startup"]["shutdown"]["exitCode"] = 1
         (guest / "report.json").write_text(json.dumps(value))
 
     monkeypatch.setattr(linux_containers, "run_owned_container", run)
