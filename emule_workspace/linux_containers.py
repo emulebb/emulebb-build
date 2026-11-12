@@ -620,6 +620,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                            webui_dist: Path | None, release_version: str | None, test_scope: str,
                            use_ci_image_mirrors: bool = False) -> Path:
     from . import release
+    from .workstreams import _safe_path
     if libc not in RUST_IMAGES or architecture not in {"amd64", "arm64"}:
         raise ValueError("Expected gnu/musl and amd64/arm64")
     rust = layout.emulebb_rust_repo_root
@@ -647,14 +648,16 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     uid, gid = user.split(":")
     owner = f"{uid}-{gid}"
     target_directory = output / "builds/rust" / f"target-linux-{libc}-{architecture}-uid-{uid}-gid-{gid}"
+    profile_test_scratch = _safe_path(output, target_directory / "tmp/profile-ownership-tests")
     cache = output / "cache/cargo-linux-registry" / owner
     home = output / "cache/rust-linux-home" / owner
     # WHY: Docker must not create parent directories as root. Separate stable
     # user namespaces also avoid changing permissions on older root-owned caches.
-    for directory in (target_directory, cache, home):
+    for directory in (target_directory, profile_test_scratch, cache, home):
         if not directory.resolve().is_relative_to(output):
             raise RuntimeError("Linux builder directories must remain below the operator output root")
         directory.mkdir(parents=True, exist_ok=True)
+    _safe_path(output, profile_test_scratch)
     builder = f"local/emulebb-rust-builder:{libc}-{architecture}-{owner}"
     context = Path(__file__).parent / "release_assets" / "rust_linux"
     docker.run("build", "--platform", f"linux/{build_arch}", "--build-arg", f"BASE_IMAGE={base}",
@@ -714,7 +717,12 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     log = log_root / "build.log"
     print(f"Building Linux {architecture}/{libc}; log: {log}", flush=True)
     run_owned_container(docker, command[1:], log, timeout=7200)
-    tests = ["run", *cargo, "test", "--locked", "--target", target]
+    # WHY: DrvFS cannot preserve the 0600 bootstrap mode checked by Unix profile
+    # tests. Keep only their disposable fixtures on owned, bounded native tmpfs;
+    # Cargo artifacts, dependency caches and retained reports stay on disk.
+    profile_test_mount = (f"{target_root}/tmp/profile-ownership-tests:rw,exec,nosuid,nodev,"
+                          f"size=8g,uid={uid},gid={gid},mode=0700")
+    tests = ["run", "--tmpfs", profile_test_mount, *cargo, "test", "--locked", "--target", target]
     for label, arguments in test_plan:
         print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
         run_owned_container(docker, [*tests[1:], *arguments], log_root / f"{label}.log", timeout=3600)

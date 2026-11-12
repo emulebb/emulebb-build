@@ -129,7 +129,8 @@ def test_builder_rejects_invalid_operator_identity_before_docker(monkeypatch, va
 
 
 @pytest.mark.parametrize("mirrors", [False, True])
-def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging_as_root(tmp_path, monkeypatch, mirrors):
+@pytest.mark.parametrize("redirect", [None, "leaf-before", "parent-before", "leaf-after", "junction-before"])
+def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging_as_root(tmp_path, monkeypatch, mirrors, redirect):
     guarded = []
     monkeypatch.setattr("emule_workspace.rust_source_cache.ensure_rust_source_cache",
                         lambda layout, **kwargs: guarded.append(kwargs))
@@ -170,6 +171,7 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
                 return SimpleNamespace(stdout="amd64")
             if args[0] == "build":
                 assert target_directory.is_dir()
+                assert (target_directory / "tmp/profile-ownership-tests").is_dir()
                 assert (output / "cache/cargo-linux-registry/1001-1002").is_dir()
                 assert (output / "cache/rust-linux-home/1001-1002").is_dir()
                 assert "BUILD_UID=1001" in args and "BUILD_GID=1002" in args
@@ -198,6 +200,34 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
     old_archive = output / "packages/rust-linux/0.1.0-beta.2/musl-amd64/emulebb-rust-v0.1.0-beta.2-linux-amd64-musl.tar.zst"
     old_archive.parent.mkdir(parents=True)
     old_archive.write_bytes(b"previous root-owned archive")
+    scratch_path = target_directory / "tmp/profile-ownership-tests"
+    original_link, original_mkdir = type(scratch_path).is_symlink, type(scratch_path).mkdir
+    original_junction = getattr(type(scratch_path), "is_junction", lambda path: False)
+    scratch_created = False
+    def is_link(path):
+        redirected = ((redirect == "leaf-before" and path == scratch_path)
+                      or (redirect == "parent-before" and path == scratch_path.parent)
+                      or (redirect == "leaf-after" and scratch_created and path == scratch_path))
+        return redirected or original_link(path)
+    def mkdir(path, *args, **kwargs):
+        nonlocal scratch_created
+        result = original_mkdir(path, *args, **kwargs)
+        if path == scratch_path:
+            scratch_created = True
+        return result
+    monkeypatch.setattr(type(scratch_path), "is_symlink", is_link)
+    monkeypatch.setattr(type(scratch_path), "is_junction",
+                        lambda path: (redirect == "junction-before" and path == scratch_path)
+                        or original_junction(path), raising=False)
+    monkeypatch.setattr(type(scratch_path), "mkdir", mkdir)
+    if redirect:
+        with pytest.raises(RuntimeError, match="Redirected workstream path"):
+            linux_containers._build_linux_artifacts(layout, Docker(), libc="musl", architecture="amd64",
+                                                    webui_dist=webui, release_version=None, test_scope="portable",
+                                                    use_ci_image_mirrors=mirrors)
+        assert not cargo_calls
+        assert not any(arguments[0] == "build" for arguments in calls)
+        return
     archive = linux_containers._build_linux_artifacts(layout, Docker(), libc="musl", architecture="amd64",
                                                       webui_dist=webui, release_version=None, test_scope="portable",
                                                       use_ci_image_mirrors=mirrors)
@@ -211,6 +241,19 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
         image_index = next(index for index, value in enumerate(arguments) if value.startswith("local/emulebb-rust-builder:"))
         assert arguments.index("--user") < image_index
         assert arguments[arguments.index("--cap-drop") + 1] == "ALL"
+    test_calls = [arguments for arguments in cargo_calls if arguments[arguments.index("cargo") + 1] == "test"]
+    assert test_calls
+    scratch = (f"{target_mapping}/tmp/profile-ownership-tests:rw,exec,nosuid,nodev,"
+               "size=8g,uid=1001,gid=1002,mode=0700")
+    for arguments in cargo_calls:
+        if arguments in test_calls:
+            assert arguments.count("--tmpfs") == 1
+            assert arguments[arguments.index("--tmpfs") + 1] == scratch
+            assert arguments.index("--tmpfs") < arguments.index("cargo")
+        else:
+            assert "--tmpfs" not in arguments
+    assert (output / "cache/cargo-linux-registry/1001-1002").is_dir()
+    assert all("type=bind,source=" + output.as_posix() + ",target=/output" in arguments for arguments in cargo_calls)
     manifest = json.loads(archive.with_name(archive.name + ".manifest.json").read_text())
     assert manifest["buildUser"] == "1001:1002"
     assert manifest["pathMapping"]["cargoTarget"] == target_mapping
@@ -458,21 +501,29 @@ def diagnostics_step():
         linux_quality_plan(tmp_path, target)
 
 
-def test_timed_out_wsl_job_removes_only_its_owned_container(tmp_path, monkeypatch):
+@pytest.mark.parametrize("outcome", ["success", "failed", "timeout"])
+def test_owned_container_removes_only_its_invocation_and_retains_log(tmp_path, monkeypatch, outcome):
     calls = []
     def run(command, **kwargs):
         calls.append(command)
         if "--name" in command:
-            kwargs["stdout"].write("retained build failure\n")
-            raise subprocess.TimeoutExpired(command, 1)
+            kwargs["stdout"].write("retained container output\n")
+            if outcome == "timeout":
+                raise subprocess.TimeoutExpired(command, 1)
+            if outcome == "failed":
+                raise subprocess.CalledProcessError(3, command)
+        return SimpleNamespace(stdout="")
     monkeypatch.setattr("emule_workspace.linux_containers.subprocess.run", run)
     docker = LinuxDocker()
     path = tmp_path / "build.log"
-    with pytest.raises(RuntimeError, match="inspect"):
+    if outcome == "success":
         run_owned_container(docker, ["--rm", "image", "cargo", "test"], path, timeout=1)
+    else:
+        with pytest.raises(RuntimeError, match="inspect"):
+            run_owned_container(docker, ["--rm", "image", "cargo", "test"], path, timeout=1)
     name = calls[0][calls[0].index("--name") + 1]
     assert calls[-1][-3:] == ["rm", "--force", name]
-    assert path.read_text() == "retained build failure\n"
+    assert path.read_text() == "retained container output\n"
 
 
 def test_arm64_build_is_native_on_ci_and_cross_compiled_locally():
