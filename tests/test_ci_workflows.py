@@ -34,6 +34,44 @@ def test_android_guest_proof_uploads_only_public_construction_and_sanitized_resu
         assert "secrets." not in str(step)
 
 
+def test_android_tls_runtime_is_additional_pinned_source_bound_guest_proof():
+    import re
+    import yaml
+
+    workflow = yaml.safe_load((_repo_root() / ".github/workflows/android-guest.yml").read_text(encoding="utf-8"))
+    assert workflow["permissions"] == {"contents": "read"}
+    assert set(workflow["jobs"]["boot"]["strategy"]["matrix"]["image"]) == {"min", "current"}
+    job = workflow["jobs"]["tls-runtime"]
+    assert job["runs-on"] == "ubuntu-24.04" and job["timeout-minutes"] == 60
+    checkouts = {step["with"]["repository"]: step["with"] for step in job["steps"]
+                 if step.get("uses", "").startswith("actions/checkout@") and "repository" in step["with"]}
+    assert {name: value["ref"] for name, value in checkouts.items()} == {
+        "emulebb/emulebb-rust": "b84ee2d80349d752a4578dcce4fbdcbe52262ed9",
+        "emulebb/emulebb-tooling": "f682dba9f2e3251e89b06313c8fea5cb391296ae",
+        "emulebb/emulebb-build-tests": "3d4db76ea1790f877a18c18d95a5187b0cdc5115",
+        "emulebb/emulebb-miniupnp": "4e7a10948004ca2085ac8103e14fc77edb898b4c",
+        "emulebb/emulebb-libpcpnatpmp": "a6e787f837e507336a8774522c33b54264ef4a4b",
+    }
+    for step in job["steps"]:
+        if "uses" in step:
+            assert re.search(r"@[0-9a-f]{40}$", step["uses"])
+        if step.get("uses", "").startswith("actions/checkout@"):
+            assert step["with"]["persist-credentials"] is False
+        assert "secrets." not in str(step)
+    command = next(step for step in job["steps"] if "--tls-startup" in step.get("run", ""))
+    assert command["working-directory"] == "repos/emulebb-build"
+    assert "probe-rust-android-guest-ci --image current --tls-startup" in command["run"]
+    assert "adb" not in command["run"] and "docker" not in command["run"]
+    upload = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
+    assert upload["if"] == "always()"
+    assert upload["with"]["retention-days"] == 14
+    paths = upload["with"]["path"].splitlines()
+    assert all(path.startswith("${{ runner.temp }}/emulebb-android-tls-out/reports/") for path in paths)
+    assert any(path.endswith("/tls-payload/manifest.json") for path in paths)
+    assert any(path.endswith("android-emulator-boot/*/validation.json") for path in paths)
+    assert not any(name in upload["with"]["path"] for name in ("guest/", "emulator.log", "home/", "*.so", "*-tests"))
+
+
 def test_branch_check_leaves_concurrency_to_reusable_workflow() -> None:
     text = (_repo_root() / ".github/workflows/branch-check.yml").read_text(encoding="utf-8")
     # WHY: identical caller/callee groups cancel the caller before any jobs run.
