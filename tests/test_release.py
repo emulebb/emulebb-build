@@ -38,6 +38,7 @@ def test_portable_bundle_contains_ready_bootstrap_with_private_archive_mode(tmp_
     release._write_emulebb_rust_portable_archive(stage, archive)
 
     with tarfile.open(archive, "r:zst") as bundle:
+        assert bundle.getmember("emulebb-rust").mode == 0o700
         entry = bundle.getmember("emulebb-rust/emulebb-rust-settings.toml")
         assert entry.mode == 0o600
         parsed = tomllib.loads(bundle.extractfile(entry).read().decode("utf-8"))

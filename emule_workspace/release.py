@@ -651,6 +651,10 @@ def _write_emulebb_rust_portable_archive(stage: Path, archive: Path) -> None:
             info.uid = info.gid = info.mtime = 0
             info.uname = info.gname = ""
             info.mode = 0o755 if path.is_dir() or path.name in {"emulebb-rust", "run-developer.sh"} else 0o644
+            # WHY: --profile . also writes identities and metadata beside the
+            # executable; private TOML mode alone cannot protect those files.
+            if path == stage:
+                info.mode = 0o700
             if path.name == "emulebb-rust-settings.toml":
                 info.mode = 0o600
             if path.is_file():
