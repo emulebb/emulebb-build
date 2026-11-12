@@ -12,6 +12,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 import uuid
@@ -278,11 +279,7 @@ def create_emulebb_rust_package(
     _assert_pe_machine(exe_source, workspace_options.platform)
     shutil.copy2(exe_source, package_root / "emulebb-rust.exe")
     shutil.copytree(webui_source, package_root / "webui")
-    _copy_package_file(
-        rust_root / "emulebb-rust-settings.example.toml",
-        package_root,
-        Path("emulebb-rust-settings.example.toml"),
-    )
+    _stage_emulebb_rust_bootstrap(rust_root, package_root)
     _copy_package_file(rust_root / "LICENSE", package_root, Path("LICENSE"))
     _copy_package_file(
         layout.tooling_repo_root / "docs" / "products" / "emulebb-rust" / "RELEASE-SCOPE.md",
@@ -561,14 +558,15 @@ def _create_emulebb_rust_macos_package(
     resources.mkdir(parents=True)
     shutil.copy2(executable, macos_root / "emulebb-rust")
     shutil.copytree(webui, macos_root / "webui")
+    _stage_emulebb_rust_bootstrap(rust_root, macos_root)
     shutil.copy2(rust_root / "LICENSE", resources / "LICENSE")
-    shutil.copy2(rust_root / "emulebb-rust-settings.example.toml", resources)
     shutil.copy2(layout.tooling_repo_root / "docs" / "products" / "emulebb-rust" / "RELEASE-SCOPE.md", resources)
     (resources / "README.md").write_text(
         f"# eMuleBB Rust {version}\n\nUnsigned macOS {arch} beta. Open the app to start the daemon and browser WebUI. "
         "The app is not notarized; approve its first launch in macOS Privacy & Security. "
-        "On first run, copy the API key from the profile settings file in "
-        "~/Library/Application Support/emulebb-rust/ and enter it in the WebUI. "
+        "Open http://127.0.0.1:20017/ and enter change_me_123change_me_123change_me_123. "
+        "The first run creates private settings in ~/Library/Application Support/emulebb-rust/. "
+        "Replace the shared starter key before exposing the API outside this computer. "
         "Quit the app to stop its daemon.\n",
         encoding="utf-8",
         newline="\n",
@@ -579,8 +577,8 @@ def _create_emulebb_rust_macos_package(
         'trap \'kill -TERM "$PID" 2>/dev/null || true\' INT TERM HUP\n'
         '(for i in 1 2 3 4 5 6 7 8 9 10; do\n'
         '  kill -0 "$PID" 2>/dev/null || exit 0\n'
-        '  if /usr/bin/curl --silent --max-time 1 --output /dev/null http://127.0.0.1:4711/; then\n'
-        '    /usr/bin/open http://127.0.0.1:4711/\n'
+        '  if /usr/bin/curl --silent --max-time 1 --output /dev/null http://127.0.0.1:20017/; then\n'
+        '    /usr/bin/open http://127.0.0.1:20017/\n'
         '    exit 0\n'
         '  fi\n'
         '  sleep 1\n'
@@ -635,6 +633,33 @@ def _create_emulebb_rust_macos_package(
     print(f"eMuleBB Rust DMG: {dmg}")
 
 
+def _stage_emulebb_rust_bootstrap(rust_root: Path, destination: Path) -> Path:
+    """@brief Copy the daemon's canonical ready bootstrap into an owned package stage."""
+    target = destination / "emulebb-rust-settings.toml"
+    shutil.copy2(rust_root / "emulebb-rust-settings.example.toml", target)
+    target.chmod(0o600)
+    return target
+
+
+def _write_emulebb_rust_portable_archive(stage: Path, archive: Path) -> None:
+    """@brief Write portable bundle modes explicitly, independent of DrvFS permissions."""
+    with tarfile.open(archive, "w:zst") as bundle:
+        for path in [stage, *sorted(stage.rglob("*"))]:
+            if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                raise RuntimeError("Portable packages cannot contain links or special files")
+            info = bundle.gettarinfo(str(path), path.relative_to(stage.parent).as_posix())
+            info.uid = info.gid = info.mtime = 0
+            info.uname = info.gname = ""
+            info.mode = 0o755 if path.is_dir() or path.name in {"emulebb-rust", "run-developer.sh"} else 0o644
+            if path.name == "emulebb-rust-settings.toml":
+                info.mode = 0o600
+            if path.is_file():
+                with path.open("rb") as source:
+                    bundle.addfile(info, source)
+            else:
+                bundle.addfile(info)
+
+
 def _stage_emulebb_rust_linux_tree(
     *,
     destination: Path,
@@ -659,13 +684,16 @@ def _stage_emulebb_rust_linux_tree(
     bin_root.mkdir(parents=True)
     shutil.copy2(executable, lib_root / "emulebb-rust")
     shutil.copytree(webui, lib_root / "webui")
-    shutil.copy2(rust_root / "emulebb-rust-settings.example.toml", doc_root)
+    _stage_emulebb_rust_bootstrap(rust_root, lib_root)
     shutil.copy2(rust_root / "LICENSE", doc_root)
     shutil.copy2(tooling_root / "docs" / "products" / "emulebb-rust" / "RELEASE-SCOPE.md", doc_root)
     (doc_root / "README.md").write_text(
         f"# eMuleBB Rust {version}\n\nUnsigned Linux {arch} beta package.\n"
         "Run `emulebb-rust` for the platform-default profile, or pass `--profile <profile-dir>`; "
-        "the daemon serves the packaged WebUI beside its binary.\n",
+        "the daemon serves the packaged WebUI beside its binary. "
+        "Open http://127.0.0.1:20017/ and enter change_me_123change_me_123change_me_123. "
+        "The first run copies the canonical bootstrap into a private platform profile. "
+        "Replace the shared starter key before exposing the API outside this computer.\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -694,8 +722,8 @@ def _stage_emulebb_rust_linux_tree(
         'if command -v xdg-open >/dev/null 2>&1; then\n'
         '  (for i in 1 2 3 4 5 6 7 8 9 10; do\n'
         '    kill -0 "$PID" 2>/dev/null || exit 0\n'
-        '    if command -v curl >/dev/null 2>&1 && curl --silent --max-time 1 --output /dev/null http://127.0.0.1:4711/; then\n'
-        '      xdg-open http://127.0.0.1:4711/ >/dev/null 2>&1\n'
+        '    if command -v curl >/dev/null 2>&1 && curl --silent --max-time 1 --output /dev/null http://127.0.0.1:20017/; then\n'
+        '      xdg-open http://127.0.0.1:20017/ >/dev/null 2>&1\n'
         '      exit 0\n'
         '    fi\n'
         '    sleep 1\n'
@@ -713,6 +741,7 @@ def _normalize_emulebb_rust_linux_modes(root: Path, *, is_appdir: bool) -> None:
     root.chmod(0o755)
     for path in root.rglob("*"):
         path.chmod(0o755 if path.is_dir() else 0o644)
+    (root / "usr/lib/emulebb-rust/emulebb-rust-settings.toml").chmod(0o600)
     executable_paths = [
         root / "usr" / "bin" / "emulebb-rust",
         root / "usr" / "bin" / "emulebb-rust-launch",
@@ -869,6 +898,7 @@ def _build_emulebb_rust_deb(source: Path, destination: Path) -> None:
                 f"cp -a {shlex.quote(wsl_source)}/. {quoted_root}/",
                 f"find {quoted_root} -type d -exec chmod 0755 {{}} +",
                 f"find {quoted_root} -type f -exec chmod 0644 {{}} +",
+                f"chmod 0600 {quoted_root}/usr/lib/emulebb-rust/emulebb-rust-settings.toml",
                 f"chmod 0755 {quoted_root}/usr/bin/emulebb-rust",
                 f"chmod 0755 {quoted_root}/usr/bin/emulebb-rust-launch",
                 f"chmod 0755 {quoted_root}/usr/lib/emulebb-rust/emulebb-rust",
@@ -1169,11 +1199,14 @@ def _write_emulebb_rust_readme(package_root: Path, version: str, arch: str) -> N
         "====================\n\n"
         f"This is the unsigned Windows {arch} beta package for the headless emulebb-rust daemon.\n\n"
         "Run `emulebb-rust.exe` for the platform-default profile, or pass `--profile <profile-dir>`.\n"
+        "For a portable profile, run `emulebb-rust.exe --profile .` from this unpacked directory.\n"
+        "Open http://127.0.0.1:20017/ and enter `change_me_123change_me_123change_me_123`.\n"
+        "Replace this shared starter key before exposing the API outside this computer.\n"
         "The daemon serves the embedded browser WebUI from the packaged `webui` directory beside the executable.\n\n"
         "Package contents:\n\n"
         "- `emulebb-rust.exe` - regular headless daemon executable.\n"
         "- `webui/` - packaged embedded SPA WebUI static assets.\n"
-        "- `emulebb-rust-settings.example.toml` - local settings example.\n"
+        "- `emulebb-rust-settings.toml` - ready local bootstrap settings.\n"
         "- `RELEASE-SCOPE.md` - beta scope, omissions, and platform support.\n"
         "- `SBOM.spdx.json` - package file inventory and provenance.\n"
     )
@@ -1242,7 +1275,7 @@ def _build_emulebb_rust_manifest(
         "executableSha256": exe_hash,
         "webuiRoot": f"{EMULEBB_RUST_PACKAGE_ROOT_NAME}/webui",
         "releaseScope": f"{EMULEBB_RUST_PACKAGE_ROOT_NAME}/RELEASE-SCOPE.md",
-        "settingsExample": f"{EMULEBB_RUST_PACKAGE_ROOT_NAME}/emulebb-rust-settings.example.toml",
+        "settingsFile": f"{EMULEBB_RUST_PACKAGE_ROOT_NAME}/emulebb-rust-settings.toml",
         "sbom": sbom_path.relative_to(release_root).as_posix(),
         "sbomSha256": sbom_hash,
         "perFileSha256": package_file_hashes,
@@ -2466,7 +2499,7 @@ def _assert_emulebb_rust_package_contents(zip_path: Path, platform: str = "x64")
         required_entries = {
             f"{EMULEBB_RUST_PACKAGE_ROOT_NAME}/emulebb-rust.exe",
             EMULEBB_RUST_PACKAGE_REQUIRED_WEBUI_ENTRY,
-            f"{EMULEBB_RUST_PACKAGE_ROOT_NAME}/emulebb-rust-settings.example.toml",
+            f"{EMULEBB_RUST_PACKAGE_ROOT_NAME}/emulebb-rust-settings.toml",
             f"{EMULEBB_RUST_PACKAGE_ROOT_NAME}/LICENSE",
             f"{EMULEBB_RUST_PACKAGE_ROOT_NAME}/README.md",
             f"{EMULEBB_RUST_PACKAGE_ROOT_NAME}/RELEASE-SCOPE.md",

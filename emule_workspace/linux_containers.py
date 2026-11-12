@@ -859,8 +859,9 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     if (stage / "webui").exists():
         shutil.rmtree(stage / "webui")
     shutil.copytree(webui_dist, stage / "webui")
-    for name in ("LICENSE", "emulebb-rust-settings.example.toml"):
+    for name in ("LICENSE",):
         shutil.copy2(rust / name, stage / name)
+    release._stage_emulebb_rust_bootstrap(rust, stage)
     notices = stage / "licenses"
     notices.mkdir()
     shutil.copy2(miniupnp / "miniupnpc" / "LICENSE", notices / "MiniUPnPc-LICENSE")
@@ -868,7 +869,10 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     shutil.copy2(layout.tooling_repo_root / "docs/products/emulebb-rust/RELEASE-SCOPE.md", stage / "RELEASE-SCOPE.md")
     (stage / "README.txt").write_text(
         f"eMuleBB Rust {version}, Linux {architecture} {libc}.\n"
-        "Run ./emulebb-rust with a fresh writable profile. The adjacent webui directory is required.\n"
+        "Run ./emulebb-rust for a fresh platform profile, or ./emulebb-rust --profile . here.\n"
+        "Open http://127.0.0.1:20017/ and enter change_me_123change_me_123change_me_123.\n"
+        "Replace the shared starter key before exposing the API outside this computer.\n"
+        "The adjacent webui directory is required.\n"
         "Linux kernel and CPU requirements still apply; TLS requires system CA certificates.\n", encoding="utf-8")
     stem = f"emulebb-rust-v{version}-linux-{architecture}-{libc}"
     archive = root / f"{stem}.tar.zst"
@@ -882,10 +886,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     if archive.is_symlink() or not archive.resolve().is_relative_to(output):
         raise RuntimeError("Linux archive must be a regular output path")
     archive.unlink(missing_ok=True)
-    docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}", *mounts,
-               *user_options, builder, "tar", "--zstd", "--sort=name", "--owner=0", "--group=0", "--numeric-owner",
-               "-cf", f"/output/{relative}/{archive.name}",
-               "-C", f"/output/{relative}/staging", "emulebb-rust")
+    release._write_emulebb_rust_portable_archive(stage, archive)
     sbom = root / f"{stem}.sbom.spdx.json"
     shutil.copy2(stage / "SBOM.spdx.json", sbom)
     release._assert_emulebb_rust_package_provenance(layout, rust, provenance)

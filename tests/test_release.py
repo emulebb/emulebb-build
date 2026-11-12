@@ -5,6 +5,8 @@ import hashlib
 import json
 import subprocess
 import struct
+import tarfile
+import tomllib
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -15,6 +17,34 @@ import pytest
 from emule_workspace import release
 from emule_workspace.config import EmulebbRustPackageOptions, WorkspaceOptions
 from emule_workspace.layout import AppVariant, TestTargets, WorkspaceLayout
+
+
+def test_portable_bundle_contains_ready_bootstrap_with_private_archive_mode(tmp_path):
+    rust, stage = tmp_path / "rust", tmp_path / "staging/emulebb-rust"
+    rust.mkdir()
+    stage.mkdir(parents=True)
+    template = '[rest]\nbind_addr="127.0.0.1:20017"\napi_key="change_me_123change_me_123change_me_123"\n'
+    (rust / "emulebb-rust-settings.example.toml").write_text(template, encoding="utf-8")
+    settings = release._stage_emulebb_rust_bootstrap(rust, stage)
+    assert settings.read_text(encoding="utf-8") == template
+    # DrvFS can report public/executable source modes despite chmod. Archive
+    # metadata must still make the editable bootstrap acceptable to the daemon.
+    settings.chmod(0o777)
+    (stage / "emulebb-rust").write_bytes(b"synthetic binary")
+    (stage / "webui").mkdir()
+    (stage / "webui/index.html").write_text("synthetic WebUI", encoding="utf-8")
+    archive = tmp_path / "bundle.tar.zst"
+
+    release._write_emulebb_rust_portable_archive(stage, archive)
+
+    with tarfile.open(archive, "r:zst") as bundle:
+        entry = bundle.getmember("emulebb-rust/emulebb-rust-settings.toml")
+        assert entry.mode == 0o600
+        parsed = tomllib.loads(bundle.extractfile(entry).read().decode("utf-8"))
+        assert parsed == {"rest": {"bind_addr": "127.0.0.1:20017", "api_key": "change_me_123change_me_123change_me_123"}}
+        assert bundle.getmember("emulebb-rust/emulebb-rust").mode == 0o755
+        assert bundle.getmember("emulebb-rust/webui/index.html").mode == 0o644
+        assert "emulebb-rust/emulebb-rust-settings.example.toml" not in bundle.getnames()
 
 
 @pytest.mark.parametrize("suffix", ["metainfo", "appdata"])
@@ -1862,7 +1892,7 @@ def test_emulebb_rust_package_contents_reject_dead_ui_and_diagnostics(tmp_path: 
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr("emulebb-rust/emulebb-rust.exe", _pe_payload(0x8664))
         archive.writestr("emulebb-rust/webui/index.html", b"<html></html>\n")
-        archive.writestr("emulebb-rust/emulebb-rust-settings.example.toml", b"[rest]\n")
+        archive.writestr("emulebb-rust/emulebb-rust-settings.toml", b"[rest]\n")
         archive.writestr("emulebb-rust/LICENSE", b"license\n")
         archive.writestr("emulebb-rust/README.md", b"readme\n")
         archive.writestr("emulebb-rust/RELEASE-SCOPE.md", b"scope\n")
