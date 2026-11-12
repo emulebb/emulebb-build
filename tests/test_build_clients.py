@@ -169,6 +169,22 @@ def test_build_clients_passes_emulebb_rust_diagnostics_flag(
     assert calls == [(True, True)]
 
 
+def test_canonical_clean_refuses_existing_profile_before_cargo(tmp_path, monkeypatch):
+    layout = make_layout(tmp_path, monkeypatch)
+    layout.emulebb_rust_repo_root.mkdir(parents=True)
+    root = layout.output_tools_root / "emulebb-rust/bin"
+    root.mkdir(parents=True)
+    config = root / "emulebb-rust-settings.toml"
+    config.write_bytes(b"synthetic existing configuration")
+    monkeypatch.setattr(build, "find_tool", lambda names: Path("cargo.exe"))
+    monkeypatch.setattr(build.subprocess, "run", lambda *args, **kwargs: pytest.fail("Cargo must not execute"))
+    session = build.BuildSession(layout=layout, options=WorkspaceOptions(workspace_root=layout.emule_workspace_root),
+                                 command_name="build clients")
+    with pytest.raises(RuntimeError, match="not proven disposable"):
+        build.build_emulebb_rust_client(session, clean=True)
+    assert config.read_bytes() == b"synthetic existing configuration"
+
+
 def test_build_emulebb_rust_client_runs_cargo_and_stages_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

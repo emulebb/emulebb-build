@@ -122,9 +122,13 @@ def _inventory(root: Path, target: str) -> list[dict]:
     if not (root / "bin/webui/index.html").is_file():
         raise RuntimeError("Runtime bundle requires its staged WebUI index")
     files = []
+    directories = set()
     for path in sorted(root.rglob("*")):
         _safe_path(root, path)
+        if path.is_symlink() or path.is_junction():
+            raise RuntimeError("Runtime bundle cannot own linked paths")
         if path.is_dir():
+            directories.add(path.relative_to(root).as_posix())
             continue
         relative = path.relative_to(root).as_posix()
         if relative == RECEIPT:
@@ -135,7 +139,69 @@ def _inventory(root: Path, target: str) -> list[dict]:
         with path.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
         files.append({"path": relative, "sha256": digest, "size": path.stat().st_size})
+    ancestors = {parent.as_posix() for item in files for parent in Path(item["path"]).parents
+                 if parent != Path(".")}
+    if directories != ancestors:
+        raise RuntimeError("Runtime bundle contains an unowned directory")
     return files
+
+
+def _owned_stage(root: Path, *, workstream: str, target: str, identity_root: Path | None = None) -> dict:
+    """Prove deletion ownership from the stored bytes, not the current source revision."""
+    if root.is_symlink() or root.is_junction() or not root.is_dir():
+        raise RuntimeError("Runtime deletion requires a regular owned bundle directory")
+    receipt = root / RECEIPT
+    if receipt.is_symlink() or not receipt.is_file():
+        raise RuntimeError("Runtime deletion requires its intact ownership receipt; preserving existing data")
+    data = json.loads(receipt.read_text(encoding="utf-8"))
+    expected = {"schema": SCHEMA, "workstream": workstream, "target": target,
+                "stageRoot": str(identity_root or root)}
+    if (not isinstance(data, dict) or any(data.get(key) != value for key, value in expected.items())
+            or data.get("producerFlavor") not in {"fresh", "regular", "diagnostics"}
+            or data.get("files") != _inventory(root, target)):
+        raise RuntimeError("Runtime ownership is unproven; preserving existing data")
+    return data
+
+
+def _remove_owned_stage(root: Path, data: dict, *, identity_root: Path | None = None) -> None:
+    """Remove only receipt-owned files; nonrecursive rmdir preserves raced unknown data."""
+    if _owned_stage(root, workstream=data["workstream"], target=data["target"],
+                    identity_root=identity_root) != data:
+        raise RuntimeError("Runtime ownership changed before cleanup; preserving existing data")
+    directories = {root / parent for item in data["files"] for parent in Path(item["path"]).parents
+                   if parent != Path(".")}
+    for item in data["files"]:
+        path = root / item["path"]
+        if path.is_symlink() or path.is_junction() or not path.is_file():
+            raise RuntimeError("Runtime member changed before cleanup; preserving existing data")
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest != item["sha256"] or path.stat().st_size != item["size"]:
+            raise RuntimeError("Runtime member changed before cleanup; preserving existing data")
+        path.unlink()
+    # WHY: a running naked EXE can create a profile after the preflight. Never
+    # recursively delete a previously generated directory: rmdir fails closed.
+    for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
+        directory.rmdir()
+    if set(root.iterdir()) != {root / RECEIPT}:
+        raise RuntimeError("Runtime cleanup found new unowned data; preserving it")
+    if json.loads((root / RECEIPT).read_text(encoding="utf-8")) != data:
+        raise RuntimeError("Runtime receipt changed before cleanup; preserving it")
+    (root / RECEIPT).unlink()
+    root.rmdir()
+
+
+def remove_empty_canonical_runtime(root: Path) -> None:
+    """Clean only an empty canonical stage, which has no generated ownership receipt."""
+    if not root.exists():
+        return
+    if root.is_symlink() or root.is_junction() or not root.is_dir():
+        raise RuntimeError("Canonical runtime clean requires an empty regular directory")
+    try:
+        root.rmdir()
+    except OSError as error:
+        raise RuntimeError("Canonical runtime is not proven disposable; use non-clean staging and an explicit "
+                           "external --profile, preserving existing contents") from error
 
 
 def _ready(root: Path, context: dict) -> dict:
@@ -161,7 +227,9 @@ def publish_stage(layout, description: dict) -> dict:
     required = {"fresh": BINARIES, "regular": (BINARIES[0],), "diagnostics": (BINARIES[1],)}.get(flavor)
     if required is None or any(not (pending / "bin" / (name + suffix)).is_file() for name in required):
         raise RuntimeError("Runtime producer did not provide its required native binaries")
-    if (root / RECEIPT).is_file():
+    previous_owned = None
+    if root.exists():
+        previous_owned = _owned_stage(root, workstream=context["workstream"], target=context["target"])
         try:
             previous = _ready(root, context)
         except (OSError, ValueError, RuntimeError):
@@ -191,6 +259,10 @@ def publish_stage(layout, description: dict) -> dict:
     backup = _safe_path(layout.output_root, root.with_name(f".{root.name}.{uuid4().hex}.previous"))
     try:
         if root.exists():
+            # Ownership is separate from source freshness and is rechecked at
+            # the destructive boundary, after pending construction completes.
+            if _owned_stage(root, workstream=context["workstream"], target=context["target"]) != previous_owned:
+                raise RuntimeError("Runtime ownership changed before promotion; preserving existing data")
             os.replace(root, backup)
         os.replace(pending, root)
     except BaseException:
@@ -202,8 +274,8 @@ def publish_stage(layout, description: dict) -> dict:
     result = {**data, "receipt": str(root / RECEIPT), "binDir": str(root / "bin")}
     if backup.exists():
         try:
-            shutil.rmtree(backup)
-        except OSError as error:
+            _remove_owned_stage(backup, previous_owned, identity_root=root)
+        except (OSError, ValueError, RuntimeError) as error:
             # WHY: ready publication is committed. Backup cleanup can partly
             # succeed, so attempting rollback here could destroy valid bytes.
             result["cleanupWarnings"] = [{"operation": "remove-previous-runtime-stage",
@@ -258,7 +330,14 @@ def runtime_stage_retirement(layout, workstream_id: str, *, enabled: bool = True
         # preflight, while the same heavy owner excludes live validation.
         _safe_path(output, root)
         if root.exists():
-            shutil.rmtree(root)
+            owned = []
+            for child in root.iterdir():
+                target = _target(child.name)
+                owned.append((child, _owned_stage(child, workstream=workstream_id, target=target)))
+            # Preflight the entire namespace before removing any target.
+            for child, data in owned:
+                _remove_owned_stage(child, data)
+            root.rmdir()
 
     try:
         yield retire
