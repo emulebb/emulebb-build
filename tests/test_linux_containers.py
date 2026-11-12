@@ -890,6 +890,7 @@ def test_wsl_selected_helper_bytes_cannot_change_during_the_plan(owned_wsl_lifet
 
 @pytest.mark.parametrize("name,relative", [
     ("emule_test_harness", "emule_test_harness/__init__.py"),
+    ("emulebb_campaign_scenario_catalog", "emule_test_harness/campaign_scenarios.py"),
     ("emule_live_profile_common_rust_ed2k", "scripts/emule-live-profile-common.py"),
     ("cached_script_alias", "scripts/emule-live-profile-common.py"),
 ])
