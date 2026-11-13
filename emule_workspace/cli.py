@@ -705,11 +705,20 @@ def prepare_rust_android_apk_gradle(*, workspace_options, layout) -> None:
 @click.option("--installation-receipt-sha256")
 @click.option("--dwell-seconds", default=30, show_default=True, type=click.IntRange(15, 300))
 @click.option("--render-webui", is_flag=True)
+@click.option("--configure-storage", is_flag=True)
+@click.option("--allow-owned-compatible-update", is_flag=True)
+@click.option("--compatibility-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--compatibility-receipt-sha256")
+@click.option("--configuration-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--configuration-receipt-sha256")
 @_common_options
 def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, apk_payload: Path,
         apk_manifest_name: str, apk_manifest_sha256: str, apk_source_sha: str, expected_cert_sha256: str,
         report_dir: Path, execute: bool, installation_receipt: Path | None,
         installation_receipt_sha256: str | None, dwell_seconds: int, render_webui: bool,
+        configure_storage: bool, allow_owned_compatible_update: bool, compatibility_receipt: Path | None,
+        compatibility_receipt_sha256: str | None, configuration_receipt: Path | None,
+        configuration_receipt_sha256: str | None,
         workspace_options, layout) -> None:
     """Use the persisted physical-device owner with one explicit connected phone."""
     def probe(**kwargs):
@@ -719,16 +728,32 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
             "apk-source-sha": apk_source_sha, "expected-cert-sha256": expected_cert_sha256,
             "report-dir": report_dir, "dwell-seconds": dwell_seconds,
             "installation-receipt": installation_receipt,
-            "installation-receipt-sha256": installation_receipt_sha256}
+            "installation-receipt-sha256": installation_receipt_sha256,
+            "compatibility-receipt": compatibility_receipt, "compatibility-receipt-sha256": compatibility_receipt_sha256,
+            "configuration-receipt": configuration_receipt, "configuration-receipt-sha256": configuration_receipt_sha256}
         for name, value in values.items():
             if value is not None:
                 arguments.extend(("--" + name, str(value)))
-        arguments.extend(flag for flag, enabled in (("--execute", execute), ("--render-webui", render_webui)) if enabled)
+        arguments.extend(flag for flag, enabled in (("--execute", execute), ("--render-webui", render_webui),
+            ("--configure-storage", configure_storage), ("--allow-owned-compatible-update", allow_owned_compatible_update)) if enabled)
         # WHY: the exact Wi-Fi endpoint is operator state. This process owner
         # executes without printing or retaining argv; do not add argv logging.
         run_native(get_python_invocation().command(arguments), label="physical Android APK probe",
                    cwd=kwargs["layout"].tests_repo_root)
     _locked("probe-rust-android-apk-device", probe)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("prove-rust-android-profile-compatibility")
+@click.option("--from-source-sha", required=True)
+@click.option("--to-source-sha", required=True)
+@_common_options
+def prove_rust_android_profile_compatibility(*, from_source_sha: str, to_source_sha: str,
+                                              workspace_options, layout) -> None:
+    """Prove exact schema equality for a separately authorized owned-phone update."""
+    from .android_profile import prove_profile_compatibility
+    def prove(**kwargs):
+        print(prove_profile_compatibility(kwargs["layout"], from_source_sha=from_source_sha, to_source_sha=to_source_sha))
+    _locked("prove-rust-android-profile-compatibility", prove)(workspace_options=workspace_options, layout=layout)
 
 
 @main.command("provision-rust-android-signing")
