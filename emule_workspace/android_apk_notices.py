@@ -31,7 +31,8 @@ def stage_source_notices(rust: Path, mini: Path, pcp: Path, destination: Path) -
         if source.is_symlink() or not source.is_file() or source.stat().st_size > 1024 * 1024:
             raise RuntimeError("APK requires a canonical regular source license: " + name)
         content = source.read_bytes()
-        if len(content) < 64 or b"license" not in content.lower() or b"copyright" not in content.lower():
+        lower = content.lower()
+        if len(content) < 64 or b"copyright" not in lower or not any(word in lower for word in (b"license", b"redistribution")):
             raise RuntimeError("APK source notice is not complete license text: " + name)
         (destination / name).write_bytes(content)
 

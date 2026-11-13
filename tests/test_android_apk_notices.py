@@ -122,9 +122,14 @@ def test_source_notice_uses_real_miniupnp_root_instead_of_windows_symlink_placeh
     (rust / "LICENSE").write_text(text)
     (mini / "LICENSE").write_text(text)
     (mini / "miniupnpc/LICENSE").write_text("../LICENSE")
-    (pcp / "COPYING").write_text(text)
+    bsd_notice = ("Copyright Synthetic Authors. All rights reserved.\n"
+        "Redistribution and use in source and binary forms, with or without modification, are permitted.\n"
+        "THIS SOFTWARE IS PROVIDED AS IS WITHOUT WARRANTY.\n")
+    assert "license" not in bsd_notice.lower()
+    (pcp / "COPYING").write_text(bsd_notice)
     notices.stage_source_notices(rust, mini, pcp, target)
     assert (target / "MiniUPnPc-LICENSE").read_text() == text
+    assert (target / "libpcpnatpmp-COPYING").read_text() == bsd_notice
     (mini / "LICENSE").write_text("../LICENSE")
     with pytest.raises(RuntimeError, match="complete license"):
         notices.stage_source_notices(rust, mini, pcp, target)
