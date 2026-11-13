@@ -148,7 +148,8 @@ def _sign(docker, *, base: list[str], image: str, scratch: Path, output: Path,
 
 def package_apk(layout, *, release_version: str, channel: str, expected_source_sha: str,
                 version_code: int, wsl_distro: str = "Ubuntu", debug: bool = False,
-                retained_signing: bool = False, author_gradle_verification: bool = False) -> Path:
+                retained_signing: bool = False, author_gradle_verification: bool = False,
+                kotlin_only: bool = False) -> Path:
     """Build both JNI ABIs, bundled SPA and APK from one immutable source selection.
 
     Debug builds are explicit local test inputs. Nightly publication always
@@ -224,6 +225,34 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                     report_root / (label + ".log"), timeout=3600, capture=capture)
                 report["checks"].append({"name": label, "status": "passed"})
                 return result
+            native = scratch / "native"
+            native.mkdir()
+            notices = scratch / "notices"
+            notices.mkdir()
+            shutil.copy2(rust / "LICENSE", notices / "eMuleBB-LICENSE")
+            shutil.copy2(mini / "miniupnpc/LICENSE", notices / "MiniUPnPc-LICENSE")
+            shutil.copy2(pcp / "COPYING", notices / "libpcpnatpmp-COPYING")
+            verification = ["--write-verification-metadata", "sha256"] if author_gradle_verification else ["--dependency-verification", "strict"]
+            def gradle(task, label):
+                try:
+                    execute(label, ["gradle", "--no-daemon", "--console=plain", "--project-dir", path(project),
+                        "--project-cache-dir", path(home / "gradle-project-cache"), *verification,
+                        "-PandroidBuildRoot=" + path(scratch / "gradle-build"),
+                        "-PemulebbNativeDir=" + path(native), "-PemulebbWebuiDir=" + path(webui),
+                        "-PemulebbNoticesDir=" + path(notices),
+                        "-PemulebbVersionName=" + release_version, "-PemulebbVersionCode=" + str(version_code),
+                        ":app:" + task], network="bridge")
+                finally:
+                    metadata = project / "gradle/verification-metadata.xml"
+                    if author_gradle_verification and metadata.is_file():
+                        shutil.copy2(metadata, report_root / "verification-metadata.xml")
+            # WHY: Kotlin/Gradle errors need no JNI bytes. Validate the actual
+            # staged app before invalidating or rebuilding native Cargo caches.
+            gradle("compileDebugKotlin" if debug else "compileReleaseKotlin", "kotlin-preflight")
+            if kotlin_only:
+                release._assert_emulebb_rust_package_provenance(layout, rust, provenance)
+                report.update(status="passed", scope="kotlin-compilation", applicationQualification="not-run")
+                return report_root / "build.json"
             execute("fetch-locked", ["cargo", "fetch", "--locked", "--manifest-path", "/source/Cargo.toml"], network="bridge")
             from .rust_source_cache import ensure_rust_source_cache
             invocation = 0
@@ -235,13 +264,6 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
             ensure_rust_source_cache(layout, target=target, runner=cache_cargo,
                 execution_source="/source", execution_target=env["CARGO_TARGET_DIR"],
                 native_roots=(mini, pcp), execution_identity={"image": image, "inputs": tool_inputs()})
-            native = scratch / "native"
-            native.mkdir()
-            notices = scratch / "notices"
-            notices.mkdir()
-            shutil.copy2(rust / "LICENSE", notices / "eMuleBB-LICENSE")
-            shutil.copy2(mini / "miniupnpc/LICENSE", notices / "MiniUPnPc-LICENSE")
-            shutil.copy2(pcp / "COPYING", notices / "libpcpnatpmp-COPYING")
             report["native"] = {}
             for abi, (triple, _machine) in TARGETS.items():
                 extra = _container_environment(compiler_environment(abi, min_api=MIN_SDK))
@@ -263,19 +285,7 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 report["native"][abi] = {"elfAudit": audit, "sha256": release._sha256(library),
                                         "runtimeDependencies": dependencies}
             task = "assembleDebug" if debug else "assembleRelease"
-            verification = ["--write-verification-metadata", "sha256"] if author_gradle_verification else ["--dependency-verification", "strict"]
-            try:
-                execute("gradle", ["gradle", "--no-daemon", "--console=plain", "--project-dir", path(project),
-                    "--project-cache-dir", path(home / "gradle-project-cache"), *verification,
-                    "-PandroidBuildRoot=" + path(scratch / "gradle-build"),
-                    "-PemulebbNativeDir=" + path(native), "-PemulebbWebuiDir=" + path(webui),
-                    "-PemulebbNoticesDir=" + path(notices),
-                    "-PemulebbVersionName=" + release_version, "-PemulebbVersionCode=" + str(version_code),
-                    ":app:" + task], network="bridge")
-            finally:
-                metadata = project / "gradle/verification-metadata.xml"
-                if author_gradle_verification and metadata.is_file():
-                    shutil.copy2(metadata, report_root / "verification-metadata.xml")
+            gradle(task, "gradle")
             flavor = "debug" if debug else "release"
             unsigned = scratch / "gradle-build/app/outputs/apk" / flavor / ("app-debug.apk" if debug else "app-release-unsigned.apk")
             names = public_names(release_version)

@@ -705,16 +705,18 @@ def provision_rust_android_signing(*, workspace_options, layout) -> None:
 @click.option("--debug", is_flag=True, help="Explicit local test APK; never publication evidence.")
 @click.option("--retained-signing", is_flag=True, help="Explicitly use the verified operator-owned retained release identity.")
 @click.option("--author-gradle-verification", is_flag=True, help="Debug only: retain resolved dependency checksums for source review.")
+@click.option("--kotlin-only", is_flag=True, help="Compile the staged app only; no native build, APK or runtime proof.")
 @_common_options
 def package_rust_android_apk(*, release_version: str, expected_source_sha: str,
                             version_code: int, debug: bool, retained_signing: bool,
-                            author_gradle_verification: bool, workspace_options, layout) -> None:
+                            author_gradle_verification: bool, kotlin_only: bool, workspace_options, layout) -> None:
     """Build the universal APK through the selected registered source set."""
     from .android_apk import package_apk
     def package(**kwargs):
         print(package_apk(kwargs["layout"], release_version=release_version, channel="nightly",
               expected_source_sha=expected_source_sha, version_code=version_code, debug=debug,
-              retained_signing=retained_signing, author_gradle_verification=author_gradle_verification))
+              retained_signing=retained_signing, author_gradle_verification=author_gradle_verification,
+              kotlin_only=kotlin_only))
     _locked("package-rust-android-apk", package)(workspace_options=workspace_options, layout=layout)
 
 
