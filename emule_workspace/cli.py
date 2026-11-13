@@ -842,6 +842,9 @@ def prepare_rust_android_apk_peer(*, abi: str, peer_artifacts: Path, release_ver
 @click.option("--compatibility-receipt-sha256")
 @click.option("--configuration-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False))
 @click.option("--configuration-receipt-sha256")
+@click.option("--cleanup-transfer-report", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--cleanup-transfer-report-sha256")
+@click.option("--cleanup-transfer-fixture-sha256")
 @click.option("--peer-payload", type=click.Path(path_type=Path, exists=True, file_okay=False))
 @click.option("--peer-manifest-sha256")
 @click.option("--peer-abi", type=click.Choice(["arm64-v8a", "x86_64"]))
@@ -853,7 +856,8 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
         installation_receipt_sha256: str | None, dwell_seconds: int, render_webui: bool,
         configure_storage: bool, probe_local_listeners: bool, allow_owned_compatible_update: bool, compatibility_receipt: Path | None,
         compatibility_receipt_sha256: str | None, configuration_receipt: Path | None,
-        configuration_receipt_sha256: str | None,
+        configuration_receipt_sha256: str | None, cleanup_transfer_report: Path | None,
+        cleanup_transfer_report_sha256: str | None, cleanup_transfer_fixture_sha256: str | None,
         peer_payload: Path | None, peer_manifest_sha256: str | None, peer_abi: str | None, rust_source: Path | None,
         workspace_options, layout) -> None:
     """Use the persisted physical-device owner with one explicit connected phone."""
@@ -870,6 +874,9 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
             "installation-receipt-sha256": installation_receipt_sha256,
             "compatibility-receipt": compatibility_receipt, "compatibility-receipt-sha256": compatibility_receipt_sha256,
             "configuration-receipt": configuration_receipt, "configuration-receipt-sha256": configuration_receipt_sha256,
+            "cleanup-transfer-report": cleanup_transfer_report,
+            "cleanup-transfer-report-sha256": cleanup_transfer_report_sha256,
+            "cleanup-transfer-fixture-sha256": cleanup_transfer_fixture_sha256,
             "peer-payload": peer_payload, "peer-manifest-sha256": peer_manifest_sha256, "peer-abi": peer_abi, "rust-source": rust_source}
         for name, value in values.items():
             if value is not None:

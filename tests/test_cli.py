@@ -74,6 +74,9 @@ def test_physical_android_apk_adapter_uses_exact_harness_owner_under_lock_withou
         assert "--probe-local-listeners" in command
         assert command[command.index("--compatibility-receipt-sha256") + 1] == "e" * 64
         assert command[command.index("--configuration-receipt-sha256") + 1] == "f" * 64
+        assert command[command.index("--cleanup-transfer-report") + 1] == str(payload)
+        assert command[command.index("--cleanup-transfer-report-sha256") + 1] == "1" * 64
+        assert command[command.index("--cleanup-transfer-fixture-sha256") + 1] == "2" * 64
         assert label == "physical Android APK probe" and cwd == harness
         events.append("executed")
     monkeypatch.setattr(cli, "run_native", execute)
@@ -85,7 +88,8 @@ def test_physical_android_apk_adapter_uses_exact_harness_owner_under_lock_withou
         "--installation-receipt", str(receipt), "--installation-receipt-sha256", "d" * 64,
         "--configure-storage", "--probe-local-listeners", "--allow-owned-compatible-update", "--compatibility-receipt", str(receipt),
         "--compatibility-receipt-sha256", "e" * 64, "--configuration-receipt", str(receipt),
-        "--configuration-receipt-sha256", "f" * 64])
+        "--configuration-receipt-sha256", "f" * 64, "--cleanup-transfer-report", str(payload),
+        "--cleanup-transfer-report-sha256", "1" * 64, "--cleanup-transfer-fixture-sha256", "2" * 64])
     assert result.exit_code == 0, result.output
     assert events == ["probe-rust-android-apk-device", "executed"]
     assert "phone.example.invalid" not in result.output
