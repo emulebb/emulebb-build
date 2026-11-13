@@ -107,6 +107,30 @@ def _container_environment(values: dict[str, str]) -> list[str]:
     return [argument for name, value in values.items() for argument in ("--env", f"{name}={value}")]
 
 
+def certificate_sha256(text: str) -> str:
+    """Read one signer identity from pinned apksigner's scheme-specific output."""
+    identities, labels = set(), set()
+    pattern = re.compile(r"(?P<label>Signer #(?P<number>[1-9][0-9]*) certificate|V[123](?:\.1)? Signer: certificate) "
+                         r"SHA-256 digest: (?P<digest>[0-9a-fA-F]{64})")
+    for line in text.splitlines():
+        if "certificate SHA-256 digest:" not in line:
+            continue
+        match = pattern.fullmatch(line)
+        if match is None or match["number"] not in {None, "1"} or match["label"] in labels:
+            raise RuntimeError("APK signature verification did not identify exactly one signer")
+        labels.add(match["label"])
+        identities.add(match["digest"].lower())
+    if len(identities) != 1:
+        raise RuntimeError("APK signature verification did not identify exactly one signer")
+    return identities.pop()
+
+
+def _expected_certificate(value: str | None) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError("Production APK requires an explicit expected certificate SHA-256")
+    return value
+
+
 def _sign(docker, *, base: list[str], image: str, scratch: Path, output: Path,
           unsigned: Path, signed: Path, report_root: Path,
           signing: dict[str, str] | None = None) -> str:
@@ -138,10 +162,7 @@ def _sign(docker, *, base: list[str], image: str, scratch: Path, output: Path,
         text = run_owned_container(docker, [*base, "--network", "none", image,
             tools + "/apksigner", "verify", "--verbose", "--print-certs", path(signed)],
             report_root / "signature.log", timeout=120, capture=True)
-        matches = re.findall(r"Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]{64})", text)
-        if len(matches) != 1:
-            raise RuntimeError("APK signature verification did not identify exactly one signer")
-        return matches[0].lower()
+        return certificate_sha256(text)
     finally:
         shutil.rmtree(secret_root)
 
@@ -149,7 +170,8 @@ def _sign(docker, *, base: list[str], image: str, scratch: Path, output: Path,
 def package_apk(layout, *, release_version: str, channel: str, expected_source_sha: str,
                 version_code: int, wsl_distro: str = "Ubuntu", debug: bool = False,
                 retained_signing: bool = False, author_gradle_verification: bool = False,
-                kotlin_only: bool = False) -> Path:
+                kotlin_only: bool = False, lint_only: bool = False,
+                expected_cert_sha256: str | None = None) -> Path:
     """Build both JNI ABIs, bundled SPA and APK from one immutable source selection.
 
     Debug builds are explicit local test inputs. Nightly publication always
@@ -160,12 +182,17 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
         raise ValueError("APK versionCode must be between 1 and 2100000000")
     if (debug and retained_signing) or (author_gradle_verification and not debug):
         raise ValueError("Gradle verification authoring requires debug; retained signing requires release")
-    selected_signing, expected_signer = None, None
+    if kotlin_only and lint_only:
+        raise ValueError("Select one Gradle-only validation scope")
+    selected_signing, retained_certificate = None, None
     if retained_signing:
         from .android_signing import retained_signing_inputs
-        selected_signing, expected_signer = retained_signing_inputs()
+        selected_signing, retained_certificate = retained_signing_inputs()
     if not debug:
         signing_inputs(selected_signing if selected_signing is not None else dict(os.environ))
+        expected_cert_sha256 = _expected_certificate(expected_cert_sha256)
+        if retained_certificate is not None and retained_certificate != expected_cert_sha256:
+            raise RuntimeError("Retained APK key differs from the expected public certificate")
     rust, output = layout.emulebb_rust_repo_root, layout.output_root.resolve()
     provenance = release._emulebb_rust_package_provenance(layout, rust)
     if not author_gradle_verification and not (rust / "android/gradle/verification-metadata.xml").is_file():
@@ -246,12 +273,29 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                     metadata = project / "gradle/verification-metadata.xml"
                     if author_gradle_verification and metadata.is_file():
                         shutil.copy2(metadata, report_root / "verification-metadata.xml")
+                    if task.startswith("lint"):
+                        for lint_report in (scratch / "gradle-build/app/reports").glob("lint-results-*"):
+                            if lint_report.is_file() and not lint_report.is_symlink():
+                                destination = report_root / "lint" / lint_report.name
+                                destination.parent.mkdir(exist_ok=True)
+                                shutil.copy2(lint_report, destination)
             # WHY: Kotlin/Gradle errors need no JNI bytes. Validate the actual
             # staged app before invalidating or rebuilding native Cargo caches.
             gradle("compileDebugKotlin" if debug else "compileReleaseKotlin", "kotlin-preflight")
             if kotlin_only:
                 release._assert_emulebb_rust_package_provenance(layout, rust, provenance)
                 report.update(status="passed", scope="kotlin-compilation", applicationQualification="not-run")
+                return report_root / "build.json"
+            flavor = "debug" if debug else "release"
+            gradle("lintDebug" if debug else "lintRelease", "gradle-lint")
+            lint_xml = report_root / "lint" / ("lint-results-" + flavor + ".xml")
+            if not lint_xml.is_file():
+                raise RuntimeError("Gradle lint did not retain its actual XML report")
+            report["lint"] = {"status": "passed", "task": "lintDebug" if debug else "lintRelease",
+                              "report": lint_xml.relative_to(output).as_posix()}
+            if lint_only:
+                release._assert_emulebb_rust_package_provenance(layout, rust, provenance)
+                report.update(status="passed", scope="gradle-lint", applicationQualification="not-run")
                 return report_root / "build.json"
             execute("fetch-locked", ["cargo", "fetch", "--locked", "--manifest-path", "/source/Cargo.toml"], network="bridge")
             from .rust_source_cache import ensure_rust_source_cache
@@ -296,15 +340,12 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 shutil.copy2(unsigned, signed)
                 tools = "/opt/android-tools/sdk/build-tools/" + tool_inputs()["assets"]["build-tools"]["version"]
                 certificate = execute("debug-signature", [tools + "/apksigner", "verify", "--print-certs", path(signed)], capture=True)
-                match = re.search(r"Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]{64})", certificate)
-                if match is None:
-                    raise RuntimeError("Debug APK signer verification failed")
-                signer = match[1].lower()
+                signer = certificate_sha256(certificate)
             else:
                 signer = _sign(docker, base=base, image=image, scratch=scratch, output=output,
                                unsigned=unsigned, signed=signed, report_root=report_root, signing=selected_signing)
-                if expected_signer is not None and signer != expected_signer:
-                    raise RuntimeError("Signed APK differs from the retained public certificate identity")
+                if signer != expected_cert_sha256:
+                    raise RuntimeError("Signed APK differs from the expected public certificate identity")
             tools = "/opt/android-tools/sdk/build-tools/" + tool_inputs()["assets"]["build-tools"]["version"]
             execute("zip-alignment", [tools + "/zipalign", "-c", "-P", "16", "4", path(signed)])
             badging = execute("apk-manifest", [tools + "/aapt2", "dump", "badging", path(signed)], capture=True)

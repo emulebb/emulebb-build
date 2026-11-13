@@ -70,6 +70,32 @@ def test_missing_release_signing_fails_before_build(monkeypatch):
                         channel="nightly", expected_source_sha="a" * 40, version_code=1)
 
 
+@pytest.mark.parametrize("expected", [None, "", "A" * 64, "a" * 63])
+def test_production_requires_independently_supplied_signer_authority(tmp_path, monkeypatch, expected):
+    _signing(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="expected certificate"):
+        apk.package_apk(SimpleNamespace(), release_version="0.1.0-beta.2.nightly.20261113.gaaaaaaa",
+            channel="nightly", expected_source_sha="a" * 40, version_code=1, expected_cert_sha256=expected)
+
+
+@pytest.mark.parametrize("text", ["V2 Signer: certificate SHA-256 digest: " + "A" * 64,
+    "Signer #1 certificate SHA-256 digest: " + "A" * 64,
+    "V2 Signer: certificate SHA-256 digest: " + "a" * 64 + "\nV3 Signer: certificate SHA-256 digest: " + "a" * 64])
+def test_pinned_apksigner_formats_identify_one_certificate_across_schemes(text):
+    assert apk.certificate_sha256(text) == "a" * 64
+
+
+@pytest.mark.parametrize("text", ["a" * 64,
+    "prefix V2 Signer: certificate SHA-256 digest: " + "a" * 64,
+    "Signer #2 certificate SHA-256 digest: " + "a" * 64,
+    "V2 Signer: certificate SHA-256 digest: " + "a" * 64 + "suffix",
+    "V2 Signer: certificate SHA-256 digest: " + "a" * 64 + "\nV3 Signer: certificate SHA-256 digest: " + "b" * 64,
+    ("V2 Signer: certificate SHA-256 digest: " + "a" * 64 + "\n") * 2])
+def test_ambiguous_multiple_or_unanchored_signer_evidence_is_rejected(text):
+    with pytest.raises(RuntimeError, match="exactly one signer"):
+        apk.certificate_sha256(text)
+
+
 @pytest.mark.parametrize("debug,retained,author", [(False, False, True), (True, True, False)])
 def test_authoring_and_retained_signing_modes_cannot_be_mixed(debug, retained, author):
     with pytest.raises(ValueError):
@@ -147,8 +173,9 @@ def test_bad_keystore_and_alias_fail_before_signing(tmp_path):
         apk.signing_inputs(environment)
 
 
-@pytest.mark.parametrize("fail_compile", [False, True])
-def test_kotlin_preflight_never_compiles_native_or_claims_an_apk(tmp_path, monkeypatch, fail_compile):
+@pytest.mark.parametrize("scope,fail_task", [("kotlin", None), ("kotlin", "compileDebugKotlin"),
+                                           ("lint", None), ("lint", "lintDebug")])
+def test_gradle_preflight_never_compiles_native_or_claims_an_apk(tmp_path, monkeypatch, scope, fail_task):
     rust, output = tmp_path / "rust", tmp_path / "output"
     (rust / "android").mkdir(parents=True)
     (rust / "android/build.gradle.kts").write_text("synthetic staged Gradle source")
@@ -184,21 +211,33 @@ def test_kotlin_preflight_never_compiles_native_or_claims_an_apk(tmp_path, monke
     def execute(_docker, arguments, _log, **_kwargs):
         calls.append(arguments)
         assert "cargo" not in arguments
-        assert ":app:compileDebugKotlin" in arguments
-        if fail_compile:
-            raise RuntimeError("synthetic Kotlin error")
+        task = arguments[-1].removeprefix(":app:")
+        assert task in {"compileDebugKotlin", "lintDebug"}
+        if task == "lintDebug":
+            build_root = Path(next(argument.split("=", 1)[1] for argument in arguments
+                                   if argument.startswith("-PandroidBuildRoot=")))
+            reports = output / build_root.relative_to("/output") / "app/reports"
+            reports.mkdir(parents=True)
+            (reports / "lint-results-debug.xml").write_text('<issues format="6"/>')
+        if task == fail_task:
+            raise RuntimeError("synthetic Gradle error")
         return ""
     monkeypatch.setattr(apk, "run_owned_container", execute)
     layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=rust)
     parameters = dict(release_version=version, channel="nightly", expected_source_sha=source,
-                      version_code=1, debug=True, author_gradle_verification=True, kotlin_only=True)
-    if fail_compile:
-        with pytest.raises(RuntimeError, match="Kotlin"):
+                      version_code=1, debug=True, author_gradle_verification=True,
+                      kotlin_only=scope == "kotlin", lint_only=scope == "lint")
+    if fail_task:
+        with pytest.raises(RuntimeError, match="Gradle"):
             apk.package_apk(layout, **parameters)
     else:
         report_path = apk.package_apk(layout, **parameters)
         report = json.loads(report_path.read_text())
-        assert report["scope"] == "kotlin-compilation" and report["runtimeExecution"] == "not-run"
+        assert report["scope"] == ("kotlin-compilation" if scope == "kotlin" else "gradle-lint")
+        assert report["runtimeExecution"] == "not-run"
         assert "manifest" not in report
-    assert len(calls) == 1
+    if scope == "lint":
+        retained = list((output / "reports").rglob("lint-results-debug.xml"))
+        assert len(retained) == 1 and retained[0].read_text() == '<issues format="6"/>'
+    assert len(calls) == (1 if scope == "kotlin" else 2)
     assert not list(output.rglob("*.apk"))

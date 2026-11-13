@@ -666,15 +666,17 @@ def package_rust_android_ci(*, abi: str, release_version: str, channel: str, exp
 @click.option("--release-version", required=True)
 @click.option("--channel", required=True, type=click.Choice(["nightly"]))
 @click.option("--expected-source-sha", required=True)
+@click.option("--expected-cert-sha256", required=True)
 @click.option("--version-code", required=True, type=click.IntRange(1, 2_100_000_000))
 def package_rust_android_apk_ci(*, release_version: str, channel: str,
-                               expected_source_sha: str, version_code: int) -> None:
+                               expected_source_sha: str, expected_cert_sha256: str, version_code: int) -> None:
     """Build and sign the source-bound universal Android application."""
     from .android_apk import package_apk
     options, layout = _android_ci_layout()
     def package(**kwargs):
         print(package_apk(kwargs["layout"], release_version=release_version, channel=channel,
-              expected_source_sha=expected_source_sha, version_code=version_code))
+              expected_source_sha=expected_source_sha, expected_cert_sha256=expected_cert_sha256,
+              version_code=version_code))
     _locked("package-rust-android-apk-ci", package)(workspace_options=options, layout=layout)
 
 
@@ -701,22 +703,24 @@ def provision_rust_android_signing(*, workspace_options, layout) -> None:
 @main.command("package-rust-android-apk")
 @click.option("--release-version", required=True)
 @click.option("--expected-source-sha", required=True)
+@click.option("--expected-cert-sha256", help="Trusted public release certificate SHA-256; required for production.")
 @click.option("--version-code", required=True, type=click.IntRange(1, 2_100_000_000))
 @click.option("--debug", is_flag=True, help="Explicit local test APK; never publication evidence.")
 @click.option("--retained-signing", is_flag=True, help="Explicitly use the verified operator-owned retained release identity.")
 @click.option("--author-gradle-verification", is_flag=True, help="Debug only: retain resolved dependency checksums for source review.")
 @click.option("--kotlin-only", is_flag=True, help="Compile the staged app only; no native build, APK or runtime proof.")
+@click.option("--lint-only", is_flag=True, help="Compile and lint the staged app; no native build, APK or runtime proof.")
 @_common_options
 def package_rust_android_apk(*, release_version: str, expected_source_sha: str,
-                            version_code: int, debug: bool, retained_signing: bool,
-                            author_gradle_verification: bool, kotlin_only: bool, workspace_options, layout) -> None:
+                            expected_cert_sha256: str | None, version_code: int, debug: bool, retained_signing: bool,
+                            author_gradle_verification: bool, kotlin_only: bool, lint_only: bool, workspace_options, layout) -> None:
     """Build the universal APK through the selected registered source set."""
     from .android_apk import package_apk
     def package(**kwargs):
         print(package_apk(kwargs["layout"], release_version=release_version, channel="nightly",
               expected_source_sha=expected_source_sha, version_code=version_code, debug=debug,
               retained_signing=retained_signing, author_gradle_verification=author_gradle_verification,
-              kotlin_only=kotlin_only))
+              kotlin_only=kotlin_only, lint_only=lint_only, expected_cert_sha256=expected_cert_sha256))
     _locked("package-rust-android-apk", package)(workspace_options=workspace_options, layout=layout)
 
 
