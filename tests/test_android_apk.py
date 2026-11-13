@@ -1,6 +1,8 @@
 """APK production must isolate signing secrets and preserve daemon build defaults."""
 import os
 import inspect
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -143,3 +145,60 @@ def test_bad_keystore_and_alias_fail_before_signing(tmp_path):
     environment[apk.SIGNING_ENV[1]] = "release\nother"
     with pytest.raises(RuntimeError, match="alias"):
         apk.signing_inputs(environment)
+
+
+@pytest.mark.parametrize("fail_compile", [False, True])
+def test_kotlin_preflight_never_compiles_native_or_claims_an_apk(tmp_path, monkeypatch, fail_compile):
+    rust, output = tmp_path / "rust", tmp_path / "output"
+    (rust / "android").mkdir(parents=True)
+    (rust / "android/build.gradle.kts").write_text("synthetic staged Gradle source")
+    (rust / "LICENSE").write_text("synthetic license")
+    mini, pcp = tmp_path / "mini", tmp_path / "pcp"
+    (mini / "miniupnpc").mkdir(parents=True)
+    pcp.mkdir()
+    (mini / "miniupnpc/LICENSE").write_text("synthetic license")
+    (pcp / "COPYING").write_text("synthetic license")
+    source = "a" * 40
+    version = "0.1.0-beta.2.nightly.20261113.gaaaaaaa"
+    monkeypatch.setattr(apk.release, "_emulebb_rust_package_provenance", lambda *_args:
+                        {"source": {"emulebbRust": {"commit": source}}})
+    monkeypatch.setattr(apk.release, "_assert_emulebb_rust_package_provenance", lambda *_args: None)
+    monkeypatch.setattr(apk.release, "_emulebb_rust_workspace_version", lambda *_args: "0.1.0-beta.2")
+    monkeypatch.setattr(apk.release, "_emulebb_rust_native_source_roots", lambda *_args: (mini, pcp))
+    monkeypatch.setattr(apk, "prepare_toolchain", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(apk, "_builder_user", lambda _docker: "1000:1000")
+    monkeypatch.setenv("EMULEBB_ANDROID_KEYSTORE_PASSWORD", "synthetic-build-secret")
+    def webui(arguments, **kwargs):
+        assert not set(apk.SIGNING_ENV).intersection(kwargs["env"])
+        directory = Path(arguments[arguments.index("--stage-dir") + 1])
+        directory.mkdir()
+        (directory / "index.html").write_text("synthetic webui")
+    monkeypatch.setattr(apk.subprocess, "run", webui)
+    class Docker:
+        def __init__(self, _distro): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def path(self, value): return str(value)
+    monkeypatch.setattr(apk, "LinuxDocker", Docker)
+    calls = []
+    def execute(_docker, arguments, _log, **_kwargs):
+        calls.append(arguments)
+        assert "cargo" not in arguments
+        assert ":app:compileDebugKotlin" in arguments
+        if fail_compile:
+            raise RuntimeError("synthetic Kotlin error")
+        return ""
+    monkeypatch.setattr(apk, "run_owned_container", execute)
+    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=rust)
+    parameters = dict(release_version=version, channel="nightly", expected_source_sha=source,
+                      version_code=1, debug=True, author_gradle_verification=True, kotlin_only=True)
+    if fail_compile:
+        with pytest.raises(RuntimeError, match="Kotlin"):
+            apk.package_apk(layout, **parameters)
+    else:
+        report_path = apk.package_apk(layout, **parameters)
+        report = json.loads(report_path.read_text())
+        assert report["scope"] == "kotlin-compilation" and report["runtimeExecution"] == "not-run"
+        assert "manifest" not in report
+    assert len(calls) == 1
+    assert not list(output.rglob("*.apk"))
