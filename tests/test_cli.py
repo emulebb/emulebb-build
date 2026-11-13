@@ -71,6 +71,7 @@ def test_physical_android_apk_adapter_uses_exact_harness_owner_under_lock_withou
         assert command[command.index("--installation-receipt-sha256") + 1] == "d" * 64
         assert "--execute" in command and "--render-webui" in command
         assert "--configure-storage" in command and "--allow-owned-compatible-update" in command
+        assert "--probe-local-listeners" in command
         assert command[command.index("--compatibility-receipt-sha256") + 1] == "e" * 64
         assert command[command.index("--configuration-receipt-sha256") + 1] == "f" * 64
         assert label == "physical Android APK probe" and cwd == harness
@@ -82,7 +83,7 @@ def test_physical_android_apk_adapter_uses_exact_harness_owner_under_lock_withou
         "--apk-source-sha", "b" * 40, "--expected-cert-sha256", "c" * 64,
         "--report-dir", str(tmp_path / "reports"), "--execute", "--render-webui",
         "--installation-receipt", str(receipt), "--installation-receipt-sha256", "d" * 64,
-        "--configure-storage", "--allow-owned-compatible-update", "--compatibility-receipt", str(receipt),
+        "--configure-storage", "--probe-local-listeners", "--allow-owned-compatible-update", "--compatibility-receipt", str(receipt),
         "--compatibility-receipt-sha256", "e" * 64, "--configuration-receipt", str(receipt),
         "--configuration-receipt-sha256", "f" * 64])
     assert result.exit_code == 0, result.output

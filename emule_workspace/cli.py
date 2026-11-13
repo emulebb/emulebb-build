@@ -836,6 +836,7 @@ def prepare_rust_android_apk_peer(*, abi: str, peer_artifacts: Path, release_ver
 @click.option("--dwell-seconds", default=30, show_default=True, type=click.IntRange(15, 300))
 @click.option("--render-webui", is_flag=True)
 @click.option("--configure-storage", is_flag=True)
+@click.option("--probe-local-listeners", is_flag=True)
 @click.option("--allow-owned-compatible-update", is_flag=True)
 @click.option("--compatibility-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False))
 @click.option("--compatibility-receipt-sha256")
@@ -850,7 +851,7 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
         apk_manifest_name: str, apk_manifest_sha256: str, apk_source_sha: str, expected_cert_sha256: str,
         report_dir: Path, execute: bool, installation_receipt: Path | None,
         installation_receipt_sha256: str | None, dwell_seconds: int, render_webui: bool,
-        configure_storage: bool, allow_owned_compatible_update: bool, compatibility_receipt: Path | None,
+        configure_storage: bool, probe_local_listeners: bool, allow_owned_compatible_update: bool, compatibility_receipt: Path | None,
         compatibility_receipt_sha256: str | None, configuration_receipt: Path | None,
         configuration_receipt_sha256: str | None,
         peer_payload: Path | None, peer_manifest_sha256: str | None, peer_abi: str | None, rust_source: Path | None,
@@ -874,7 +875,8 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
             if value is not None:
                 arguments.extend(("--" + name, str(value)))
         arguments.extend(flag for flag, enabled in (("--execute", execute), ("--render-webui", render_webui),
-            ("--configure-storage", configure_storage), ("--allow-owned-compatible-update", allow_owned_compatible_update)) if enabled)
+            ("--configure-storage", configure_storage), ("--probe-local-listeners", probe_local_listeners),
+            ("--allow-owned-compatible-update", allow_owned_compatible_update)) if enabled)
         # WHY: the exact Wi-Fi endpoint is operator state. This process owner
         # executes without printing or retaining argv; do not add argv logging.
         run_native(get_python_invocation().command(arguments), label="physical Android APK probe",
