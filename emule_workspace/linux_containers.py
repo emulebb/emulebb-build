@@ -118,7 +118,8 @@ def _builder_user(docker) -> str:
 
 
 def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int, append: bool = False,
-                        capture: bool = False, ownership: dict | None = None) -> str:
+                        capture: bool = False, ownership: dict | None = None,
+                        environment: dict[str, str] | None = None) -> str:
     """@brief Retain failure output and stop only this invocation's container on interruption."""
     name = f"emulebb-linux-{uuid4().hex}"
     command = [*docker.prefix, "docker", "run", "--name", name, *arguments]
@@ -126,7 +127,8 @@ def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int
         with log.open("a" if append else "w", encoding="utf-8") as stream:
             result = subprocess.run(command, stdout=subprocess.PIPE if capture else stream,
                                     stderr=stream if capture else subprocess.STDOUT,
-                                    text=True, check=True, timeout=timeout)
+                                    text=True, check=True, timeout=timeout,
+                                    **({"env": environment} if environment is not None else {}))
             if capture:
                 stream.write(result.stdout)
             return result.stdout if capture else ""

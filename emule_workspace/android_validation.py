@@ -76,17 +76,17 @@ def _runtime_dependencies(docker, base: list[str], image: str, output: Path,
     return result
 
 
-def compiler_environment(abi: str) -> dict[str, str]:
+def compiler_environment(abi: str, *, min_api: int = MIN_API) -> dict[str, str]:
     """Use the NDK's API-specific compiler drivers for Rust and native C/C++."""
-    if abi not in TARGETS:
+    if abi not in TARGETS or min_api not in {MIN_API, 34}:
         raise ValueError("Android validation supports arm64-v8a and x86_64")
     target, _machine = TARGETS[abi]
     version = tool_inputs()["assets"]["ndk"]["version"]
     compiler = f"/opt/android-tools/sdk/ndk/{version}/toolchains/llvm/prebuilt/linux-x86_64/bin/"
     key = target.replace("-", "_")
-    return {f"CARGO_TARGET_{key.upper()}_LINKER": compiler + target + str(MIN_API) + "-clang",
-            f"CC_{key}": compiler + target + str(MIN_API) + "-clang",
-            f"CXX_{key}": compiler + target + str(MIN_API) + "-clang++",
+    return {f"CARGO_TARGET_{key.upper()}_LINKER": compiler + target + str(min_api) + "-clang",
+            f"CC_{key}": compiler + target + str(min_api) + "-clang",
+            f"CXX_{key}": compiler + target + str(min_api) + "-clang++",
             f"AR_{key}": compiler + "llvm-ar", f"RANLIB_{key}": compiler + "llvm-ranlib",
             "RUSTFLAGS": f"-C link-arg=-Wl,-z,max-page-size={PAGE_SIZE}"}
 

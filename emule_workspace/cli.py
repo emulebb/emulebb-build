@@ -661,6 +661,48 @@ def package_rust_android_ci(*, abi: str, release_version: str, channel: str, exp
     _locked("package-rust-android-ci", package)(workspace_options=options, layout=layout)
 
 
+@main.command("package-rust-android-apk-ci")
+@click.option("--release-version", required=True)
+@click.option("--channel", required=True, type=click.Choice(["nightly"]))
+@click.option("--expected-source-sha", required=True)
+@click.option("--version-code", required=True, type=click.IntRange(1, 2_100_000_000))
+def package_rust_android_apk_ci(*, release_version: str, channel: str,
+                               expected_source_sha: str, version_code: int) -> None:
+    """Build and sign the source-bound universal Android application."""
+    from .android_apk import package_apk
+    options, layout = _android_ci_layout()
+    def package(**kwargs):
+        print(package_apk(kwargs["layout"], release_version=release_version, channel=channel,
+              expected_source_sha=expected_source_sha, version_code=version_code))
+    _locked("package-rust-android-apk-ci", package)(workspace_options=options, layout=layout)
+
+
+@main.command("prepare-rust-android-apk-gradle")
+@_common_options
+def prepare_rust_android_apk_gradle(*, workspace_options, layout) -> None:
+    """Probe pinned Gradle/JDK and exact Android Gradle plugin resolution."""
+    from .android_apk import probe_gradle
+    def probe(**kwargs):
+        print(probe_gradle(kwargs["layout"]))
+    _locked("prepare-rust-android-apk-gradle", probe)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("package-rust-android-apk")
+@click.option("--release-version", required=True)
+@click.option("--expected-source-sha", required=True)
+@click.option("--version-code", required=True, type=click.IntRange(1, 2_100_000_000))
+@click.option("--debug", is_flag=True, help="Explicit local test APK; never publication evidence.")
+@_common_options
+def package_rust_android_apk(*, release_version: str, expected_source_sha: str,
+                            version_code: int, debug: bool, workspace_options, layout) -> None:
+    """Build the universal APK through the selected registered source set."""
+    from .android_apk import package_apk
+    def package(**kwargs):
+        print(package_apk(kwargs["layout"], release_version=release_version, channel="nightly",
+              expected_source_sha=expected_source_sha, version_code=version_code, debug=debug))
+    _locked("package-rust-android-apk", package)(workspace_options=workspace_options, layout=layout)
+
+
 def _android_ci_layout():
     """Share the validated minimal hosted checkout boundary for Android owners."""
     from .release import _emulebb_rust_artifact_origin

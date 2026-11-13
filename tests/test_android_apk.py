@@ -1,0 +1,97 @@
+"""APK production must isolate signing secrets and preserve daemon build defaults."""
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from emule_workspace import android_apk as apk
+from emule_workspace.android_validation import compiler_environment
+
+
+def test_apk_api_floor_does_not_change_cli_compilation():
+    for abi in ("arm64-v8a", "x86_64"):
+        assert any("android28-clang" in value for value in compiler_environment(abi).values())
+        assert any("android34-clang" in value for value in compiler_environment(abi, min_api=34).values())
+    with pytest.raises(ValueError):
+        compiler_environment("arm64-v8a", min_api=1)
+
+
+def test_public_apk_names_cannot_escape_output():
+    assert apk.public_names("0.1.0-beta.2.nightly.20261113.gabcdef0")["apk"].endswith("android-universal.apk")
+    for value in ("../payload", "version/other", ""):
+        with pytest.raises(ValueError):
+            apk.public_names(value)
+
+
+@pytest.mark.parametrize("change", [None, "name", "versionName", "versionCode", "sdkVersion", "native-code"])
+def test_packaged_manifest_is_verified_against_release(change):
+    text = ("package: name='org.emulebb.android' versionName='0.1.0' versionCode='1'\n"
+            "sdkVersion:'34'\ntargetSdkVersion:'37'\nnative-code: 'arm64-v8a' 'x86_64'\n")
+    if change is None:
+        apk.audit_badging(text, version="0.1.0", version_code=1)
+    else:
+        altered = text.replace(change, "unrecognized-field", 1)
+        with pytest.raises(RuntimeError):
+            apk.audit_badging(altered, version="0.1.0", version_code=1)
+
+
+def test_missing_release_signing_fails_before_build(monkeypatch):
+    for name in apk.SIGNING_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(apk, "prepare_toolchain", lambda *_args, **_kwargs: pytest.fail("must not build"))
+    with pytest.raises(RuntimeError, match="four"):
+        apk.package_apk(SimpleNamespace(), release_version="0.1.0-beta.2.nightly.20261113.g" + "a" * 7,
+                        channel="nightly", expected_source_sha="a" * 40, version_code=1)
+
+
+def _signing(tmp_path, monkeypatch):
+    key = tmp_path / "operator.keystore"
+    key.write_bytes(b"synthetic-keystore")
+    for name, value in zip(apk.SIGNING_ENV, (str(key), "release", "synthetic-store-secret", "synthetic-key-secret")):
+        monkeypatch.setenv(name, value)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    return scratch
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_signing_uses_env_references_and_always_removes_copied_key(tmp_path, monkeypatch, fail):
+    scratch = _signing(tmp_path, monkeypatch)
+    calls = []
+    def run(_docker, arguments, _log, **kwargs):
+        calls.append((arguments, kwargs))
+        if "sign" in arguments:
+            assert (scratch / "signing/release.keystore").read_bytes() == b"synthetic-keystore"
+            if fail:
+                raise RuntimeError("synthetic signing failure")
+        return "Signer #1 certificate SHA-256 digest: " + "a" * 64
+    monkeypatch.setattr(apk, "run_owned_container", run)
+    kwargs = dict(base=[], image="reviewed", scratch=scratch, output=tmp_path,
+                  unsigned=tmp_path / "unsigned.apk", signed=tmp_path / "signed.apk", report_root=tmp_path)
+    docker = SimpleNamespace(path=lambda value: str(value))
+    if fail:
+        with pytest.raises(RuntimeError, match="synthetic"):
+            apk._sign(docker, **kwargs)
+    else:
+        assert apk._sign(docker, **kwargs) == "a" * 64
+    assert not (scratch / "signing").exists()
+    for arguments, options in calls:
+        assert "synthetic-store-secret" not in " ".join(arguments)
+        assert "synthetic-key-secret" not in " ".join(arguments)
+        if "sign" in arguments:
+            assert "env:EMULEBB_ANDROID_KEYSTORE_PASSWORD" in arguments
+            assert options["environment"]["EMULEBB_ANDROID_KEY_PASSWORD"] == "synthetic-key-secret"
+        else:
+            assert "environment" not in options
+
+
+def test_bad_keystore_and_alias_fail_before_signing(tmp_path):
+    environment = dict(zip(apk.SIGNING_ENV, ("relative", "release", "synthetic", "synthetic")))
+    with pytest.raises(RuntimeError, match="absolute"):
+        apk.signing_inputs(environment)
+    key = tmp_path / "key"
+    key.write_bytes(b"synthetic")
+    environment[apk.SIGNING_ENV[0]] = str(key)
+    environment[apk.SIGNING_ENV[1]] = "release\nother"
+    with pytest.raises(RuntimeError, match="alias"):
+        apk.signing_inputs(environment)
