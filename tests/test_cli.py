@@ -41,6 +41,49 @@ def test_ci_android_guest_rejects_local_execution(monkeypatch):
     assert result.exit_code != 0 and "requires GitHub Actions" in result.output
 
 
+def test_physical_android_apk_adapter_uses_exact_harness_owner_under_lock_without_logging_serial(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    adb = tmp_path / "adb.exe"
+    adb.write_bytes(b"synthetic tool")
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    receipt = tmp_path / "installation.json"
+    receipt.write_text("{}")
+    harness = tmp_path / "harness"
+    layout = SimpleNamespace(tests_repo_root=harness)
+    options = SimpleNamespace(workspace_root=tmp_path, workspace_name="workspace", output_root=tmp_path / "output")
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: layout)
+    events = []
+    def locked(name, operation):
+        def invoke(**kwargs):
+            events.append(name)
+            return operation(**kwargs)
+        return invoke
+    monkeypatch.setattr(cli, "_locked", locked)
+    def execute(command, *, label, cwd):
+        assert events == ["probe-rust-android-apk-device"]
+        assert command[1] == str(harness / "scripts/probe-android-apk-device.py")
+        assert command[command.index("--serial") + 1] == "phone.example.invalid:37099"
+        assert command[command.index("--adb") + 1] == str(adb)
+        assert command[command.index("--expected-cert-sha256") + 1] == "c" * 64
+        assert command[command.index("--installation-receipt") + 1] == str(receipt)
+        assert command[command.index("--installation-receipt-sha256") + 1] == "d" * 64
+        assert "--execute" in command and "--render-webui" in command
+        assert label == "physical Android APK probe" and cwd == harness
+        events.append("executed")
+    monkeypatch.setattr(cli, "run_native", execute)
+    result = CliRunner().invoke(cli.main, ["probe-rust-android-apk-device", "--adb", str(adb),
+        "--serial", "phone.example.invalid:37099", "--apk-payload", str(payload),
+        "--apk-manifest-name", "manifest.json", "--apk-manifest-sha256", "a" * 64,
+        "--apk-source-sha", "b" * 40, "--expected-cert-sha256", "c" * 64,
+        "--report-dir", str(tmp_path / "reports"), "--execute", "--render-webui",
+        "--installation-receipt", str(receipt), "--installation-receipt-sha256", "d" * 64])
+    assert result.exit_code == 0, result.output
+    assert events == ["probe-rust-android-apk-device", "executed"]
+    assert "phone.example.invalid" not in result.output
+
+
 def test_ci_android_guest_uses_shared_owner_under_lock(tmp_path, monkeypatch):
     import os
     from emule_workspace import android_toolchain, release

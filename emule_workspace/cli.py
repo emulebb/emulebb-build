@@ -690,6 +690,47 @@ def prepare_rust_android_apk_gradle(*, workspace_options, layout) -> None:
     _locked("prepare-rust-android-apk-gradle", probe)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("probe-rust-android-apk-device")
+@click.option("--adb", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--serial", required=True, help="Exact operator-selected connected Wi-Fi serial.")
+@click.option("--server-port", default=5037, show_default=True, type=click.IntRange(1, 65535))
+@click.option("--apk-payload", required=True, type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--apk-manifest-name", required=True)
+@click.option("--apk-manifest-sha256", required=True)
+@click.option("--apk-source-sha", required=True)
+@click.option("--expected-cert-sha256", required=True)
+@click.option("--report-dir", required=True, type=click.Path(path_type=Path, file_okay=False))
+@click.option("--execute", is_flag=True, help="Perform the bounded owned-installation runtime smoke.")
+@click.option("--installation-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--installation-receipt-sha256")
+@click.option("--dwell-seconds", default=30, show_default=True, type=click.IntRange(15, 300))
+@click.option("--render-webui", is_flag=True)
+@_common_options
+def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, apk_payload: Path,
+        apk_manifest_name: str, apk_manifest_sha256: str, apk_source_sha: str, expected_cert_sha256: str,
+        report_dir: Path, execute: bool, installation_receipt: Path | None,
+        installation_receipt_sha256: str | None, dwell_seconds: int, render_webui: bool,
+        workspace_options, layout) -> None:
+    """Use the persisted physical-device owner with one explicit connected phone."""
+    def probe(**kwargs):
+        arguments = [kwargs["layout"].tests_repo_root / "scripts/probe-android-apk-device.py"]
+        values = {"adb": adb, "serial": serial, "server-port": server_port, "apk-payload": apk_payload,
+            "apk-manifest-name": apk_manifest_name, "apk-manifest-sha256": apk_manifest_sha256,
+            "apk-source-sha": apk_source_sha, "expected-cert-sha256": expected_cert_sha256,
+            "report-dir": report_dir, "dwell-seconds": dwell_seconds,
+            "installation-receipt": installation_receipt,
+            "installation-receipt-sha256": installation_receipt_sha256}
+        for name, value in values.items():
+            if value is not None:
+                arguments.extend(("--" + name, str(value)))
+        arguments.extend(flag for flag, enabled in (("--execute", execute), ("--render-webui", render_webui)) if enabled)
+        # WHY: the exact Wi-Fi endpoint is operator state. This process owner
+        # executes without printing or retaining argv; do not add argv logging.
+        run_native(get_python_invocation().command(arguments), label="physical Android APK probe",
+                   cwd=kwargs["layout"].tests_repo_root)
+    _locked("probe-rust-android-apk-device", probe)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("provision-rust-android-signing")
 @_common_options
 def provision_rust_android_signing(*, workspace_options, layout) -> None:
