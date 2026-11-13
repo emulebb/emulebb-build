@@ -99,6 +99,32 @@ def test_unqualified_cache_cleans_workspace_host_and_target_then_reuses_binding(
     assert calls == [["metadata", "--offline", "--locked", "--no-deps", "--format-version", "1"]]
 
 
+@pytest.mark.parametrize("role", ["target-android-uid-1000-gid-1000", "target-android-apk-uid-1000-gid-1000"])
+def test_android_cli_and_apk_have_separate_owned_cache_roles(guarded, role):
+    layout = guarded
+    layout.emulebb_rust_repo_root = source(layout)
+    target = layout.output_root / "builds/rust" / role
+    target.mkdir()
+    calls = []
+    cache.ensure_rust_source_cache(layout, target=target,
+        runner=fake_runner(layout, calls, target=target), native_roots=(layout.emulebb_rust_repo_root,))
+    assert (target / cache.RECEIPT).is_file()
+    assert calls[0][0] == "metadata"
+
+
+@pytest.mark.parametrize("role", ["target-android-anything-uid-1000-gid-1000", "target-android-apk-uid-1000-gid-other", "target-android-apk"])
+def test_apk_cache_role_does_not_allow_arbitrary_output_names(guarded, role):
+    layout = guarded
+    layout.emulebb_rust_repo_root = source(layout)
+    target = layout.output_root / "builds/rust" / role
+    target.mkdir()
+    calls = []
+    with pytest.raises(RuntimeError, match="owned Rust target role"):
+        cache.ensure_rust_source_cache(layout, target=target,
+            runner=fake_runner(layout, calls, target=target), native_roots=(layout.emulebb_rust_repo_root,))
+    assert calls == []
+
+
 def test_dirty_older_source_bytes_invalidate_without_touching_dependencies(guarded):
     layout = guarded
     layout.emulebb_rust_repo_root = source(layout)

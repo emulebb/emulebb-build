@@ -189,7 +189,9 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
         shutil.copytree(rust / "android", project, ignore=shutil.ignore_patterns(".gradle", "build", "local.properties"))
         webui = scratch / "webui"
         subprocess.run([sys.executable, "-B", str(rust / "tools/build_webui.py"),
-                        "--stage-dir", str(webui)], check=True)
+                        "--stage-dir", str(webui)], check=True,
+                       env={name: value for name, value in os.environ.items()
+                            if name not in {*SIGNING_ENV, "EMULEBB_ANDROID_KEYSTORE_BASE64"}})
         with LinuxDocker(wsl_distro) as docker:
             user = _builder_user(docker)
             if user.split(":")[0] == "0":

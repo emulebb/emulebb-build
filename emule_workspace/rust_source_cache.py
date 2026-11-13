@@ -152,7 +152,7 @@ def ensure_rust_source_cache(layout, *, target: Path | None = None, runner=None,
         raise RuntimeError("Cargo cache OUTPUT must be outside the source workspace")
     target = _safe_path(output, (target or layout.output_rust_target_root).absolute())
     if (target.parent != output / "builds/rust" or not re.fullmatch(
-            r"target(?:-wsl|-linux-(?:gnu|musl)-(?:amd64|arm64)-uid-[0-9]+-gid-[0-9]+|-android-uid-[0-9]+-gid-[0-9]+)?",
+            r"target(?:-wsl|-linux-(?:gnu|musl)-(?:amd64|arm64)-uid-[0-9]+-gid-[0-9]+|-android(?:-apk)?-uid-[0-9]+-gid-[0-9]+)?",
             target.name)):
         raise RuntimeError("Cargo cache target must be an owned Rust target role")
     if runner is None and target != inherited_target:
