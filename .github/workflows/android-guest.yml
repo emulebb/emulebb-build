@@ -2,25 +2,38 @@ name: Android guest boot
 
 on:
   workflow_dispatch:
+    inputs:
+      rust_ref:
+        description: Exact lowercase 40-character current Rust main commit for the fixed TLS proof
+        required: true
+        type: string
   push:
     branches: [main, 'feature/**', 'fix/**', 'chore/**']
     paths:
       - '.github/workflows/android-guest.yml'
       - 'emule_workspace/android_toolchain.py'
+      - 'emule_workspace/android_validation.py'
+      - 'emule_workspace/cli.py'
       - 'emule_workspace/android_install.py'
       - 'emule_workspace/android_inputs.py'
       - 'emule_workspace/android_probe.py'
       - 'emule_workspace/release_assets/android/**'
       - 'tests/test_android_guest.py'
+      - 'tests/test_android_validation.py'
+      - 'tests/test_cli.py'
   pull_request:
     paths:
       - '.github/workflows/android-guest.yml'
       - 'emule_workspace/android_toolchain.py'
+      - 'emule_workspace/android_validation.py'
+      - 'emule_workspace/cli.py'
       - 'emule_workspace/android_install.py'
       - 'emule_workspace/android_inputs.py'
       - 'emule_workspace/android_probe.py'
       - 'emule_workspace/release_assets/android/**'
       - 'tests/test_android_guest.py'
+      - 'tests/test_android_validation.py'
+      - 'tests/test_cli.py'
 
 permissions:
   contents: read
@@ -52,7 +65,7 @@ jobs:
         with:
           persist-credentials: false
           repository: emulebb/emulebb-build-tests
-          ref: 0b878d74a90c64b5ae7c538e9753278912aff6fd
+          ref: 7c680ed68e478c2f22c56c65f21f12c3790d3826
           path: repos/emulebb-build-tests
       - name: Set up pinned Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -89,5 +102,146 @@ jobs:
             ${{ runner.temp }}/emulebb-android-out/reports/android-emulator/*/build.log
             ${{ runner.temp }}/emulebb-android-out/reports/android-emulator/*/toolchain-probe.json
             ${{ runner.temp }}/emulebb-android-out/reports/android-emulator-boot/*/validation.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  tls-runtime:
+    name: Android TLS startup (API 37, x86_64, 16 KiB)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      EMULEBB_WORKSPACE_ROOT: ${{ github.workspace }}
+      EMULEBB_RUST_REPO: ${{ github.workspace }}/repos/emulebb-rust
+      EMULEBB_TOOLING_REPO: ${{ github.workspace }}/repos/emulebb-tooling
+      EMULEBB_TESTS_REPO: ${{ github.workspace }}/repos/emulebb-build-tests
+      MINIUPNP_ROOT: ${{ github.workspace }}/repos/emulebb-miniupnp
+      PCPNATPMP_ROOT: ${{ github.workspace }}/repos/emulebb-libpcpnatpmp
+    steps:
+      - name: Checkout build orchestration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: repos/emulebb-build
+      - name: Select exact Rust TLS source
+        id: rust-source
+        shell: bash
+        env:
+          SOURCE_EVENT: ${{ github.event_name }}
+          REQUESTED_RUST_SHA: ${{ inputs.rust_ref }}
+        run: |
+          set -euo pipefail
+          # WHY: a main-branch job can write the default-branch Actions cache.
+          # Execute only independently resolved official main code on dispatch,
+          # never arbitrary input-selected code; automatic events stay pinned.
+          rust_sha='250c555b76650ad69fc546444a69f4b245b16d6e'
+          if [[ "$SOURCE_EVENT" == 'workflow_dispatch' ]]; then
+            if [[ ! "$REQUESTED_RUST_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo 'Rust source must be an exact lowercase 40-character commit SHA' >&2
+              exit 1
+            fi
+            remote_result="$(git ls-remote --exit-code 'https://github.com/emulebb/emulebb-rust.git' 'refs/heads/main')"
+            remote_pattern=$'^([0-9a-f]{40})\trefs/heads/main$'
+            if [[ ! "$remote_result" =~ $remote_pattern ]]; then
+              echo 'Official Rust main must resolve to one exact commit SHA' >&2
+              exit 1
+            fi
+            trusted_sha="${BASH_REMATCH[1]}"
+            if [[ "$REQUESTED_RUST_SHA" != "$trusted_sha" ]]; then
+              echo 'Requested Rust source must equal current official main' >&2
+              exit 1
+            fi
+            rust_sha="$trusted_sha"
+          fi
+          printf 'rust_sha=%s\n' "$rust_sha" >> "$GITHUB_OUTPUT"
+      - name: Checkout pinned product documentation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: emulebb/emulebb-tooling
+          ref: 26abd1eab97b28977f2d55adba17e6ba28821498
+          path: repos/emulebb-tooling
+      - name: Checkout pinned TLS runtime harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: emulebb/emulebb-build-tests
+          ref: 7c680ed68e478c2f22c56c65f21f12c3790d3826
+          path: repos/emulebb-build-tests
+      - name: Checkout pinned MiniUPnP source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: emulebb/emulebb-miniupnp
+          ref: 4e7a10948004ca2085ac8103e14fc77edb898b4c
+          path: repos/emulebb-miniupnp
+      - name: Checkout pinned PCP/NAT-PMP source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: emulebb/emulebb-libpcpnatpmp
+          ref: a6e787f837e507336a8774522c33b54264ef4a4b
+          path: repos/emulebb-libpcpnatpmp
+      - name: Set up pinned Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.15.2'
+      - name: Install pinned workspace CLI dependencies
+        run: python -m pip install click==8.4.1 pydantic==2.14.3
+      - name: Set up pinned Docker
+        uses: docker/setup-docker-action@3f1ab1ab0e29231562e4db4ca600c1a49653bac6 # v5.7.0
+        with:
+          version: v29.6.1
+          daemon-config: '{"features":{"containerd-snapshotter":true}}'
+      - name: Set up pinned Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        with:
+          version: v0.35.0
+          driver: docker
+          use: false
+      - name: Checkout source-bound Rust TLS repair
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: emulebb/emulebb-rust
+          ref: ${{ steps.rust-source.outputs.rust_sha }}
+          path: repos/emulebb-rust
+      - name: Verify exact clean Rust TLS source before execution
+        shell: bash
+        working-directory: repos/emulebb-rust
+        env:
+          EXPECTED_RUST_SHA: ${{ steps.rust-source.outputs.rust_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          source_status="$(git status --porcelain=v1 --untracked-files=all)"
+          if [[ ! "$EXPECTED_RUST_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ "$actual_sha" != "$EXPECTED_RUST_SHA" ]] ||
+             [[ -n "$source_status" ]]; then
+            echo 'Rust TLS checkout must match the requested commit and be clean' >&2
+            exit 1
+          fi
+      - name: Compile and execute the fixed TLS proof on the isolated Android guest
+        working-directory: repos/emulebb-build
+        env:
+          EMULEBB_WORKSPACE_OUTPUT_ROOT: ${{ runner.temp }}/emulebb-android-tls-out
+          CARGO_TARGET_DIR: ${{ runner.temp }}/emulebb-android-tls-out/builds/rust/target
+        run: |
+          mkdir -p "$CARGO_TARGET_DIR"
+          python -B -m emule_workspace probe-rust-android-guest-ci --image current --tls-startup
+      - name: Retain public source-bound Android TLS proof
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-tls-runtime-${{ github.sha }}-${{ github.run_attempt }}
+          # Fixed TLS cases use synthetic loopback fixtures. Never upload private
+          # AVDs, emulator runtime logs, authentication files or large test ELFs.
+          path: |
+            ${{ runner.temp }}/emulebb-android-tls-out/reports/rust-android/*/validation.json
+            ${{ runner.temp }}/emulebb-android-tls-out/reports/rust-android/*/*.log
+            ${{ runner.temp }}/emulebb-android-tls-out/reports/rust-android/*/tls-payload/manifest.json
+            ${{ runner.temp }}/emulebb-android-tls-out/reports/android-toolchain/*/toolchain-probe.json
+            ${{ runner.temp }}/emulebb-android-tls-out/reports/android-emulator/*/build.log
+            ${{ runner.temp }}/emulebb-android-tls-out/reports/android-emulator/*/toolchain-probe.json
+            ${{ runner.temp }}/emulebb-android-tls-out/reports/android-emulator-boot/*/validation.json
           if-no-files-found: warn
           retention-days: 14

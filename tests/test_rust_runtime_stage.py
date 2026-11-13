@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -251,14 +253,14 @@ def test_backup_cleanup_failure_keeps_committed_ready_bytes(selected, monkeypatc
     bundle(second, value=b"replacement")
     backups = []
 
-    def fail_cleanup(path):
+    def fail_cleanup(path, data, *, identity_root=None):
         backups.append(Path(path))
         (Path(path) / "bin/emulebb-rust.exe").unlink()
         if interrupted:
             raise KeyboardInterrupt("synthetic interrupted backup cleanup")
         raise PermissionError("synthetic locked previous PDB")
 
-    monkeypatch.setattr(stage.shutil, "rmtree", fail_cleanup)
+    monkeypatch.setattr(stage, "_remove_owned_stage", fail_cleanup)
     if interrupted:
         with pytest.raises(KeyboardInterrupt, match="interrupted backup cleanup"):
             stage.publish_stage(selected, second)
@@ -338,3 +340,175 @@ def test_busy_runtime_retirement_preserves_the_ready_bundle(selected, monkeypatc
         with stage.runtime_stage_retirement(selected, "sample"):
             raise AssertionError("busy runtime entered retirement")
     assert snapshot(root) == before
+
+
+def tree_snapshot(root):
+    return snapshot(root), {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_dir()}
+
+
+@pytest.mark.parametrize("change", ["missing", "corrupt", "foreign", "changed-member", "profile", "empty-directory"])
+def test_unproven_existing_stage_is_preserved_before_promotion(selected, change):
+    first = stage.prepare_stage(selected, target=TARGET)
+    bundle(first)
+    stage.publish_stage(selected, first)
+    root = Path(first["stageRoot"])
+    if change == "missing":
+        (root / stage.RECEIPT).unlink()
+    elif change == "corrupt":
+        (root / stage.RECEIPT).write_text("invalid synthetic receipt", encoding="utf-8")
+    elif change == "foreign":
+        data = json.loads((root / stage.RECEIPT).read_text())
+        data["workstream"] = "another-owner"
+        (root / stage.RECEIPT).write_text(json.dumps(data), encoding="utf-8")
+    elif change == "changed-member":
+        (root / "bin/emulebb-rust.exe").write_bytes(b"unproven replacement")
+    elif change == "profile":
+        add_profile(root / "bin")
+    else:
+        (root / "bin/unknown-empty-directory").mkdir()
+    before = tree_snapshot(root)
+    second = stage.prepare_stage(selected, target=TARGET)
+    bundle(second, value=b"new build")
+    with pytest.raises((OSError, ValueError, RuntimeError)):
+        stage.publish_stage(selected, second)
+    assert tree_snapshot(root) == before
+    assert Path(second["pendingRoot"]).exists()
+    assert not list(root.parent.glob("*.previous"))
+
+
+def add_profile(directory):
+    for name in ("emulebb-rust-settings.toml", "emulebb-rust-metadata.db", "emulebb-rust-metadata.db-wal",
+                 "emulebb-rust-metadata.db-shm", ".emulebb-profile.lock", "daemon.out", "unknown.dat"):
+        (directory / name).write_bytes(b"synthetic operator data: " + name.encode())
+    (directory / "logs/empty").mkdir(parents=True)
+    (directory / "logs/retained.log").write_bytes(b"synthetic retained log")
+
+
+def test_profile_arriving_after_promotion_is_preserved_in_reported_backup(selected, monkeypatch):
+    first = stage.prepare_stage(selected, target=TARGET)
+    bundle(first)
+    stage.publish_stage(selected, first)
+    second = stage.prepare_stage(selected, target=TARGET)
+    pending = bundle(second, value=b"new build")
+    root = Path(first["stageRoot"])
+    replace = stage.os.replace
+    preserved = {}
+
+    def race(source, destination):
+        replace(source, destination)
+        if Path(source) == pending:
+            backup = next(root.parent.glob("*.previous"))
+            add_profile(backup / "bin")
+            preserved["root"], preserved["before"] = backup, tree_snapshot(backup)
+
+    monkeypatch.setattr(stage.os, "replace", race)
+    result = stage.publish_stage(selected, second)
+    assert result["cleanupWarnings"][0]["path"] == str(preserved["root"])
+    assert tree_snapshot(preserved["root"]) == preserved["before"]
+    stage.verify_stage(selected, target=TARGET)
+
+
+def test_unknown_data_racing_during_cleanup_is_never_recursively_deleted(selected, monkeypatch):
+    first = stage.prepare_stage(selected, target=TARGET)
+    bundle(first)
+    result = stage.publish_stage(selected, first)
+    root = Path(first["stageRoot"])
+    unlink = Path.unlink
+    raced = []
+
+    def race(path, *args, **kwargs):
+        unlink(path, *args, **kwargs)
+        if not raced:
+            raced.append(True)
+            add_profile(root / "bin")
+
+    monkeypatch.setattr(Path, "unlink", race)
+    with pytest.raises((OSError, RuntimeError)):
+        stage._remove_owned_stage(root, {key: value for key, value in result.items()
+                                         if key not in {"receipt", "binDir"}})
+    assert (root / "bin/emulebb-rust-metadata.db-wal").read_bytes().startswith(b"synthetic operator data")
+    assert (root / "bin/logs/empty").is_dir()
+    assert (root / stage.RECEIPT).exists()
+
+
+def test_retirement_refuses_profile_before_removing_any_target(selected, monkeypatch):
+    first = stage.prepare_stage(selected, target=TARGET)
+    bundle(first)
+    stage.publish_stage(selected, first)
+    root = Path(first["stageRoot"])
+    add_profile(root / "bin")
+    before = tree_snapshot(root.parent)
+    monkeypatch.setattr(stage, "WorkspaceLock", lambda *args, **kwargs:
+                        SimpleNamespace(acquire=lambda: True, release=lambda: None))
+    with stage.runtime_stage_retirement(selected, "sample") as retire:
+        with pytest.raises(RuntimeError):
+            retire()
+    assert tree_snapshot(root.parent) == before
+
+
+def test_canonical_clean_preserves_receiptless_profile_and_generated_files(tmp_path):
+    root = tmp_path / "canonical"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin/emulebb-rust.exe").write_bytes(b"generated executable")
+    add_profile(root / "bin")
+    before = tree_snapshot(root)
+    with pytest.raises(RuntimeError, match="not proven disposable"):
+        stage.remove_empty_canonical_runtime(root)
+    assert tree_snapshot(root) == before
+
+
+def test_canonical_clean_accepts_absent_or_empty_directory(tmp_path):
+    root = tmp_path / "canonical"
+    stage.remove_empty_canonical_runtime(root)
+    root.mkdir()
+    stage.remove_empty_canonical_runtime(root)
+    assert not root.exists()
+
+
+def directory_alias(path, target):
+    if os.name == "nt":
+        # A junction exercises real ancestor redirection without requiring the
+        # operator's Windows symbolic-link privilege or launching WSL.
+        subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(path), str(target)],
+                       capture_output=True, text=True, check=True, timeout=20)
+        assert path.is_junction()
+    else:
+        path.symlink_to(target, target_is_directory=True)
+
+
+def test_ancestor_redirected_after_preflight_cannot_delete_foreign_matching_bytes(selected, monkeypatch):
+    first = stage.prepare_stage(selected, target=TARGET)
+    bundle(first)
+    result = stage.publish_stage(selected, first)
+    root = Path(first["stageRoot"])
+    foreign = selected.output_root / "foreign"
+    shutil.copytree(root / "bin", foreign)
+    before = tree_snapshot(foreign)
+    original = stage._owned_stage
+    displaced = root / "displaced-bin"
+
+    def redirect_after_preflight(*args, **kwargs):
+        data = original(*args, **kwargs)
+        (root / "bin").rename(displaced)
+        directory_alias(root / "bin", foreign)
+        return data
+
+    monkeypatch.setattr(stage, "_owned_stage", redirect_after_preflight)
+    with pytest.raises(RuntimeError, match="Redirected"):
+        stage._remove_owned_stage(root, {key: value for key, value in result.items()
+                                         if key not in {"receipt", "binDir"}})
+    assert tree_snapshot(foreign) == before
+    assert tree_snapshot(displaced) == before
+    assert (root / stage.RECEIPT).exists()
+
+
+def test_canonical_clean_rejects_dangling_directory_alias(tmp_path):
+    target = tmp_path / "vanished-target"
+    target.mkdir()
+    root = tmp_path / "canonical"
+    directory_alias(root, target)
+    target.rmdir()
+    assert not root.exists()
+    with pytest.raises(RuntimeError, match="Redirected|redirected"):
+        stage.remove_empty_canonical_runtime(root)
+    assert root.is_symlink() or root.is_junction()

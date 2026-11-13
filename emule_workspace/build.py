@@ -545,7 +545,8 @@ def _build_emulebb_rust_client(
     if not use_wsl and cargo_path is None:
         raise RuntimeError("build clients --client emulebb-rust requires Rust cargo on PATH.")
     if clean and runtime_description is None:
-        remove_tree_if_present(staged_emulebb_rust_root(session.layout))
+        from .rust_runtime_stage import remove_empty_canonical_runtime
+        remove_empty_canonical_runtime(staged_emulebb_rust_root(session.layout))
 
     flavor = "diagnostics" if diagnostics else "release"
     # The diagnostics flavor is a distinct bin target (emulebb-rust-diagnostics)

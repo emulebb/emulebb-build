@@ -1,12 +1,30 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
+import sys
+from types import ModuleType
 
 import pytest
 
 from emule_workspace import campaign_scenario_runner
 from emule_workspace.config import CampaignScenarioOptions, WorkspaceOptions
 from test_release_campaign_runner import make_layout, write_campaign_scenario_catalog
+
+
+@contextmanager
+def preserved_catalog_cache():
+    """Restore only the synthetic catalog's exact previous module entry."""
+    name = "emulebb_campaign_scenario_catalog"
+    missing = object()
+    previous = sys.modules.get(name, missing)
+    try:
+        yield
+    finally:
+        if previous is missing:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
 
 
 def write_multi_campaign_scenario_catalog(layout) -> None:
@@ -97,13 +115,55 @@ LOCAL_SWARM_TIER_OPTIONS = {
 
 
 @pytest.fixture(autouse=True)
-def workspace_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def workspace_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     output_root = tmp_path.parent / f"{tmp_path.name}-output"
     cargo_target_dir = output_root / "builds" / "rust" / "target"
     cargo_target_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("EMULEBB_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setenv("EMULEBB_WORKSPACE_OUTPUT_ROOT", str(output_root))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(cargo_target_dir))
+    # WHY: these synthetic imports must not poison later Harness provenance
+    # checks. Keep the real loader's foreign-cache rejection unchanged.
+    with preserved_catalog_cache():
+        yield
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+@pytest.mark.parametrize("import_failure", [False, True])
+def test_synthetic_catalog_restores_exact_prior_cache_on_success_and_exception(
+    tmp_path: Path, monkeypatch, preexisting, import_failure,
+):
+    name = "emulebb_campaign_scenario_catalog"
+    previous = ModuleType(name)
+    unrelated = ModuleType("unrelated_fixture_module")
+    monkeypatch.setitem(sys.modules, unrelated.__name__, unrelated)
+    if preexisting:
+        monkeypatch.setitem(sys.modules, name, previous)
+    else:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    layout = make_layout(tmp_path)
+    write_campaign_scenario_catalog(layout)
+    if import_failure:
+        (layout.tests_repo_root / "emule_test_harness/campaign_scenarios.py").write_text(
+            "raise RuntimeError('Synthetic catalog import failure')\n")
+    def import_catalog():
+        with preserved_catalog_cache():
+            if preexisting:
+                assert sys.modules.get(name) is previous
+            else:
+                assert name not in sys.modules
+            catalog = campaign_scenario_runner.load_campaign_scenario_catalog(layout)
+            assert sys.modules[name] is catalog
+    if import_failure:
+        with pytest.raises(RuntimeError, match="Synthetic catalog import failure"):
+            import_catalog()
+    else:
+        import_catalog()
+    if preexisting:
+        assert sys.modules.get(name) is previous
+    else:
+        assert name not in sys.modules
+    assert sys.modules[unrelated.__name__] is unrelated
 
 
 def test_campaign_scenario_local_mode_reuses_local_live_suites_and_tiered_swarm(

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import shutil
 import struct
 from uuid import uuid4
 
@@ -148,14 +149,90 @@ def validation_plan(rust: Path, abi: str) -> list[tuple[str, list[str]]]:
     return plan
 
 
+def _tls_test_executables(messages: str, output: Path, target_dir: Path) -> dict[str, Path]:
+    """Select the two exact library test artifacts, never a guessed target glob."""
+    selected = {}
+    for line in messages.splitlines():
+        item = json.loads(line)
+        if item.get("reason") != "compiler-artifact" or not item.get("profile", {}).get("test"):
+            continue
+        target = item.get("target", {})
+        for role in ("core", "daemon"):
+            if (target.get("name") != "emulebb_" + role or target.get("kind") != ["lib"]
+                    or target.get("src_path") != f"/source/crates/emulebb-{role}/src/lib.rs"):
+                continue
+            executable = item.get("executable")
+            if not isinstance(executable, str) or not executable.startswith("/output/") or role in selected:
+                raise RuntimeError("Android TLS proof requires exactly one executable per library")
+            path = output / executable.removeprefix("/output/")
+            if (path.is_symlink() or not path.is_file()
+                    or not path.resolve().is_relative_to((target_dir / TARGETS["x86_64"][0] / "debug/deps").resolve())):
+                raise RuntimeError("Android TLS test artifact escaped its owned x86_64 target")
+            selected[role] = path
+    if set(selected) != {"core", "daemon"}:
+        raise RuntimeError("Android TLS proof is missing a required library test executable")
+    return selected
+
+
+def _export_tls_payload(docker, base: list[str], image: str, output: Path, directory: Path,
+                        provenance: dict, executables: dict[str, Path], *, version: str, channel: str) -> dict:
+    """Freeze audited Android library test bytes for the fixed guest TLS proof."""
+    from . import release
+
+    root = directory / "tls-payload"
+    root.mkdir(mode=0o700)
+    files, dependencies = {}, {}
+    names = {"core": "core-tests", "daemon": "daemon-tests", "runtime": "emulebb-rust"}
+    if set(executables) != set(names):
+        raise RuntimeError("Android first-launch proof requires both test libraries and the production daemon")
+    for role, executable in executables.items():
+        audit = audit_android_elf(executable, "x86_64")
+        dependency_root = directory / ("tls-" + role)
+        dependency_root.mkdir()
+        closure = _runtime_dependencies(docker, base, image, output, dependency_root, "x86_64", executable)
+        dependencies[role] = closure
+        sources = [(names[role], executable, audit)]
+        for library in closure["bundled"]:
+            sources.append((library["name"], output / library["path"], library["elfAudit"]))
+        for name, source, elf in sources:
+            if name not in {*names.values(), "libc++_shared.so"}:
+                raise RuntimeError("Unexpected Android TLS runtime dependency")
+            if source.is_symlink() or not source.resolve().is_relative_to(output.resolve()):
+                raise RuntimeError("Android TLS runtime dependency escaped its owned output")
+            size = source.stat().st_size
+            if not 0 < size <= 1024**3:
+                raise RuntimeError("Android TLS test artifact exceeds its bounded payload size")
+            identity = {"sha256": release._sha256(source), "sizeBytes": size, "elf": elf}
+            if name in files:
+                if files[name] != identity:
+                    raise RuntimeError("Android TLS libraries require conflicting runtime dependency bytes")
+                continue
+            target = root / name
+            shutil.copyfile(source, target)
+            if release._sha256(target) != identity["sha256"]:
+                raise RuntimeError("Android TLS payload changed during staging")
+            files[name] = identity
+    value = {"schema": "emulebb.android.tls-payload/2", "status": "passed", "abi": "x86_64",
+             "sourceDirty": False, "source": provenance["source"], "files": files,
+             "buildIdentity": {"version": version, "channel": channel, "platform": "x64", "build": "release",
+                               "sourceRevision": provenance["source"]["emulebbRust"]["commit"]},
+             "runtimeDependencies": dependencies, "runtimeExecution": "not-run",
+             "origin": provenance["origin"], "workflow": provenance["workflow"]}
+    manifest = root / "manifest.json"
+    manifest.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {"path": manifest.relative_to(output).as_posix(), "sha256": release._sha256(manifest)}
+
+
 def validate_android(layout, *, abis: tuple[str, ...] = ("arm64-v8a", "x86_64"), wsl_distro: str = "Ubuntu",
                      release_version: str | None = None, channel: str = "development",
-                     expected_source_sha: str | None = None) -> Path:
+                     expected_source_sha: str | None = None, tls_payload: bool = False) -> Path:
     """Compile both Android CPUs without publishing any local build output."""
     from . import release
 
     if not abis or len(set(abis)) != len(abis) or any(abi not in TARGETS for abi in abis):
         raise ValueError("Select unique supported Android ABIs")
+    if tls_payload and abis != ("x86_64",):
+        raise ValueError("Android TLS guest payload requires only the native x86_64 guest ABI")
     _workspace, output = resolve_required_workspace_roots()
     resolve_required_cargo_target_dir(output)
     if output != layout.output_root.resolve():
@@ -219,7 +296,7 @@ def validate_android(layout, *, abis: tuple[str, ...] = ("arm64-v8a", "x86_64"),
                                            report.parent / f"source-cache-{cache_invocation}.log",
                                            timeout=120, capture=True)
 
-            def check(label: str, command: list[str], *, abi: str | None = None) -> None:
+            def check(label: str, command: list[str], *, abi: str | None = None, capture: bool = False) -> str:
                 log = report.parent / (label + ".log")
                 check_value = {"label": label, "command": command, "status": "failed", "log": str(log)}
                 value["checks"].append(check_value)
@@ -229,8 +306,9 @@ def validate_android(layout, *, abis: tuple[str, ...] = ("arm64-v8a", "x86_64"),
                              image, "cargo", *command]
                 print(f"Android {label}; log: {log}", flush=True)
                 try:
-                    run_owned_container(docker, arguments, log, timeout=3600)
+                    result = run_owned_container(docker, arguments, log, timeout=3600, **({"capture": True} if capture else {}))
                     check_value["status"] = "passed"
+                    return result
                 finally:
                     report.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
@@ -249,8 +327,14 @@ def validate_android(layout, *, abis: tuple[str, ...] = ("arm64-v8a", "x86_64"),
                     # Do not export an old development executable if a producer
                     # fails to recreate the final link under the nightly identity.
                     binary.unlink(missing_ok=True)
+                artifacts = None
                 for label, command in validation_plan(rust, abi):
-                    check(abi + "-" + label, command, abi=abi)
+                    capture = tls_payload and label == "workspace-test-link"
+                    if capture:
+                        command = [*command, "--message-format=json"]
+                    result = check(abi + "-" + label, command, abi=abi, capture=capture)
+                    if capture:
+                        artifacts = _tls_test_executables(result, output, target_dir)
                 value["elf"][abi] = audit_android_elf(binary, abi)
                 value["binaries"][abi] = {"path": binary.relative_to(output).as_posix(),
                                          "sha256": release._sha256(binary),
@@ -259,6 +343,12 @@ def validate_android(layout, *, abis: tuple[str, ...] = ("arm64-v8a", "x86_64"),
                     value["runtimeDependencies"][abi] = _runtime_dependencies(
                         docker, base, image, output, report.parent, abi, binary,
                     )
+                if tls_payload:
+                    if artifacts is None:
+                        raise RuntimeError("Android TLS export requires the successful canonical workspace test-link")
+                    value["tlsPayload"] = _export_tls_payload(
+                        docker, base, image, output, report.parent, provenance, {**artifacts, "runtime": binary},
+                        version=version, channel=channel)
         release._assert_emulebb_rust_package_provenance(layout, rust, provenance)
         value["status"] = "passed"
     except BaseException as error:

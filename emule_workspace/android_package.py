@@ -113,8 +113,9 @@ def write_bundle(layout, *, root: Path, scratch: Path, binary: Path, webui: Path
     (stage / "emulebb-rust").chmod(0o755)
     shutil.copytree(webui, stage / "webui", symlinks=True)
     rust = layout.emulebb_rust_repo_root
-    for name in ("LICENSE", "emulebb-rust-settings.example.toml"):
+    for name in ("LICENSE",):
         shutil.copy2(rust / name, stage / name)
+    release._stage_emulebb_rust_bootstrap(rust, stage)
     mini, pcp = release._emulebb_rust_native_source_roots(layout)
     (stage / "licenses").mkdir()
     shutil.copy2(mini / "miniupnpc/LICENSE", stage / "licenses/MiniUPnPc-LICENSE")
@@ -143,7 +144,10 @@ def write_bundle(layout, *, root: Path, scratch: Path, binary: Path, webui: Path
         + "\n".join(LIMITATIONS) + "\n"
         "For controlled developer/ADB use only; this is not an installable application.\n"
         "Use ./run-developer.sh so any bundled pinned runtime is found before Android system libraries.\n"
-        "Use a fresh writable profile and an explicit authenticated loopback REST binding.\n"
+        "Run ./run-developer.sh from this writable unpacked directory (or add --profile .).\n"
+        "The default profile is the executable directory; --profile paths resolve from the shell working directory.\n"
+        "Open http://127.0.0.1:20017/ and enter change_me_123change_me_123change_me_123.\n"
+        "Replace the shared starter key before exposing the API outside this computer.\n"
         "The adjacent webui directory supplies the browser console. Never publish profile secrets.\n",
         encoding="utf-8",
     )
@@ -172,17 +176,7 @@ def write_bundle(layout, *, root: Path, scratch: Path, binary: Path, webui: Path
     _write_json(stage / "SBOM.spdx.json", sbom)
     shutil.copy2(stage / "SBOM.spdx.json", root / public["sbom"])
     archive = root / public["archive"]
-    with tarfile.open(archive, "w:zst") as bundle:
-        for path in [stage, *sorted(stage.rglob("*"))]:
-            info = bundle.gettarinfo(str(path), path.relative_to(stage.parent).as_posix())
-            info.uid = info.gid = info.mtime = 0
-            info.uname = info.gname = ""
-            info.mode = 0o755 if path.is_dir() or path.name in {"emulebb-rust", "run-developer.sh"} else 0o644
-            if path.is_file():
-                with path.open("rb") as source:
-                    bundle.addfile(info, source)
-            else:
-                bundle.addfile(info)
+    release._write_emulebb_rust_portable_archive(stage, archive)
     common = {**provenance, "version": version, "channel": channel, "abi": abi,
               "target": TARGETS[abi][0], "minApi": MIN_API, "pageSize": PAGE_SIZE,
               "experimental": True, "distribution": "developer-daemon",

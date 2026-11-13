@@ -568,20 +568,23 @@ def prepare_rust_android_emulator(*, images: tuple[str, ...], wsl_distro: str,
 @main.command("probe-rust-android-guest")
 @_common_options
 @click.option("--image", type=click.Choice(["min", "current"]), required=True)
+@click.option("--tls-startup", is_flag=True, help="Also execute the six fixed source-bound Android TLS cases.")
 @click.option("--wsl-distro", default="Ubuntu", show_default=True)
-def probe_rust_android_guest(*, image: str, wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
+def probe_rust_android_guest(*, image: str, tls_startup: bool, wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
     """Boot one pinned Android guest with KVM; APK qualification is separate."""
     from .android_toolchain import probe_emulator_guest
 
     def probe(**kwargs: Any) -> None:
-        print(f"Android guest boot passed: {probe_emulator_guest(kwargs['layout'], image=image, wsl_distro=wsl_distro)}")
+        extra = {"tls_startup": True} if tls_startup else {}
+        print(f"Android guest boot passed: {probe_emulator_guest(kwargs['layout'], image=image, wsl_distro=wsl_distro, **extra)}")
 
     _locked("probe-rust-android-guest", probe)(workspace_options=workspace_options, layout=layout)
 
 
 @main.command("probe-rust-android-guest-ci")
 @click.option("--image", type=click.Choice(["min", "current"]), required=True)
-def probe_rust_android_guest_ci(*, image: str) -> None:
+@click.option("--tls-startup", is_flag=True, help="Also execute the six fixed source-bound Android TLS cases.")
+def probe_rust_android_guest_ci(*, image: str, tls_startup: bool) -> None:
     """Use the same guest boot owner on minimal hosted build/harness checkouts."""
     from .android_toolchain import probe_emulator_guest
     from .release import _emulebb_rust_artifact_origin
@@ -598,9 +601,13 @@ def probe_rust_android_guest_ci(*, image: str) -> None:
     layout = replace(build_ci_layout(output_root=output), emule_workspace_root=workspace,
                      tests_repo_root=harness, build_repo_root=Path(__file__).resolve().parents[1])
     options = WorkspaceOptions(workspace_root=workspace, output_root=output, workspace_name="ci")
+    if tls_startup:
+        options, compile_layout = _android_ci_layout()
+        layout = replace(compile_layout, tests_repo_root=harness)
 
     def probe(**kwargs: Any) -> None:
-        print(f"Android guest boot passed: {probe_emulator_guest(kwargs['layout'], image=image)}")
+        extra = {"tls_startup": True} if tls_startup else {}
+        print(f"Android guest boot passed: {probe_emulator_guest(kwargs['layout'], image=image, **extra)}")
 
     _locked("probe-rust-android-guest-ci", probe)(workspace_options=options, layout=layout)
 
@@ -2095,6 +2102,16 @@ def linux_containers(*, wsl_distro: str, setup_arm64: bool, workspace_options: W
         LinuxDocker(wsl_distro).preflight(kwargs["layout"].output_root, setup_arm64=setup_arm64)
 
     _locked("linux containers", verify)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("verify-linux-profile-scratch")
+@_common_options
+def verify_linux_profile_scratch(*, workspace_options: WorkspaceOptions, layout) -> None:
+    """Prove native GNU/AMD64 profile permissions and alias isolation only."""
+    from .linux_containers import verify_linux_profile_scratch as verify
+
+    _locked("verify Linux profile scratch", lambda **kwargs: verify(kwargs["layout"]))(
+        workspace_options=workspace_options, layout=layout)
 
 
 @main.command("validate-emulebb-rust-image")

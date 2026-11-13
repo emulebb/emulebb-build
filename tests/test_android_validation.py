@@ -196,3 +196,65 @@ def test_nightly_build_receives_identity_before_fresh_release_link(tmp_path, mon
     report = json.loads(path.read_text())
     assert report["binaries"]["arm64-v8a"]["sha256"] == release._sha256(binary)
     assert report["version"] == VERSION and report["status"] == "passed"
+
+
+@pytest.mark.parametrize("bad", [None, "missing", "duplicate", "outside", "wrong-source", "non-test", "wrong-kind"])
+def test_tls_payload_selection_requires_actual_owned_library_artifacts(tmp_path, bad):
+    output = tmp_path / "output"
+    target = output / "target"
+    messages = []
+    for role in ("core", "daemon"):
+        binary = target / "x86_64-linux-android/debug/deps" / (role + "-hash")
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"synthetic executable")
+        item = {"reason": "compiler-artifact", "profile": {"test": True},
+                "target": {"name": "emulebb_" + role, "kind": ["lib"],
+                           "src_path": f"/source/crates/emulebb-{role}/src/lib.rs"},
+                "executable": "/output/" + binary.relative_to(output).as_posix()}
+        if role == "core":
+            if bad == "outside": item["executable"] = "/output/../operator-file"
+            if bad == "wrong-source": item["target"]["src_path"] = "/other/src/lib.rs"
+            if bad == "non-test": item["profile"]["test"] = False
+            if bad == "wrong-kind": item["target"]["kind"] = ["bin"]
+        if not (bad == "missing" and role == "core"):
+            messages.append(item)
+        if bad == "duplicate" and role == "core": messages.append(item)
+    text = "\n".join(json.dumps(item) for item in messages)
+    if bad is None:
+        result = android._tls_test_executables(text, output, target)
+        assert set(result) == {"core", "daemon"}
+        assert all(path.is_file() for path in result.values())
+    else:
+        with pytest.raises(RuntimeError):
+            android._tls_test_executables(text, output, target)
+
+
+def test_tls_export_hashes_copied_bytes_and_preserves_source_identity(tmp_path, monkeypatch):
+    from emule_workspace import release
+    output = tmp_path / "output"
+    output.mkdir()
+    directory = output / "report"
+    directory.mkdir()
+    executables = {}
+    for role in ("core", "daemon", "runtime"):
+        root = output / role
+        root.mkdir()
+        executables[role] = elf(root, machine=62)
+    monkeypatch.setattr(android, "_runtime_dependencies", lambda *args: {"needed": ["libc.so"], "bundled": []})
+    provenance = {"source": {"emulebbRust": {"commit": "1" * 40}}, "origin": "local-development", "workflow": None}
+    result = android._export_tls_payload(None, [], "pinned", output, directory, provenance, executables,
+                                         version="0.1.0-beta.2", channel="development")
+    manifest = output / result["path"]
+    assert release._sha256(manifest) == result["sha256"]
+    value = json.loads(manifest.read_text())
+    assert value["source"] == provenance["source"] and value["runtimeExecution"] == "not-run"
+    assert value["schema"] == "emulebb.android.tls-payload/2"
+    assert set(value["files"]) == {"core-tests", "daemon-tests", "emulebb-rust"}
+    for name, identity in value["files"].items():
+        assert identity["sha256"] == release._sha256(manifest.parent / name)
+        assert identity["elf"]["elfMachine"] == 62 and identity["elf"]["pageSize"] == 16384
+
+
+def test_tls_export_cannot_select_non_guest_abi():
+    with pytest.raises(ValueError, match="x86_64 guest ABI"):
+        android.validate_android(None, tls_payload=True)

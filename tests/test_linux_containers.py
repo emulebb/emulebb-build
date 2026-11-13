@@ -129,7 +129,8 @@ def test_builder_rejects_invalid_operator_identity_before_docker(monkeypatch, va
 
 
 @pytest.mark.parametrize("mirrors", [False, True])
-def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging_as_root(tmp_path, monkeypatch, mirrors):
+@pytest.mark.parametrize("redirect", [None, "leaf-before", "parent-before", "leaf-after", "junction-before"])
+def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging_as_root(tmp_path, monkeypatch, mirrors, redirect):
     guarded = []
     monkeypatch.setattr("emule_workspace.rust_source_cache.ensure_rust_source_cache",
                         lambda layout, **kwargs: guarded.append(kwargs))
@@ -170,6 +171,7 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
                 return SimpleNamespace(stdout="amd64")
             if args[0] == "build":
                 assert target_directory.is_dir()
+                assert (target_directory / "tmp/profile-ownership-tests").is_dir()
                 assert (output / "cache/cargo-linux-registry/1001-1002").is_dir()
                 assert (output / "cache/rust-linux-home/1001-1002").is_dir()
                 assert "BUILD_UID=1001" in args and "BUILD_GID=1002" in args
@@ -198,6 +200,34 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
     old_archive = output / "packages/rust-linux/0.1.0-beta.2/musl-amd64/emulebb-rust-v0.1.0-beta.2-linux-amd64-musl.tar.zst"
     old_archive.parent.mkdir(parents=True)
     old_archive.write_bytes(b"previous root-owned archive")
+    scratch_path = target_directory / "tmp/profile-ownership-tests"
+    original_link, original_mkdir = type(scratch_path).is_symlink, type(scratch_path).mkdir
+    original_junction = getattr(type(scratch_path), "is_junction", lambda path: False)
+    scratch_created = False
+    def is_link(path):
+        redirected = ((redirect == "leaf-before" and path == scratch_path)
+                      or (redirect == "parent-before" and path == scratch_path.parent)
+                      or (redirect == "leaf-after" and scratch_created and path == scratch_path))
+        return redirected or original_link(path)
+    def mkdir(path, *args, **kwargs):
+        nonlocal scratch_created
+        result = original_mkdir(path, *args, **kwargs)
+        if path == scratch_path:
+            scratch_created = True
+        return result
+    monkeypatch.setattr(type(scratch_path), "is_symlink", is_link)
+    monkeypatch.setattr(type(scratch_path), "is_junction",
+                        lambda path: (redirect == "junction-before" and path == scratch_path)
+                        or original_junction(path), raising=False)
+    monkeypatch.setattr(type(scratch_path), "mkdir", mkdir)
+    if redirect:
+        with pytest.raises(RuntimeError, match="Redirected workstream path"):
+            linux_containers._build_linux_artifacts(layout, Docker(), libc="musl", architecture="amd64",
+                                                    webui_dist=webui, release_version=None, test_scope="portable",
+                                                    use_ci_image_mirrors=mirrors)
+        assert not cargo_calls
+        assert not any(arguments[0] == "build" for arguments in calls)
+        return
     archive = linux_containers._build_linux_artifacts(layout, Docker(), libc="musl", architecture="amd64",
                                                       webui_dist=webui, release_version=None, test_scope="portable",
                                                       use_ci_image_mirrors=mirrors)
@@ -211,6 +241,19 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
         image_index = next(index for index, value in enumerate(arguments) if value.startswith("local/emulebb-rust-builder:"))
         assert arguments.index("--user") < image_index
         assert arguments[arguments.index("--cap-drop") + 1] == "ALL"
+    test_calls = [arguments for arguments in cargo_calls if arguments[arguments.index("cargo") + 1] == "test"]
+    assert test_calls
+    scratch = (f"{target_mapping}/tmp/profile-ownership-tests:rw,exec,nosuid,nodev,"
+               "size=8g,uid=1001,gid=1002,mode=0700")
+    for arguments in cargo_calls:
+        if arguments in test_calls:
+            assert arguments.count("--tmpfs") == 1
+            assert arguments[arguments.index("--tmpfs") + 1] == scratch
+            assert arguments.index("--tmpfs") < arguments.index("cargo")
+        else:
+            assert "--tmpfs" not in arguments
+    assert (output / "cache/cargo-linux-registry/1001-1002").is_dir()
+    assert all("type=bind,source=" + output.as_posix() + ",target=/output" in arguments for arguments in cargo_calls)
     manifest = json.loads(archive.with_name(archive.name + ".manifest.json").read_text())
     assert manifest["buildUser"] == "1001:1002"
     assert manifest["pathMapping"]["cargoTarget"] == target_mapping
@@ -458,21 +501,151 @@ def diagnostics_step():
         linux_quality_plan(tmp_path, target)
 
 
-def test_timed_out_wsl_job_removes_only_its_owned_container(tmp_path, monkeypatch):
+@pytest.mark.parametrize("outcome", ["success", "failed", "timeout", "remaining"])
+def test_owned_container_removes_only_its_invocation_and_retains_log(tmp_path, monkeypatch, outcome):
     calls = []
     def run(command, **kwargs):
         calls.append(command)
         if "--name" in command:
-            kwargs["stdout"].write("retained build failure\n")
-            raise subprocess.TimeoutExpired(command, 1)
+            kwargs["stdout"].write("retained container output\n")
+            if outcome == "timeout":
+                raise subprocess.TimeoutExpired(command, 1)
+            if outcome == "failed":
+                raise subprocess.CalledProcessError(3, command)
+        return SimpleNamespace(stdout="remaining-owned-container" if outcome == "remaining" and "ps" in command else "")
     monkeypatch.setattr("emule_workspace.linux_containers.subprocess.run", run)
     docker = LinuxDocker()
     path = tmp_path / "build.log"
-    with pytest.raises(RuntimeError, match="inspect"):
-        run_owned_container(docker, ["--rm", "image", "cargo", "test"], path, timeout=1)
+    ownership = {}
+    if outcome == "success":
+        run_owned_container(docker, ["--rm", "image", "cargo", "test"], path, timeout=1, ownership=ownership)
+    else:
+        with pytest.raises(RuntimeError, match="survived" if outcome == "remaining" else "inspect"):
+            run_owned_container(docker, ["--rm", "image", "cargo", "test"], path, timeout=1, ownership=ownership)
     name = calls[0][calls[0].index("--name") + 1]
-    assert calls[-1][-3:] == ["rm", "--force", name]
-    assert path.read_text() == "retained build failure\n"
+    assert calls[-2][-3:] == ["rm", "--force", name]
+    assert f"name={name}" in calls[-1]
+    assert ownership == {"name": name, "absent": outcome != "remaining"}
+    assert path.read_text() == "retained container output\n"
+
+
+@pytest.mark.parametrize("counts", [(0, 0, 0), (1, 0, 0), (2, 0, 0), (1, 1, 0), (1, 0, 1)])
+def test_profile_scratch_proof_runs_exact_fixed_library_cases_and_rejects_wrong_counts(tmp_path, monkeypatch, counts):
+    scratch, logs = tmp_path / "scratch", tmp_path / "logs"
+    scratch.mkdir()
+    logs.mkdir()
+    cargo = ["--tmpfs", "fixed-native-scratch", "--user", "1001:1002", "image", "cargo"]
+    calls = []
+    def run(docker, arguments, log, **kwargs):
+        calls.append(arguments)
+        kwargs["ownership"].update(name=f"owned-{len(calls)}", absent=True)
+        assert arguments[:len(cargo) - 1] == cargo[:-1]
+        if "python3" in arguments:
+            assert kwargs["capture"] is True
+            return '{"filesystem":"tmpfs","uid":1001,"gid":1002,"directoryMode":"0700","fileMode":"0600"}'
+        assert "--lib" in arguments and "--bin" not in arguments
+        assert arguments[-2:] == ["--", "--exact"]
+        case = arguments[arguments.index("--lib") + 1]
+        passed, failed, ignored = counts
+        log.write_text(f"test {case} ... ok\ntest result: ok. {passed} passed; {failed} failed; {ignored} ignored;\n")
+        return ""
+    monkeypatch.setattr(linux_containers, "run_owned_container", run)
+    receipt = {"tests": [], "containers": []}
+    arguments = (object(), cargo, "x86_64-unknown-linux-gnu", "/output/target", scratch,
+                 "1001:1002", logs, (logs / "proof.json", receipt))
+    if counts == (1, 0, 0):
+        assert linux_containers._prove_profile_test_scratch(*arguments) == logs / "proof.json"
+        assert [test["name"] for test in receipt["tests"]] == [
+            "tests::retargeted_profile_alias_keeps_io_in_the_leased_directory",
+            "tests::load_rejects_group_or_world_readable_bootstrap_settings"]
+        assert len(calls) == 3
+    else:
+        with pytest.raises(RuntimeError, match="exactly one passing case"):
+            linux_containers._prove_profile_test_scratch(*arguments)
+        assert len(calls) == 2
+    assert receipt["hostScratchUnchanged"] is True
+
+
+@pytest.mark.parametrize("fault", ["mode", "host-leak"])
+def test_profile_scratch_proof_does_not_hide_mode_failure_or_host_leak(tmp_path, monkeypatch, fault):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    def run(docker, arguments, log, **kwargs):
+        kwargs["ownership"].update(name="owned", absent=True)
+        if "python3" in arguments:
+            if fault == "host-leak":
+                (scratch / "unexpected").write_text("synthetic leak")
+            raise RuntimeError("synthetic mode probe failure")
+    monkeypatch.setattr(linux_containers, "run_owned_container", run)
+    receipt = {"tests": [], "containers": []}
+    with pytest.raises(RuntimeError, match="leaked" if fault == "host-leak" else "mode probe failure"):
+        linux_containers._prove_profile_test_scratch(object(), ["image", "cargo"], "target", "/output/target",
+                                                    scratch, "1001:1002", tmp_path, (tmp_path / "proof.json", receipt))
+    assert receipt["hostScratchUnchanged"] is (fault != "host-leak")
+
+
+@pytest.mark.parametrize("outcome", ["passed", "changed", "empty", "cleanup"])
+def test_fixed_profile_proof_fences_sources_and_retains_honest_receipt(tmp_path, monkeypatch, outcome):
+    workspace, output = tmp_path / "workspace", tmp_path / "output"
+    output.mkdir()
+    layout = SimpleNamespace(emule_workspace_root=workspace, output_root=output, build_repo_root=workspace / "builder",
+                             emulebb_rust_repo_root=workspace / "rust", tooling_repo_root=workspace / "tooling",
+                             tests_repo_root=workspace / "harness")
+    snapshots = []
+    def snapshot(sources, **kwargs):
+        assert kwargs == {"clean": True}
+        snapshots.append(sources)
+        return {"revision": "changed" if outcome == "changed" and len(snapshots) > 1 else "fixed"}
+    class Docker:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    def prove(*args, **kwargs):
+        assert kwargs["libc"] == "gnu" and kwargs["architecture"] == "amd64"
+        report, value = kwargs["profile_scratch_proof"]
+        if outcome != "empty":
+            value.update(tests=[{}, {}], containers=[{"absent": outcome != "cleanup"}] * 3,
+                         hostScratchUnchanged=True)
+        return report
+    monkeypatch.setattr("emule_workspace.local_checks._source_snapshot", snapshot)
+    monkeypatch.setattr("emule_workspace.release._emulebb_rust_native_source_roots",
+                        lambda layout: (workspace / "mini", workspace / "pcp"))
+    monkeypatch.setattr(linux_containers, "LinuxDocker", Docker)
+    monkeypatch.setattr(linux_containers, "_build_linux_artifacts", prove)
+    if outcome == "passed":
+        report = linux_containers.verify_linux_profile_scratch(layout)
+    else:
+        with pytest.raises(RuntimeError):
+            linux_containers.verify_linux_profile_scratch(layout)
+        report = next((output / "reports/linux-profile-scratch").glob("*/results.json"))
+    value = json.loads(report.read_text())
+    assert value["qualification"] == "focused-profile-scratch-only"
+    assert value["status"] == ("passed" if outcome == "passed" else "failed")
+
+
+def test_fixed_profile_proof_cli_uses_the_existing_lock_without_arbitrary_filters(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from emule_workspace import cli
+
+    options = SimpleNamespace(workspace_root=tmp_path, output_root=tmp_path / "output", workspace_name="workspace")
+    selected = object()
+    events = []
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: selected)
+    monkeypatch.setattr(linux_containers, "verify_linux_profile_scratch", lambda layout: events.append(("proof", layout)))
+    def locked(name, function):
+        def invoke(**kwargs):
+            events.append(("lock", name))
+            return function(**kwargs)
+        return invoke
+    monkeypatch.setattr(cli, "_locked", locked)
+    result = CliRunner().invoke(cli.main, ["verify-linux-profile-scratch"])
+    assert result.exit_code == 0, result.output
+    assert events == [("lock", "verify Linux profile scratch"), ("proof", selected)]
+    events.clear()
+    result = CliRunner().invoke(cli.main, ["verify-linux-profile-scratch", "--case", "arbitrary"])
+    assert result.exit_code != 0 and not events
 
 
 def test_arm64_build_is_native_on_ci_and_cross_compiled_locally():
@@ -717,6 +890,7 @@ def test_wsl_selected_helper_bytes_cannot_change_during_the_plan(owned_wsl_lifet
 
 @pytest.mark.parametrize("name,relative", [
     ("emule_test_harness", "emule_test_harness/__init__.py"),
+    ("emulebb_campaign_scenario_catalog", "emule_test_harness/campaign_scenarios.py"),
     ("emule_live_profile_common_rust_ed2k", "scripts/emule-live-profile-common.py"),
     ("cached_script_alias", "scripts/emule-live-profile-common.py"),
 ])

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -32,6 +34,197 @@ def test_android_guest_proof_uploads_only_public_construction_and_sanitized_resu
         if step.get("uses", "").startswith("actions/checkout@"):
             assert step["with"]["persist-credentials"] is False
         assert "secrets." not in str(step)
+
+
+def test_android_tls_runtime_is_additional_pinned_source_bound_guest_proof():
+    import re
+    import yaml
+
+    workflow = yaml.safe_load((_repo_root() / ".github/workflows/android-guest.yml").read_text(encoding="utf-8"))
+    assert workflow["permissions"] == {"contents": "read"}
+    assert set(workflow["jobs"]["boot"]["strategy"]["matrix"]["image"]) == {"min", "current"}
+    job = workflow["jobs"]["tls-runtime"]
+    assert job["runs-on"] == "ubuntu-24.04" and job["timeout-minutes"] == 60
+    checkouts = {step["with"]["repository"]: step["with"] for step in job["steps"]
+                 if step.get("uses", "").startswith("actions/checkout@") and "repository" in step["with"]}
+    assert {name: value["ref"] for name, value in checkouts.items()} == {
+        "emulebb/emulebb-rust": "${{ steps.rust-source.outputs.rust_sha }}",
+        "emulebb/emulebb-tooling": "26abd1eab97b28977f2d55adba17e6ba28821498",
+        "emulebb/emulebb-build-tests": "7c680ed68e478c2f22c56c65f21f12c3790d3826",
+        "emulebb/emulebb-miniupnp": "4e7a10948004ca2085ac8103e14fc77edb898b4c",
+        "emulebb/emulebb-libpcpnatpmp": "a6e787f837e507336a8774522c33b54264ef4a4b",
+    }
+    for step in job["steps"]:
+        if "uses" in step:
+            assert re.search(r"@[0-9a-f]{40}$", step["uses"])
+        if step.get("uses", "").startswith("actions/checkout@"):
+            assert step["with"]["persist-credentials"] is False
+        assert "secrets." not in str(step)
+    command = next(step for step in job["steps"] if "--tls-startup" in step.get("run", ""))
+    assert command["working-directory"] == "repos/emulebb-build"
+    assert "probe-rust-android-guest-ci --image current --tls-startup" in command["run"]
+    assert "adb" not in command["run"] and "docker" not in command["run"]
+    steps = job["steps"]
+    select = next(step for step in steps if step.get("id") == "rust-source")
+    verify = next(step for step in steps if step.get("name") == "Verify exact clean Rust TLS source before execution")
+    checkout = next(step for step in steps if step.get("with", {}).get("repository") == "emulebb/emulebb-rust")
+    assert steps.index(select) < steps.index(checkout) < steps.index(verify) < steps.index(command)
+    for step in steps:
+        if step.get("uses", "").startswith(("actions/setup-python@", "docker/setup-docker-action@", "docker/setup-buildx-action@")):
+            assert steps.index(step) < steps.index(checkout)
+    assert verify["working-directory"] == "repos/emulebb-rust"
+    assert verify["env"] == {"EXPECTED_RUST_SHA": "${{ steps.rust-source.outputs.rust_sha }}"}
+    assert not any("run" in step for step in steps[steps.index(checkout) + 1:steps.index(verify)])
+    for trusted in (select, verify):
+        assert trusted["shell"] == "bash" and "${{" not in trusted["run"]
+        assert "if" not in trusted and not trusted.get("continue-on-error")
+    events = workflow.get("on", workflow.get(True))  # PyYAML's YAML 1.1 bool spelling.
+    inputs = events["workflow_dispatch"]["inputs"]
+    assert set(inputs) == {"rust_ref"}
+    assert inputs["rust_ref"]["type"] == "string" and inputs["rust_ref"]["required"] is True
+    baseline = "250c555b76650ad69fc546444a69f4b245b16d6e"
+    assert "default" not in inputs["rust_ref"]
+    assert f"rust_sha='{baseline}'" in select["run"]
+    assert select["env"] == {
+        "SOURCE_EVENT": "${{ github.event_name }}", "REQUESTED_RUST_SHA": "${{ inputs.rust_ref }}"}
+    upload = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
+    assert upload["if"] == "always()"
+    assert upload["with"]["retention-days"] == 14
+    paths = upload["with"]["path"].splitlines()
+    assert all(path.startswith("${{ runner.temp }}/emulebb-android-tls-out/reports/") for path in paths)
+    assert any(path.endswith("/tls-payload/manifest.json") for path in paths)
+    assert any(path.endswith("android-emulator-boot/*/validation.json") for path in paths)
+    assert not any(name in upload["with"]["path"] for name in ("guest/", "emulator.log", "home/", "*.so", "*-tests"))
+
+
+def _trusted_tls_steps():
+    import yaml
+
+    workflow = yaml.safe_load((_repo_root() / ".github/workflows/android-guest.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["tls-runtime"]["steps"]
+    return (next(step for step in steps if step.get("id") == "rust-source"),
+            next(step for step in steps if step.get("name") == "Verify exact clean Rust TLS source before execution"))
+
+
+def _native_bash() -> str:
+    if os.name == "nt":
+        # WHY: PATH's bash.exe can be the WSL launcher, which must not launch
+        # another OS or translate these Windows-only source/evidence paths.
+        git_exec = Path(subprocess.check_output(["git", "--exec-path"], text=True).strip())
+        bash = git_exec.parents[2] / "bin" / "bash.exe"
+        assert bash.is_file(), f"Git for Windows Bash is required: {bash}"
+        return str(bash)
+    bash = shutil.which("bash")
+    assert bash, "Native Bash is required for trusted workflow script tests"
+    return bash
+
+
+def _run_tls_script(script: str, cwd: Path, *, mock_remote: str | None = None, remote_exit: int = 0, **values: str):
+    env = {**os.environ, **values}
+    if mock_remote is not None:
+        commands = cwd / "commands"
+        commands.mkdir(exist_ok=True)
+        git = commands / "git"
+        git.write_text("#!/usr/bin/env bash\nset -euo pipefail\n"
+                       "printf '%s\\n' \"$*\" > \"$PWD/git-called\"\n"
+                       "[[ $# == 4 && $1 == ls-remote && $2 == --exit-code && "
+                       "$3 == https://github.com/emulebb/emulebb-rust.git && $4 == refs/heads/main ]] || exit 99\n"
+                       "printf '%s' \"$MOCK_GIT_OUTPUT\"\nexit \"$MOCK_GIT_EXIT\"\n", encoding="utf-8")
+        git.chmod(0o755)
+        env.update(MOCK_GIT_OUTPUT=mock_remote, MOCK_GIT_EXIT=str(remote_exit))
+        script = 'export PATH="$PWD/commands:$PATH"\n' + script
+    return subprocess.run([_native_bash(), "--noprofile", "--norc", "-c", script],
+                          cwd=cwd, env=env, capture_output=True, text=True, timeout=20)
+
+
+@pytest.mark.parametrize("requested", [
+    "", "main", "refs/heads/main", "a" * 39, "a" * 41, "A" * 40,
+    " " + "a" * 40, "a" * 40 + " ", "a" * 40 + "\n", "a" * 40 + "\nextra=bad",
+    "$(touch injected)", "`touch injected`", "a;touch injected", "../main",
+])
+def test_android_tls_manual_selector_rejects_nonexact_sha_before_checkout(tmp_path, requested):
+    select, _ = _trusted_tls_steps()
+    output = tmp_path / "step-output"
+    result = _run_tls_script(select["run"], tmp_path, SOURCE_EVENT="workflow_dispatch",
+                             REQUESTED_RUST_SHA=requested, GITHUB_OUTPUT=output.as_posix())
+    assert result.returncode != 0
+    assert not output.exists() and not (tmp_path / "injected").exists()
+
+
+@pytest.mark.parametrize("event", ["push", "pull_request"])
+def test_android_tls_automatic_selector_ignores_manual_data(tmp_path, event):
+    select, _ = _trusted_tls_steps()
+    output = tmp_path / "step-output"
+    result = _run_tls_script(select["run"], tmp_path, SOURCE_EVENT=event,
+                             REQUESTED_RUST_SHA="$(touch injected)", GITHUB_OUTPUT=output.as_posix(), mock_remote="untrusted")
+    assert result.returncode == 0, result.stderr
+    assert output.read_text() == "rust_sha=250c555b76650ad69fc546444a69f4b245b16d6e\n"
+    assert not (tmp_path / "injected").exists()
+    assert not (tmp_path / "git-called").exists()
+
+
+def test_android_tls_manual_selector_emits_independently_resolved_official_main(tmp_path):
+    select, _ = _trusted_tls_steps()
+    output = tmp_path / "step-output"
+    requested = "0123456789abcdef" * 2 + "01234567"
+    result = _run_tls_script(select["run"], tmp_path, SOURCE_EVENT="workflow_dispatch",
+                             REQUESTED_RUST_SHA=requested, GITHUB_OUTPUT=output.as_posix(),
+                             mock_remote=f"{requested}\trefs/heads/main\n")
+    assert result.returncode == 0, result.stderr
+    assert output.read_text() == f"rust_sha={requested}\n"
+    assert (tmp_path / "git-called").read_text().strip() == (
+        "ls-remote --exit-code https://github.com/emulebb/emulebb-rust.git refs/heads/main")
+
+
+@pytest.mark.parametrize("remote,exit_code", [
+    ("", 0), ("", 128), ("a" * 40 + "\trefs/heads/another", 0),
+    ("A" * 40 + "\trefs/heads/main", 0), ("a" * 39 + "\trefs/heads/main", 0),
+    ("a" * 40 + " refs/heads/main", 0), ("a" * 40 + "\trefs/heads/main extra", 0),
+    ("a" * 40 + "\\trefs/heads/main", 0),
+    ("a" * 40 + "\trefs/heads/main\n" + "b" * 40 + "\trefs/heads/main", 0),
+    ("b" * 40 + "\trefs/heads/main", 0), ("$(touch injected)\trefs/heads/main", 0),
+])
+def test_android_tls_manual_selector_rejects_unavailable_ambiguous_or_different_main(tmp_path, remote, exit_code):
+    select, _ = _trusted_tls_steps()
+    output = tmp_path / "step-output"
+    result = _run_tls_script(select["run"], tmp_path, SOURCE_EVENT="workflow_dispatch",
+                             REQUESTED_RUST_SHA="a" * 40, GITHUB_OUTPUT=output.as_posix(),
+                             mock_remote=remote, remote_exit=exit_code)
+    assert result.returncode != 0
+    assert not output.exists() and not (tmp_path / "injected").exists()
+
+
+def test_android_tls_actual_checkout_must_be_exact_and_clean(tmp_path):
+    _, verify = _trusted_tls_steps()
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
+
+    git("init", "--quiet")
+    git("config", "user.name", "Synthetic Test")
+    git("config", "user.email", "synthetic@example.invalid")
+    payload = tmp_path / "source.txt"
+    payload.write_text("clean\n", encoding="utf-8")
+    git("add", "source.txt")
+    git("commit", "--quiet", "-m", "Synthetic exact-source fixture")
+    sha = git("rev-parse", "HEAD")
+    assert _run_tls_script(verify["run"], tmp_path, EXPECTED_RUST_SHA=sha).returncode == 0
+    for wrong in ("0" * 40, "main", "$(touch injected)", ""):
+        assert _run_tls_script(verify["run"], tmp_path, EXPECTED_RUST_SHA=wrong).returncode != 0
+    assert not (tmp_path / "injected").exists()
+    payload.write_text("dirty\n", encoding="utf-8")
+    assert _run_tls_script(verify["run"], tmp_path, EXPECTED_RUST_SHA=sha).returncode != 0
+    git("checkout", "--", "source.txt")
+    (tmp_path / "unexpected.txt").write_text("untracked\n", encoding="utf-8")
+    assert _run_tls_script(verify["run"], tmp_path, EXPECTED_RUST_SHA=sha).returncode != 0
+    (tmp_path / "unexpected.txt").unlink()
+    # WHY: failed git-status output must not be mistaken for an empty clean
+    # tree when HEAD is still valid. Exercise the real Git failure boundary.
+    (tmp_path / ".git" / "index").write_bytes(b"invalid synthetic index")
+    assert git("rev-parse", "HEAD") == sha
+    assert subprocess.run(["git", "-C", str(tmp_path), "status", "--porcelain=v1"],
+                          capture_output=True, timeout=20).returncode != 0
+    assert _run_tls_script(verify["run"], tmp_path, EXPECTED_RUST_SHA=sha).returncode != 0
 
 
 def test_branch_check_leaves_concurrency_to_reusable_workflow() -> None:
