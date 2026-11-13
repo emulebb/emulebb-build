@@ -208,6 +208,7 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
             path = lambda item: "/output/" + item.relative_to(output).as_posix()
             env = {"HOME": path(home), "CARGO_HOME": path(cargo_home), "CARGO_TARGET_DIR": path(target),
                    "GRADLE_USER_HOME": path(home / "gradle"), "CARGO_BUILD_JOBS": "4",
+                   "RUSTUP_TOOLCHAIN": "1.98.1",
                    "MINIUPNP_ROOT": "/native/miniupnp", "PCPNATPMP_ROOT": "/native/pcpnatpmp",
                    "EMULEBB_SOURCE_REVISION": expected_source_sha, "EMULEBB_RELEASE_VERSION": release_version,
                    "EMULEBB_RELEASE_CHANNEL": channel}

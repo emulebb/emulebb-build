@@ -1,11 +1,18 @@
 """APK production must isolate signing secrets and preserve daemon build defaults."""
 import os
+import inspect
 from types import SimpleNamespace
 
 import pytest
 
 from emule_workspace import android_apk as apk
 from emule_workspace.android_validation import compiler_environment
+
+
+def test_readonly_apk_container_selects_installed_rust_toolchain_explicitly():
+    # The source toolchain file otherwise asks rustup to synchronize into the
+    # immutable image's /usr/local/rustup before Cargo can execute at all.
+    assert '"RUSTUP_TOOLCHAIN": "1.98.1"' in inspect.getsource(apk.package_apk)
 
 
 @pytest.mark.parametrize("version", ["9.5.1", "9.2.0"])
