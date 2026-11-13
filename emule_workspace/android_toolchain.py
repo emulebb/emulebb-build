@@ -71,6 +71,20 @@ def _fetch_inputs(inputs: dict, cache_name: str, schema: str) -> Path:
     return receipt
 
 
+def prepare_apk_toolchain(layout, *, wsl_distro: str = "Ubuntu") -> Path:
+    """Layer SDKmanager's registered metadata/licenses without changing CLI tools."""
+    from .linux_containers import LinuxDocker
+    base = prepare_toolchain(layout, wsl_distro=wsl_distro)
+    root = Path(__file__).resolve().parents[1]
+    cache = layout.output_root.resolve() / "cache/android-tool-inputs"
+    with LinuxDocker(wsl_distro) as docker:
+        context = docker.path(root)
+        docker.run("build", "--platform", "linux/amd64", "--build-context", f"android-inputs={docker.path(cache)}",
+            "--file", context + "/emule_workspace/release_assets/android/Dockerfile.apk",
+            "--tag", "local/emulebb-android-apk-toolchain:reviewed", context, timeout=1800)
+    return base
+
+
 def prepare_toolchain(layout, *, wsl_distro: str = "Ubuntu") -> Path:
     """Build and probe one reviewed native Android toolchain through Linux/WSL Docker."""
     from .config import resolve_required_workspace_roots

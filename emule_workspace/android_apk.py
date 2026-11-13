@@ -13,7 +13,7 @@ from uuid import uuid4
 from . import release
 from .android_inputs import tool_inputs
 from .android_package import identity
-from .android_toolchain import prepare_toolchain
+from .android_toolchain import prepare_apk_toolchain as prepare_toolchain
 from .android_validation import TARGETS, audit_android_elf, compiler_environment, _runtime_dependencies
 from .linux_containers import LinuxDocker, _builder_user, run_owned_container
 
@@ -55,7 +55,7 @@ def probe_gradle(layout, *, wsl_distro: str = "Ubuntu") -> Path:
             "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
             "--mount", f"type=bind,source={docker.path(output)},target=/output",
             "--env", "HOME=" + relative(home), "--env", "GRADLE_USER_HOME=" + relative(home / "gradle"),
-            "local/emulebb-android-toolchain:reviewed", "gradle", "--no-daemon", "--console=plain",
+            "local/emulebb-android-apk-toolchain:reviewed", "gradle", "--no-daemon", "--console=plain",
             "--project-dir", relative(project), "help"], root / "gradle.log", timeout=1200)
     return root / "gradle.log"
 
@@ -219,7 +219,7 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                     "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777", *mounts, *_container_environment(env),
                     "--workdir", "/source"]
-            image = "local/emulebb-android-toolchain:reviewed"
+            image = "local/emulebb-android-apk-toolchain:reviewed"
             def execute(label, command, *, extra=(), network="none", capture=False):
                 result = run_owned_container(docker, [*base, *extra, "--network", network, image, *command],
                     report_root / (label + ".log"), timeout=3600, capture=capture)
