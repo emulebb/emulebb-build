@@ -1111,7 +1111,7 @@ def _emulebb_rust_sbom_components(layout: WorkspaceLayout, rust_root: Path) -> l
         _repo_spdx_package(
             "eMuleBB libpcpnatpmp fork",
             pcpnatpmp_root,
-            declared_license="BSD-3-Clause",
+            declared_license="BSD-2-Clause",
         ),
     ]
 
