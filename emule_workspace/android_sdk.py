@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from .android_inputs import tool_inputs
-from .android_install import installation_layout
+from .android_install import _runtime_package_mode, installation_layout
 from .python_runtime import sha256
 
 SDK_ROLES = ("command-line-tools", "ndk", "build-tools", "platform", "platform-tools")
@@ -85,7 +85,40 @@ def register_sdk(cache: Path, tools: Path) -> dict:
     command = [str(tools / "bin/android"), "--no-metrics", "--sdk=" + str(tools / "sdk"),
                "sdk", "install", *(value.replace(";", "/") for value in package_ids(inputs).values())]
     subprocess.run(command, input="y\n" * 100, text=True, check=True, timeout=1200)
-    return verify_sdk_payloads(cache, tools, inputs)
+    verified = verify_sdk_payloads(cache, tools, inputs)
+    restore_sdk_modes(cache, tools, inputs)
+    return verified
+
+
+def restore_sdk_modes(cache: Path, tools: Path, inputs: dict) -> None:
+    """Restore reviewed Unix modes after the official CLI's byte-exact extraction."""
+    # WHY: SDK registration drops executable bits even though payload hashes
+    # match. Derive execute grants from pinned archives, never file extensions.
+    layout = installation_layout(inputs)
+    for role in SDK_ROLES:
+        item = inputs["assets"][role]
+        archive = cache / item["sha256"] / urlsplit(item["url"]).path.rsplit("/", 1)[-1]
+        archive_root, installed = layout[role]
+        root = tools / installed
+        directories = {root: 0o755}
+        with zipfile.ZipFile(archive) as source:
+            for member in source.infolist():
+                relative = PurePosixPath(member.filename).relative_to(archive_root)
+                target = root / relative
+                mode = member.external_attr >> 16
+                if target.is_symlink():
+                    continue
+                if member.is_dir() or str(relative) == ".":
+                    directories[target] = _runtime_package_mode(mode, directory=True)
+                else:
+                    target.chmod(_runtime_package_mode(mode, directory=False))
+                for parent in target.parents:
+                    if not parent.is_relative_to(root):
+                        break
+                    directories.setdefault(parent, 0o755)
+        for directory, mode in directories.items():
+            directory.chmod(mode)
+        (root / "package.xml").chmod(0o444)
 
 
 if __name__ == "__main__":

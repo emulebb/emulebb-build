@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import zipfile
 
 from .android_inputs import emulator_inputs, emulator_subset, tool_inputs
 from .android_install import emulator_layout
@@ -18,7 +19,7 @@ def _properties(path: Path) -> dict[str, str]:
             if "=" in line and not line.lstrip().startswith("#") for key, value in [line.split("=", 1)]}
 
 
-def probe() -> dict:
+def probe(*, apk: bool = False) -> dict:
     """Prove actual native execution; never claim APK or device qualification."""
     inputs = tool_inputs()
     if platform.system() != "Linux" or platform.machine() != "x86_64" or os.getuid() == 0:
@@ -42,7 +43,20 @@ def probe() -> dict:
     }
     ndk = root / "sdk/ndk" / inputs["assets"]["ndk"]["version"] / "toolchains/llvm/prebuilt/linux-x86_64/bin"
     for target in ("aarch64-linux-android", "x86_64-linux-android"):
-        commands[target] = ([str(ndk / (target + "28-clang")), "--version"], "clang version")
+        commands[target] = ([str(ndk / (target + ("34" if apk else "28") + "-clang")), "--version"], "clang version")
+    if apk:
+        build_tools = root / "sdk/build-tools" / inputs["assets"]["build-tools"]["version"]
+        source = Path.home() / "alignment-input.zip"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("probe.txt", "APK build-tool execution probe")
+        commands.update({
+            "aapt2": ([str(build_tools / "aapt2"), "version"], "Android Asset Packaging Tool"),
+            "apksigner": ([str(build_tools / "apksigner"), "version"], "."),
+            "zipalign": ([str(build_tools / "zipalign"), "-f", "-P", "16", "4", str(source),
+                          str(source.with_name("alignment-output.zip"))], ""),
+            "zipalign-check": ([str(build_tools / "zipalign"), "-c", "-P", "16", "4",
+                                str(source.with_name("alignment-output.zip"))], ""),
+        })
     versions = {}
     for name, (command, expected) in commands.items():
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -50,7 +64,7 @@ def probe() -> dict:
         if result.returncode or expected not in result.stdout or len(result.stdout) > 65536:
             raise RuntimeError(f"Unexpected Android tool version probe: {name}\n{result.stdout[:65536]}")
         versions[name] = result.stdout.strip()
-    return {"schema": "emulebb.android-toolchain-probe/1", "host": inputs["host"],
+    return {"schema": "emulebb.android-apk-toolchain-probe/1" if apk else "emulebb.android-toolchain-probe/1", "host": inputs["host"],
             "uid": os.getuid(), "gid": os.getgid(), "inputs": inputs,
             "commandLinePackageRevision": properties["Pkg.Revision"], "probes": versions}
 
@@ -117,8 +131,11 @@ def probe_emulator(*, require_kvm: bool = False) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--emulator", action="store_true")
+    parser.add_argument("--apk", action="store_true")
     parser.add_argument("--require-kvm", action="store_true")
     arguments = parser.parse_args()
+    if arguments.apk and arguments.emulator:
+        parser.error("--apk and --emulator are mutually exclusive")
     if arguments.require_kvm and not arguments.emulator:
         parser.error("--require-kvm requires --emulator")
-    print(json.dumps(probe_emulator(require_kvm=arguments.require_kvm) if arguments.emulator else probe(), sort_keys=True))
+    print(json.dumps(probe_emulator(require_kvm=arguments.require_kvm) if arguments.emulator else probe(apk=arguments.apk), sort_keys=True))

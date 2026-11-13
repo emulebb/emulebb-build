@@ -62,6 +62,27 @@ def test_failed_version_probe_retains_diagnostic(environment, monkeypatch, exit_
     assert output in str(failure.value)
 
 
+def test_apk_probe_executes_api34_compilers_and_packaging_tools_offline(environment, monkeypatch):
+    commands = []
+    def execute(command, **kwargs):
+        commands.append(command)
+        name = Path(command[0]).name
+        outputs = {"java": environment["assets"]["jdk"]["version"].split("+")[0],
+                   "gradle": "Gradle " + environment["assets"]["gradle"]["version"],
+                   "android": environment["assets"]["android-cli"]["version"],
+                   "adb": environment["assets"]["platform-tools"]["version"],
+                   "aapt2": "Android Asset Packaging Tool (aapt) 2", "apksigner": "0.9", "zipalign": ""}
+        return subprocess.CompletedProcess(command, 0, outputs.get(name, "clang version"))
+    monkeypatch.setattr(probe.subprocess, "run", execute)
+    result = probe.probe(apk=True)
+    assert result["schema"] == "emulebb.android-apk-toolchain-probe/1"
+    assert {Path(command[0]).name for command in commands} >= {
+        "aarch64-linux-android34-clang", "x86_64-linux-android34-clang", "aapt2", "apksigner", "zipalign"}
+    alignment = [command for command in commands if Path(command[0]).name == "zipalign"]
+    assert alignment[0][1:5] == ["-f", "-P", "16", "4"]
+    assert alignment[1][1:5] == ["-c", "-P", "16", "4"]
+
+
 @pytest.fixture
 def emulator_environment(environment, monkeypatch):
     inputs = probe.emulator_subset(probe.emulator_inputs(), ("min", "current"))

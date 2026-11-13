@@ -18,7 +18,12 @@ def installed(tmp_path, monkeypatch):
     for role in roles:
         archive = tmp_path / (role + ".zip")
         with zipfile.ZipFile(archive, "w") as stream:
-            stream.writestr(role + "/tool.bin", b"synthetic pinned payload")
+            directory = zipfile.ZipInfo(role + "/")
+            directory.external_attr = 0o40700 << 16
+            stream.writestr(directory, b"")
+            member = zipfile.ZipInfo(role + "/tool.bin")
+            member.external_attr = (0o100700 if role == "ndk" else 0o100600) << 16
+            stream.writestr(member, b"synthetic pinned payload")
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         inputs["assets"][role].update(sha256=digest, url="https://example.invalid/" + archive.name)
         target = cache / digest / archive.name
@@ -48,6 +53,30 @@ def test_registration_uses_pinned_cli_without_sdkmanager_bootstrap(installed, mo
     assert "--no-metrics" in calls[0] and "sdk" in calls[0] and "install" in calls[0]
     assert not any("sdkmanager" in argument for argument in calls[0])
     assert "platforms/android-37.2" in calls[0]
+
+
+def test_sdk_registration_restores_only_reviewed_execute_bits_after_byte_verification(installed, monkeypatch):
+    cache, tools, inputs = installed
+    monkeypatch.setattr(sdk, "tool_inputs", lambda: inputs)
+    monkeypatch.setattr(sdk.subprocess, "run", lambda *args, **kwargs: None)
+    modes = {}
+    monkeypatch.setattr(Path, "chmod", lambda path, mode: modes.update({path: mode}))
+    sdk.register_sdk(cache, tools)
+    assert modes[tools / "sdk/ndk/tool.bin"] == 0o755
+    assert modes[tools / "sdk/platform/tool.bin"] == 0o644
+    for role in sdk.SDK_ROLES:
+        assert modes[tools / "sdk" / role] == 0o755
+        assert modes[tools / "sdk" / role / "package.xml"] == 0o444
+
+
+def test_unreviewed_sdk_payload_never_receives_mode_repair(installed, monkeypatch):
+    cache, tools, inputs = installed
+    (tools / "sdk/ndk/tool.bin").write_bytes(b"unreviewed compiler")
+    monkeypatch.setattr(sdk, "tool_inputs", lambda: inputs)
+    monkeypatch.setattr(sdk.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(Path, "chmod", lambda *args: pytest.fail("repair before payload verification"))
+    with pytest.raises(RuntimeError, match="differs from pinned archive"):
+        sdk.register_sdk(cache, tools)
 
 
 @pytest.mark.parametrize("change", ["changed", "extra", "missing", "metadata", "archive"])

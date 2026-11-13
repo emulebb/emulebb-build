@@ -148,6 +148,27 @@ def test_unknown_or_duplicate_image_selection_fails_before_downloading(monkeypat
     download.assert_not_called()
 
 
+def test_apk_image_is_probed_after_registration_as_nonroot_and_readonly(tmp_path, monkeypatch):
+    from emule_workspace import linux_containers
+    base = Mock()
+    monkeypatch.setattr(android, "prepare_toolchain", base)
+    docker = Mock()
+    docker.__enter__ = Mock(return_value=docker)
+    docker.__exit__ = Mock(return_value=False)
+    docker.path.side_effect = str
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda distro: docker)
+    monkeypatch.setattr(linux_containers, "_builder_user", lambda docker: "1000:1000")
+    def execute(docker, arguments, log, **kwargs):
+        assert arguments[-1] == "--apk"
+        assert "local/emulebb-android-apk-toolchain:reviewed" in arguments
+        assert "--read-only" in arguments and "none" in arguments and "1000:1000" in arguments
+        log.write_text(json.dumps({"schema": "emulebb.android-apk-toolchain-probe/1", "inputs": android.tool_inputs()}))
+    monkeypatch.setattr(linux_containers, "run_owned_container", execute)
+    report = android.prepare_apk_toolchain(SimpleNamespace(output_root=tmp_path))
+    assert json.loads(report.read_text())["schema"] == "emulebb.android-apk-toolchain-probe/1"
+    base.assert_called_once()
+
+
 def test_emulator_preparation_never_fetches_or_prepares_compiler_tools(tmp_path, monkeypatch):
     from emule_workspace import linux_containers
 

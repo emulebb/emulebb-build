@@ -73,16 +73,32 @@ def _fetch_inputs(inputs: dict, cache_name: str, schema: str) -> Path:
 
 def prepare_apk_toolchain(layout, *, wsl_distro: str = "Ubuntu") -> Path:
     """Layer SDKmanager's registered metadata/licenses without changing CLI tools."""
-    from .linux_containers import LinuxDocker
-    base = prepare_toolchain(layout, wsl_distro=wsl_distro)
+    from .linux_containers import LinuxDocker, _builder_user, run_owned_container
+    prepare_toolchain(layout, wsl_distro=wsl_distro)
     root = Path(__file__).resolve().parents[1]
     cache = layout.output_root.resolve() / "cache/android-tool-inputs"
+    report = layout.output_root.resolve() / "reports/android-apk-toolchain" / uuid4().hex / "toolchain-probe.json"
+    report.parent.mkdir(parents=True)
+    log = report.with_suffix(".log")
+    image = "local/emulebb-android-apk-toolchain:reviewed"
     with LinuxDocker(wsl_distro) as docker:
         context = docker.path(root)
         docker.run("build", "--platform", "linux/amd64", "--build-context", f"android-inputs={docker.path(cache)}",
             "--file", context + "/emule_workspace/release_assets/android/Dockerfile.apk",
-            "--tag", "local/emulebb-android-apk-toolchain:reviewed", context, timeout=1800)
-    return base
+            "--tag", image, context, timeout=1800)
+        user = _builder_user(docker)
+        if user.split(":")[0] == "0":
+            raise RuntimeError("Run APK tool validation as a non-root Linux/WSL operator")
+        run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", user,
+            "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
+            "--env", "HOME=/tmp/home", "--env", "GRADLE_USER_HOME=/tmp/gradle",
+            image, "python3", "-B", "-m", "emule_workspace.android_probe", "--apk"], log, timeout=300)
+    probe = json.loads(log.read_text(encoding="utf-8"))
+    if probe.get("schema") != "emulebb.android-apk-toolchain-probe/1" or probe.get("inputs") != tool_inputs():
+        raise RuntimeError("APK toolchain probe returned inconsistent input identity")
+    report.write_text(json.dumps(probe, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
 
 
 def prepare_toolchain(layout, *, wsl_distro: str = "Ubuntu") -> Path:
