@@ -37,6 +37,19 @@ def test_sdkmanager_metadata_is_accepted_when_all_pinned_payloads_match(installe
     assert all(value["payloadFiles"] == 1 for value in result.values())
 
 
+def test_registration_uses_pinned_cli_without_sdkmanager_bootstrap(installed, monkeypatch):
+    cache, tools, inputs = installed
+    monkeypatch.setattr(sdk, "tool_inputs", lambda: inputs)
+    calls = []
+    monkeypatch.setattr(sdk.subprocess, "run", lambda command, **kwargs: calls.append(command))
+    sdk.register_sdk(cache, tools)
+    assert len(calls) == 1
+    assert calls[0][0] == str(tools / "bin/android")
+    assert "--no-metrics" in calls[0] and "sdk" in calls[0] and "install" in calls[0]
+    assert not any("sdkmanager" in argument for argument in calls[0])
+    assert "platforms/android-37.2" in calls[0]
+
+
 @pytest.mark.parametrize("change", ["changed", "extra", "missing", "metadata", "archive"])
 def test_sdkmanager_updates_or_unreviewed_files_fail_closed(installed, change):
     cache, tools, inputs = installed

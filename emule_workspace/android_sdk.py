@@ -77,12 +77,14 @@ def verify_sdk_payloads(cache: Path, tools: Path, inputs: dict) -> dict:
 
 
 def register_sdk(cache: Path, tools: Path) -> dict:
-    """Run real SDK license acceptance/registration only while building the image."""
+    """Register via the pinned official CLI only while building the APK image."""
     inputs = tool_inputs()
-    manager = tools / "sdk/cmdline-tools" / inputs["assets"]["command-line-tools"]["version"] / "bin/sdkmanager"
-    command = [str(manager), "--sdk_root=" + str(tools / "sdk")]
-    subprocess.run([*command, "--licenses"], input="y\n" * 100, text=True, check=True, timeout=600)
-    subprocess.run([*command, "--install", *package_ids(inputs).values()], check=True, timeout=1200)
+    # WHY: cmdline-tools 23's sdkmanager shim downloads its own unpinned CLI.
+    # The separately checksum-pinned CLI is already installed by this image's
+    # base owner. Its sdk install command performs genuine package registration.
+    command = [str(tools / "bin/android"), "--no-metrics", "--sdk=" + str(tools / "sdk"),
+               "sdk", "install", *(value.replace(";", "/") for value in package_ids(inputs).values())]
+    subprocess.run(command, input="y\n" * 100, text=True, check=True, timeout=1200)
     return verify_sdk_payloads(cache, tools, inputs)
 
 
