@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -685,6 +686,16 @@ def prepare_rust_android_apk_gradle(*, workspace_options, layout) -> None:
     def probe(**kwargs):
         print(probe_gradle(kwargs["layout"]))
     _locked("prepare-rust-android-apk-gradle", probe)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("provision-rust-android-signing")
+@_common_options
+def provision_rust_android_signing(*, workspace_options, layout) -> None:
+    """Create retained release key once and configure the four GitHub signing secrets."""
+    from .android_signing import provision_signing
+    def provision(**kwargs):
+        print(json.dumps(provision_signing(kwargs["layout"]), sort_keys=True))
+    _locked("provision-rust-android-signing", provision)(workspace_options=workspace_options, layout=layout)
 
 
 @main.command("package-rust-android-apk")
