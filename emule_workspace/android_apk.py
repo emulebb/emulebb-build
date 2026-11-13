@@ -13,6 +13,8 @@ from uuid import uuid4
 from . import release
 from .android_inputs import tool_inputs
 from .android_package import identity
+from .android_apk_notices import (audit_packaged_notices, notice_inventory, spdx_components,
+                                 stage_runtime_notices, stage_source_notices)
 from .android_toolchain import prepare_apk_toolchain as prepare_toolchain
 from .android_validation import TARGETS, audit_android_elf, compiler_environment, _runtime_dependencies
 from .linux_containers import LinuxDocker, _builder_user, run_owned_container
@@ -259,9 +261,8 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
             native.mkdir()
             notices = scratch / "notices"
             notices.mkdir()
-            shutil.copy2(rust / "LICENSE", notices / "eMuleBB-LICENSE")
-            shutil.copy2(mini / "miniupnpc/LICENSE", notices / "MiniUPnPc-LICENSE")
-            shutil.copy2(pcp / "COPYING", notices / "libpcpnatpmp-COPYING")
+            stage_source_notices(rust, mini, pcp, notices)
+            runtime_inventory = scratch / "runtime-inventory"
             verification = ["--write-verification-metadata", "sha256"] if author_gradle_verification else ["--dependency-verification", "strict"]
             def gradle(task, label):
                 try:
@@ -270,12 +271,17 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                         "-PandroidBuildRoot=" + path(scratch / "gradle-build"),
                         "-PemulebbNativeDir=" + path(native), "-PemulebbWebuiDir=" + path(webui),
                         "-PemulebbNoticesDir=" + path(notices),
+                        "-PemulebbRuntimeInventoryDir=" + path(runtime_inventory),
+                        "-PemulebbRuntimeVariant=" + ("debug" if debug else "release"),
                         "-PemulebbVersionName=" + release_version, "-PemulebbVersionCode=" + str(version_code),
                         ":app:" + task], network="bridge")
                 finally:
                     metadata = project / "gradle/verification-metadata.xml"
                     if author_gradle_verification and metadata.is_file():
                         shutil.copy2(metadata, report_root / "verification-metadata.xml")
+                    inventory_report = runtime_inventory / "report.json"
+                    if task == "emulebbRuntimeInventory" and inventory_report.is_file():
+                        shutil.copy2(inventory_report, report_root / "runtime-classpath-inputs.json")
                     if task.startswith("lint"):
                         for lint_report in (scratch / "gradle-build/app/reports").glob("lint-results-*"):
                             if lint_report.is_file() and not lint_report.is_symlink():
@@ -290,6 +296,10 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 report.update(status="passed", scope="kotlin-compilation", applicationQualification="not-run")
                 return report_root / "build.json"
             flavor = "debug" if debug else "release"
+            gradle("emulebbRuntimeInventory", "runtime-classpath")
+            runtime = stage_runtime_notices(runtime_inventory, notices, output / "cache/android-apk-notices", variant=flavor)
+            report["runtimeClasspath"] = runtime
+            _write_json(report_root / "runtime-classpath.json", runtime)
             gradle("lintDebug" if debug else "lintRelease", "gradle-lint")
             lint_xml = report_root / "lint" / ("lint-results-" + flavor + ".xml")
             if not lint_xml.is_file():
@@ -353,6 +363,8 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
             execute("zip-alignment", [tools + "/zipalign", "-c", "-P", "16", "4", path(signed)])
             badging = execute("apk-manifest", [tools + "/aapt2", "dump", "badging", path(signed)], capture=True)
             audit_badging(badging, version=release_version, version_code=version_code)
+            license_assets = notice_inventory(notices)
+            audit_packaged_notices(signed, license_assets)
             sbom_root = scratch / "sbom-payload"
             sbom_root.mkdir()
             shutil.copy2(signed, sbom_root / signed.name)
@@ -362,7 +374,7 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 package_name="emulebb-rust-android-universal", package_version=release_version,
                 package_license="GPL-2.0-only", package_comment="Experimental Android application; device qualification remains separate.",
                 package_root=sbom_root, release_root=root,
-                components=release._emulebb_rust_sbom_components(layout, rust))
+                components=[*release._emulebb_rust_sbom_components(layout, rust), *spdx_components(runtime)])
             _write_json(root / names["sbom"], sbom)
             manifest = {"schema": "emulebb.android.apk-package/1", "status": "passed",
                 "applicationId": APPLICATION_ID, "minSdk": MIN_SDK, "targetSdk": TARGET_SDK,
@@ -371,7 +383,7 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 "version": release_version, "channel": channel}, "signerSha256": signer,
                 "runtimeExecution": "not-run", "abis": list(TARGETS), "toolInputs": tool_inputs(),
                 "apk": {"path": signed.name, "sha256": release._sha256(signed), "sizeBytes": signed.stat().st_size},
-                "native": report["native"]}
+                "native": report["native"], "runtimeClasspath": runtime, "notices": license_assets}
             manifest.update(sbom=names["sbom"], sbomSha256=release._sha256(root / names["sbom"]))
             release._assert_emulebb_rust_package_provenance(layout, rust, provenance)
             _write_json(root / names["manifest"], manifest)

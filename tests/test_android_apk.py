@@ -222,12 +222,15 @@ def test_gradle_preflight_never_compiles_native_or_claims_an_apk(tmp_path, monke
     rust, output = tmp_path / "rust", tmp_path / "output"
     (rust / "android").mkdir(parents=True)
     (rust / "android/build.gradle.kts").write_text("synthetic staged Gradle source")
-    (rust / "LICENSE").write_text("synthetic license")
+    license_text = "Synthetic License\nCopyright Synthetic Authors\n" + "redistribution permitted " * 4
+    (rust / "LICENSE").write_text(license_text)
     mini, pcp = tmp_path / "mini", tmp_path / "pcp"
     (mini / "miniupnpc").mkdir(parents=True)
     pcp.mkdir()
-    (mini / "miniupnpc/LICENSE").write_text("synthetic license")
-    (pcp / "COPYING").write_text("synthetic license")
+    (mini / "LICENSE").write_text(license_text)
+    (mini / "miniupnpc/LICENSE").write_text("../LICENSE")
+    (pcp / "COPYING").write_text(license_text)
+    monkeypatch.setattr(apk, "stage_runtime_notices", lambda *args, **kwargs: {"components": []})
     source = "a" * 40
     version = "0.1.0-beta.2.nightly.20261113.gaaaaaaa"
     monkeypatch.setattr(apk.release, "_emulebb_rust_package_provenance", lambda *_args:
@@ -255,7 +258,7 @@ def test_gradle_preflight_never_compiles_native_or_claims_an_apk(tmp_path, monke
         calls.append(arguments)
         assert "cargo" not in arguments
         task = arguments[-1].removeprefix(":app:")
-        assert task in {"compileDebugKotlin", "lintDebug"}
+        assert task in {"compileDebugKotlin", "lintDebug", "emulebbRuntimeInventory"}
         if task == "lintDebug":
             build_root = Path(next(argument.split("=", 1)[1] for argument in arguments
                                    if argument.startswith("-PandroidBuildRoot=")))
@@ -282,5 +285,5 @@ def test_gradle_preflight_never_compiles_native_or_claims_an_apk(tmp_path, monke
     if scope == "lint":
         retained = list((output / "reports").rglob("lint-results-debug.xml"))
         assert len(retained) == 1 and retained[0].read_text() == '<issues format="6"/>'
-    assert len(calls) == (1 if scope == "kotlin" else 2)
+    assert len(calls) == (1 if scope == "kotlin" else 3)
     assert not list(output.rglob("*.apk"))
