@@ -73,6 +73,22 @@ def _read(path: Path) -> dict:
 
 
 @dataclass(frozen=True)
+class ApkSourceContext:
+    """APK producers and validators have explicit authorities beside native pins."""
+
+    build_sha: str
+    harness_sha: str
+
+    def checked(self) -> ApkSourceContext:
+        if any(not isinstance(value, str) or SHA.fullmatch(value) is None for value in (self.build_sha, self.harness_sha)):
+            raise RuntimeError("APK selection requires exact producer and Harness revisions")
+        return self
+
+    def record(self) -> dict[str, str]:
+        return {"emulebbBuild": self.build_sha, "emulebbBuildTests": self.harness_sha}
+
+
+@dataclass(frozen=True)
 class CandidateContext:
     """Expected caller-owned identities, never identities inferred from payloads."""
 
@@ -81,6 +97,10 @@ class CandidateContext:
     source: dict[str, str]
     workflow: dict[str, str]
     platform_profile: str = "full"
+    apk_sources: ApkSourceContext | None = None
+    apk_signer_sha256: str | None = None
+    release_validator_build_sha: str | None = None
+    apk_harness_root: Path | None = None
 
     def checked(self) -> CandidateContext:
         if not isinstance(self.version, str) or not _is_release_version(self.version):
@@ -105,6 +125,21 @@ class CandidateContext:
             raise RuntimeError("Candidate requires an exact repository and workflow revision")
         _counter(self.workflow["runId"], "GitHub run ID")
         _counter(self.workflow["runAttempt"], "GitHub run attempt")
+        if self.release_validator_build_sha is not None and (
+                not isinstance(self.release_validator_build_sha, str) or SHA.fullmatch(self.release_validator_build_sha) is None):
+            raise RuntimeError("Candidate reader requires an explicit full Build revision")
+        if self.apk_sources is None:
+            if self.apk_signer_sha256 is not None or self.apk_harness_root is not None:
+                raise RuntimeError("APK signer and Harness require an explicit APK source context")
+        else:
+            if not isinstance(self.apk_sources, ApkSourceContext):
+                raise RuntimeError("APK source authority must be typed caller input")
+            self.apk_sources.checked()
+            if (self.channel != "nightly" or self.platform_profile != "full"
+                    or self.release_validator_build_sha is None
+                    or not isinstance(self.apk_signer_sha256, str) or HASH.fullmatch(self.apk_signer_sha256) is None
+                    or not isinstance(self.apk_harness_root, Path) or not self.apk_harness_root.is_absolute()):
+                raise RuntimeError("APK selection requires nightly/full scope, trusted signer, reader and Harness checkout")
         return self
 
     @property
@@ -114,6 +149,36 @@ class CandidateContext:
     @property
     def materials(self) -> dict[str, str]:
         return {name: value for name, value in self.source.items() if name != "emulebbBuildTests"}
+
+    @property
+    def apk_materials(self) -> dict[str, str]:
+        if self.apk_sources is None:
+            raise RuntimeError("APK materials require explicit APK source authority")
+        return {**self.materials, "emulebbBuild": self.apk_sources.build_sha}
+
+
+def _authority_record(context: CandidateContext) -> dict:
+    result = {}
+    if context.release_validator_build_sha is not None:
+        result["releaseValidatorBuild"] = context.release_validator_build_sha
+    if context.apk_sources is not None:
+        result.update(apkSources=context.apk_sources.record(), apkSignerSha256=context.apk_signer_sha256)
+    return result
+
+
+def _checked_checkout(root: Path, revision: str, label: str) -> Path:
+    from .git import git_output
+    root = root.resolve()
+    if (Path(git_output(root, "rev-parse", "--show-toplevel").strip()).resolve() != root
+            or git_output(root, "rev-parse", "HEAD").strip() != revision
+            or git_output(root, "status", "--porcelain", "--untracked-files=all").strip()):
+        raise RuntimeError(label + " requires its clean, explicitly selected source revision")
+    return root
+
+
+def _checked_reader(context: CandidateContext) -> None:
+    if context.release_validator_build_sha is not None:
+        _checked_checkout(Path(__file__).resolve().parents[1], context.release_validator_build_sha, "Release reader")
 
 
 def _hosted(data: dict, context: CandidateContext, label: str) -> int:
@@ -169,6 +234,9 @@ def public_names(context: CandidateContext) -> set[str]:
     if context.channel == "nightly":
         for abi in TARGETS:
             names.update(android_package.names(context.version, abi).values())
+    if context.apk_sources is not None:
+        from .android_apk import public_names as apk_names
+        names.update(apk_names(context.version).values())
     return names
 
 
@@ -531,6 +599,7 @@ def candidate_manifest(*, release_dir: Path, archives_dir: Path, context: Candid
                        archive_identity: ArchiveIdentity, existing_manifest: bool = False) -> dict:
     """Validate all public evidence and actual OCI bytes against caller identities."""
     context.checked()
+    _checked_reader(context)
     names = public_names(context)
     manifest = candidate_path(release_dir, context)
     _inventory(release_dir, names | ({manifest.name} if existing_manifest else set()))
@@ -544,6 +613,10 @@ def candidate_manifest(*, release_dir: Path, archives_dir: Path, context: Candid
             "packageSmoke": smoke, "images": images, "artifacts": _records(release_dir, names)}
     if context.channel == "nightly":
         result["experimentalAndroid"] = _android_packages(release_dir, context)
+    result.update(_authority_record(context))
+    if context.apk_sources is not None:
+        from .android_apk_candidate import verify_apk
+        result["experimentalAndroidApk"] = verify_apk(release_dir, context)
     return result
 
 
@@ -560,9 +633,12 @@ def write_candidate(*, release_dir: Path, archives_dir: Path, context: Candidate
 
 def _original_context(saved: dict, context: CandidateContext) -> CandidateContext:
     context.checked()
+    _checked_reader(context)
     _fields(saved, {"formatVersion": 4, "releaseVersion": context.version,
                     "channel": context.channel, "platformProfile": context.platform_profile}, "Saved candidate")
     _same(saved.get("source"), context.source, "Saved candidate source")
+    for key in ("releaseValidatorBuild", "apkSources", "apkSignerSha256"):
+        _same(saved.get(key), _authority_record(context).get(key), "Saved candidate " + key)
     workflow = _object(saved.get("workflow"), "Saved candidate workflow")
     _hosted({"origin": "github-actions", "workflow": workflow}, context, "Saved candidate")
     return replace(context, workflow=workflow)

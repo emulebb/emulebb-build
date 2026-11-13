@@ -668,15 +668,21 @@ def package_rust_android_ci(*, abi: str, release_version: str, channel: str, exp
 @click.option("--expected-source-sha", required=True)
 @click.option("--expected-cert-sha256", required=True)
 @click.option("--version-code", required=True, type=click.IntRange(1, 2_100_000_000))
+@click.option("--github-output", type=click.Path(path_type=Path, dir_okay=False))
 def package_rust_android_apk_ci(*, release_version: str, channel: str,
-                               expected_source_sha: str, expected_cert_sha256: str, version_code: int) -> None:
+                               expected_source_sha: str, expected_cert_sha256: str, version_code: int,
+                               github_output: Path | None) -> None:
     """Build and sign the source-bound universal Android application."""
-    from .android_apk import package_apk
+    from .android_apk import package_apk, write_github_outputs
     options, layout = _android_ci_layout()
     def package(**kwargs):
-        print(package_apk(kwargs["layout"], release_version=release_version, channel=channel,
+        artifact = package_apk(kwargs["layout"], release_version=release_version, channel=channel,
               expected_source_sha=expected_source_sha, expected_cert_sha256=expected_cert_sha256,
-              version_code=version_code))
+              version_code=version_code)
+        if github_output is not None:
+            write_github_outputs(artifact, github_output, version=release_version,
+                                 source_sha=expected_source_sha, signer_sha256=expected_cert_sha256)
+        print(artifact)
     _locked("package-rust-android-apk-ci", package)(workspace_options=options, layout=layout)
 
 

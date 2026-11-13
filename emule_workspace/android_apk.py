@@ -71,6 +71,26 @@ def public_names(version: str) -> dict[str, str]:
             "sbom": stem + ".sbom.spdx.json", "proof": stem + "-apk-lifecycle.json"}
 
 
+def write_github_outputs(apk: Path, destination: Path, *, version: str, source_sha: str, signer_sha256: str) -> None:
+    """Expose only a completed production artifact's verified paths and identities."""
+    names = public_names(version)
+    root = apk.parent
+    manifest = root / names["manifest"]
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    release._assert_emulebb_rust_hosted_artifact(data)
+    if (apk.name != names["apk"] or data.get("status") != "passed" or data.get("debug") is not False
+            or data.get("buildIdentity") != {"sourceRevision": source_sha, "version": version, "channel": "nightly"}
+            or data.get("signerSha256") != signer_sha256 or data.get("apk", {}).get("sha256") != release._sha256(apk)
+            or data.get("sbomSha256") != release._sha256(root / names["sbom"])):
+        raise RuntimeError("GitHub APK outputs require the exact verified production package")
+    outputs = {"apk_path": str(apk), "manifest_path": str(manifest), "manifest_sha256": release._sha256(manifest),
+               "sbom_path": str(root / names["sbom"]), "apk_sha256": data["apk"]["sha256"], "signer_sha256": signer_sha256}
+    if any("\n" in value or "\r" in value for value in outputs.values()):
+        raise RuntimeError("GitHub APK output values must be single-line paths or identities")
+    with destination.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.writelines(name + "=" + value + "\n" for name, value in outputs.items())
+
+
 def signing_inputs(environment: dict[str, str]) -> tuple[Path, str]:
     """Fail before compilation when release signing is not configured."""
     if any(not environment.get(name) for name in SIGNING_ENV):
@@ -375,8 +395,15 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 package_license="GPL-2.0-only", package_comment="Experimental Android application; device qualification remains separate.",
                 package_root=sbom_root, release_root=root,
                 components=[*release._emulebb_rust_sbom_components(layout, rust), *spdx_components(runtime)])
+            if any(report["native"][abi]["runtimeDependencies"]["bundled"] for abi in TARGETS):
+                component = release._component_spdx_package(name="Android NDK libc++ runtime",
+                    declared_license="Apache-2.0 WITH LLVM-exception", version=tool_inputs()["assets"]["ndk"]["version"],
+                    comment="Pinned Android NDK archive; exact per-ABI bytes and NOTICE are bound in the APK manifest.")
+                sbom["packages"].append(component)
+                sbom["relationships"].append({"spdxElementId": "SPDXRef-Package", "relationshipType": "DEPENDS_ON",
+                                               "relatedSpdxElement": component["SPDXID"]})
             _write_json(root / names["sbom"], sbom)
-            manifest = {"schema": "emulebb.android.apk-package/1", "status": "passed",
+            manifest = {**provenance, "schema": "emulebb.android.apk-package/1", "status": "passed",
                 "applicationId": APPLICATION_ID, "minSdk": MIN_SDK, "targetSdk": TARGET_SDK,
                 "versionCode": version_code, "experimental": True, "debug": debug,
                 "source": provenance["source"], "buildIdentity": {"sourceRevision": expected_source_sha,
