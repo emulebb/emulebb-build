@@ -338,7 +338,9 @@ def _kvm_group(docker) -> str:
     return group
 
 
-def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = frozenset()) -> dict:
+def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = frozenset(),
+                           apk_failure_stages: frozenset[str] = frozenset(),
+                           apk_failure_codes: frozenset[str] = frozenset()) -> dict:
     """Allowlist guest phases and OS facts; never publish private log text."""
     path = directory / "guest/report.json"
     try:
@@ -439,7 +441,7 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
                     safe_startup[key] = startup[key]
             public_progress["startupFailure"] = safe_startup
         value["tlsProgress"] = public_progress
-    if isinstance(guest.get("property"), str) and guest["property"] in properties:
+    if phase in {"guest-properties", "guest-validation"} and isinstance(guest.get("property"), str) and guest["property"] in properties:
         value["property"] = guest["property"]
     observed = guest.get("observedGuest")
     if isinstance(observed, dict):
@@ -470,6 +472,21 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
                             and item["name"] in apk_case_names and item.get("status") == "passed" for item in cases)
                     and len({item["name"] for item in cases}) == len(cases)):
                 public["completedCases"] = [item["name"] for item in cases]
+            failure = result.get("failure")
+            if (isinstance(failure, dict) and isinstance(failure.get("stage"), str)
+                    and failure["stage"] in apk_failure_stages and isinstance(failure.get("code"), str)
+                    and failure["code"] in apk_failure_codes):
+                safe_failure = {key: failure[key] for key in ("stage", "code")}
+                if isinstance(failure.get("servicePhase"), str) and failure["servicePhase"] in {
+                        "Stopped", "Starting", "Running", "Stopping", "Failed"}:
+                    safe_failure["servicePhase"] = failure["servicePhase"]
+                controls = failure.get("controls")
+                if isinstance(controls, dict):
+                    safe_failure["controls"] = {name: {key: control[key] for key in ("present", "enabled")}
+                        for name in ("service_status", "api_key", "resume_on_boot")
+                        if isinstance(control := controls.get(name), dict)
+                        and all(type(control.get(key)) is bool for key in ("present", "enabled"))}
+                public["failure"] = safe_failure
             value["apkProgress"] = public
     return value
 
@@ -568,9 +585,13 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
     if tls_startup:
         value["tls"] = {"status": "failed", "payloadManifestSha256": payload_identity, "capacityBefore": capacity}
     apk_case_names = frozenset()
+    apk_failure_stages, apk_failure_codes = frozenset(), frozenset()
     if apk_payload is not None:
         from .android_apk_candidate import apk_contract
-        apk_case_names = frozenset(apk_contract(apk_payload["context"])["required_apk_cases"](api))
+        contract = apk_contract(apk_payload["context"])
+        apk_case_names = frozenset(contract["required_apk_cases"](api))
+        apk_failure_stages = contract.get("APK_LIFECYCLE_STAGES", frozenset())
+        apk_failure_codes = contract.get("APK_LIFECYCLE_FAILURE_CODES", frozenset())
         metadata = apk_payload["metadata"]
         value.update(scope="apk-lifecycle", applicationQualification="apk-lifecycle", apkSha256=metadata["apk"]["sha256"],
             apkManifestSha256=apk_payload["manifestSha256"], signerSha256=metadata["signerSha256"],
@@ -672,7 +693,8 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         value.update(status="passed", guest=expected, kvm=True)
     except BaseException as error:
         value.update(status="failed", failureType=type(error).__name__,
-                     failureDetails=_guest_failure_details(directory, apk_case_names=apk_case_names))
+                     failureDetails=_guest_failure_details(directory, apk_case_names=apk_case_names,
+                         apk_failure_stages=apk_failure_stages, apk_failure_codes=apk_failure_codes))
         print(json.dumps({"failureDetails": value["failureDetails"]}, sort_keys=True))
         raise
     finally:

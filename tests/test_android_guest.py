@@ -233,6 +233,33 @@ def test_apk_failure_progress_projects_only_source_owned_completed_cases(tmp_pat
     assert "synthetic-private" not in json.dumps(result)
 
 
+@pytest.mark.parametrize("fault", [None, "stage", "code", "phase", "control-bool", "control-name"])
+def test_apk_failure_substage_and_ui_facts_are_enum_and_bool_only(tmp_path, fault):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1",
+        "phase": "apk-lifecycle", "property": "pageSize", "error": "synthetic-private-key-and-ui"}))
+    failure = {"stage": "launch-main", "code": "required-control-missing", "servicePhase": "Stopped",
+        "controls": {"api_key": {"present": False, "enabled": False, "text": "synthetic-private-key-and-ui"}},
+        "message": "synthetic-private-key-and-ui"}
+    if fault == "stage": failure["stage"] = ["synthetic-private"]
+    if fault == "code": failure["code"] = "synthetic-private"
+    if fault == "phase": failure["servicePhase"] = "synthetic-private"
+    if fault == "control-bool": failure["controls"]["api_key"]["enabled"] = 1
+    if fault == "control-name": failure["controls"] = {"synthetic-private": {"present": True, "enabled": True}}
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
+        "status": "failed", "runtimeExecution": "not-run", "cases": [], "failure": failure}))
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
+        apk_failure_stages=frozenset({"launch-main"}), apk_failure_codes=frozenset({"required-control-missing"}))
+    expected = {"phase": "apk-lifecycle", "apkProgress": {"status": "failed", "runtimeExecution": "not-run", "completedCases": []}}
+    if fault not in {"stage", "code"}:
+        safe = {"stage": "launch-main", "code": "required-control-missing", "controls": {}}
+        if fault != "phase": safe["servicePhase"] = "Stopped"
+        if fault not in {"control-bool", "control-name"}: safe["controls"] = {"api_key": {"present": False, "enabled": False}}
+        expected["apkProgress"]["failure"] = safe
+    assert result == expected
+    assert "synthetic-private" not in json.dumps(result) and "property" not in result
+
+
 @pytest.mark.parametrize("payload", ["not JSON", "[]", '{"schema":"other"}', " " * 65537],
                          ids=["malformed", "array", "schema", "oversize"])
 def test_missing_or_invalid_failure_receipt_cannot_claim_a_boot_phase(tmp_path, payload):
