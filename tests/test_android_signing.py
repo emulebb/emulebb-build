@@ -1,5 +1,6 @@
 """Signing provisioning must preserve one identity and never expose private inputs."""
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -21,12 +22,20 @@ def test_windows_acl_query_uses_dotnet_without_optional_powershell_modules(tmp_p
         script = arguments[-1]
         assert "Get-Acl" not in script and "New-Object" not in script
         assert "GetAccessControl()" in script
+        assert "GetAccessRules(" in script and "$acl.Access" not in script
         assert kwargs["env"]["ANDROID_SIGNING_ACL_PATH"] == str(tmp_path)
         return json.dumps({"owner": sid, "protected": True, "rules": [
             {"sid": sid, "kind": "Allow", "rights": 2032127},
             {"sid": signing.SYSTEM_SID, "kind": "Allow", "rights": 2032127}]})
     monkeypatch.setattr(signing.subprocess, "check_output", inspect)
     signing._verify_acl(tmp_path, sid)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native ACL integration")
+def test_windows_private_directory_is_verified_without_security_module(tmp_path):
+    root = tmp_path / "synthetic-private-directory"
+    signing.private_directory(root, create=True)
+    signing.private_directory(root, create=False)
 
 
 def test_retained_credentials_are_read_only_after_private_file_verification(tmp_path, monkeypatch):

@@ -36,7 +36,7 @@ def _verify_acl(path: Path, sid: str, *, protected: bool = True) -> None:
         "$item=if([System.IO.Directory]::Exists($path)){[System.IO.DirectoryInfo]::new($path)}"
         "else{[System.IO.FileInfo]::new($path)};"
         "$acl=$item.GetAccessControl();"
-        "$rules=@($acl.Access | ForEach-Object { @{"
+        "$rules=@($acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier]) | ForEach-Object { @{"
         "sid=$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;"
         "kind=[string]$_.AccessControlType;rights=[int]$_.FileSystemRights} });"
         "@{protected=$acl.AreAccessRulesProtected;"
