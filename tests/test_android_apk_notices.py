@@ -53,6 +53,58 @@ def test_runtime_graph_drives_notices_and_spdx_without_build_plugins(runtime):
     assert len(notices.notice_inventory(target)) == 2
 
 
+def parent_chain(root, data):
+    component = data["components"][0]
+    child = root / component["pom"]["path"]
+    child.write_text('''<project xmlns="http://maven.apache.org/POM/4.0.0">
+        <parent><groupId>org.jetbrains</groupId><artifactId>annotations-parent</artifactId><version>42</version></parent>
+        <artifactId>annotations</artifactId><version>13.0</version></project>''')
+    parent = root / "parent.pom"
+    parent.write_text('''<project xmlns="http://maven.apache.org/POM/4.0.0"><groupId>org.jetbrains</groupId>
+        <artifactId>annotations-parent</artifactId><version>42</version><licenses><license>
+        <name>Apache License 2.0</name><url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license></licenses></project>''')
+    component["pom"] = descriptor(root, child)
+    component["pomParents"] = [descriptor(root, parent)]
+    return child, parent
+
+
+def test_standard_parent_inherits_group_and_license_from_verified_export_without_extra_runtime_component(runtime):
+    root, target, cache, data, _downloads = runtime
+    parent_chain(root, data)
+    (root / "report.json").write_text(json.dumps(data))
+    result = notices.stage_runtime_notices(root, target, cache, variant="release")
+    assert result["components"][0]["license"] == "Apache-2.0"
+    assert len(result["components"]) == len(notices.spdx_components(result)) == 1
+    assert len(result["components"][0]["pomParents"]) == 1
+
+
+@pytest.mark.parametrize("fault", ["missing", "tampered", "wrong-link", "cycle", "too-deep", "property"])
+def test_maven_parent_chain_is_complete_checksum_bound_and_cycle_checked(runtime, fault):
+    root, target, cache, data, _downloads = runtime
+    child, parent = parent_chain(root, data)
+    component = data["components"][0]
+    if fault == "missing":
+        component["pomParents"] = []
+    elif fault == "tampered":
+        parent.write_text(parent.read_text() + " ")
+    elif fault == "wrong-link":
+        parent.write_text(parent.read_text().replace("annotations-parent", "unrelated-parent"))
+        component["pomParents"] = [descriptor(root, parent)]
+    elif fault == "cycle":
+        parent.write_text(parent.read_text().replace("<groupId>org.jetbrains</groupId>",
+            "<parent><groupId>org.jetbrains</groupId><artifactId>annotations</artifactId><version>13.0</version></parent><groupId>org.jetbrains</groupId>", 1))
+        component["pomParents"] = [descriptor(root, parent), descriptor(root, child)]
+    elif fault == "too-deep":
+        component["pomParents"] *= 9
+    elif fault == "property":
+        child.write_text(child.read_text().replace("<version>42</version>", "<version>${revision}</version>"))
+        component["pom"] = descriptor(root, child)
+    (root / "report.json").write_text(json.dumps(data))
+    with pytest.raises(RuntimeError):
+        notices.stage_runtime_notices(root, target, cache, variant="release")
+
+
 def test_aar_preserves_license_notices_from_its_actual_nested_runtime_jar(runtime):
     root, target, cache, data, _downloads = runtime
     nested = io.BytesIO()

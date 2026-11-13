@@ -681,7 +681,7 @@ def package_rust_android_apk_ci(*, release_version: str, channel: str,
               version_code=version_code)
         if github_output is not None:
             write_github_outputs(artifact, github_output, version=release_version,
-                                 source_sha=expected_source_sha, signer_sha256=expected_cert_sha256)
+                                 source_sha=expected_source_sha, signer_sha256=expected_cert_sha256, version_code=version_code)
         print(artifact)
     _locked("package-rust-android-apk-ci", package)(workspace_options=options, layout=layout)
 

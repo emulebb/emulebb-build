@@ -35,7 +35,9 @@ def apk_contract(context: CandidateContext) -> dict:
             or not callable(contract.get("required_apk_cases"))
             or not callable(contract.get("audit_native_payloads"))
             or not isinstance(contract.get("APK_FILE_LINK_CASES"), frozenset)
-            or not isinstance(contract.get("FILE_LINK_BROWSER_REQUIRED_CHECKS"), frozenset)):
+            or not isinstance(contract.get("FILE_LINK_BROWSER_REQUIRED_CHECKS"), frozenset)
+            or type(contract.get("MIN_SCREEN_OFF_DWELL_SECONDS")) is not int or contract["MIN_SCREEN_OFF_DWELL_SECONDS"] < 60
+            or type(contract.get("MIN_SCREEN_OFF_SAMPLES")) is not int or contract["MIN_SCREEN_OFF_SAMPLES"] < 3):
         raise RuntimeError("Selected APK Harness lacks the complete Android 14–17 qualification contract")
     _checked_checkout(root, context.apk_sources.harness_sha, "APK Harness")
     return contract
@@ -49,13 +51,13 @@ def _cases(value: object, required: set | frozenset, label: str) -> None:
 
 
 def validate_runtime(execution: dict, *, api: int, identity: dict, apk_sha256: str,
-                     expected_cert_sha256: str, contract: dict) -> None:
+                     expected_cert_sha256: str, version_code: int, contract: dict) -> None:
     """Check one actual lifecycle/transfer/browser proof without accepting its own authority."""
     if type(api) is not int or api not in APIS:
         raise RuntimeError("APK qualification requires one supported Android API")
     _fields(execution, {"schema": "emulebb.android.apk-lifecycle/1", "status": "passed",
         "apkSha256": apk_sha256, "sourceRevision": identity["sourceRevision"],
-        "signerSha256": expected_cert_sha256, "androidApiLevel": api, "runtimeExecution": "executed",
+        "signerSha256": expected_cert_sha256, "versionCode": version_code, "androidApiLevel": api, "runtimeExecution": "executed",
         "deviceQualification": "emulator-only", "physicalDevice": "not-run"}, "APK lifecycle")
     _cases(execution.get("cases"), contract["required_apk_cases"](api), "APK lifecycle")
     transfer = _object(execution.get("localTransfer"), "APK local transfer")
@@ -78,12 +80,12 @@ def validate_runtime(execution: dict, *, api: int, identity: dict, apk_sha256: s
         raise RuntimeError("APK browser must confirm its real neutral queue fixture")
     _fields(_object(browser.get("cleanup"), "APK browser cleanup"), {"status": "passed"}, "APK browser cleanup")
     endurance = _object(execution.get("endurance"), "APK screen-off observation")
-    _fields(endurance, {"minimumDwellSeconds": 60}, "APK screen-off observation")
+    minimum_dwell, minimum_samples = contract["MIN_SCREEN_OFF_DWELL_SECONDS"], contract["MIN_SCREEN_OFF_SAMPLES"]
+    _fields(endurance, {"minimumDwellSeconds": minimum_dwell, "minimumSamples": minimum_samples}, "APK screen-off observation")
     requested, observed, samples = (endurance.get(name) for name in ("requestedSeconds", "observedSeconds", "samples"))
     if (type(requested) is not int or not 0 <= requested <= 7 * 86400
-            or type(observed) not in (int, float) or not math.isfinite(observed) or observed < max(60, requested)
-            or type(samples) is not int or samples < 2
-            or endurance.get("minimumDwellSeconds") != 60
+            or type(observed) not in (int, float) or not math.isfinite(observed) or observed < max(minimum_dwell, requested)
+            or type(samples) is not int or samples < minimum_samples
             or endurance.get("over24Hours") is not (observed > 86400)):
         raise RuntimeError("APK screen-off proof requires measured, bounded observation")
 
@@ -99,7 +101,8 @@ def validate_guest(receipt: dict, *, context: CandidateContext, identity: dict,
     _fields(receipt, {"schema": "emulebb.android.guest-validation/1", "status": "passed",
         "scope": "apk-lifecycle", "applicationQualification": "apk-lifecycle", "selectedGuest": "apk" + str(api),
         "apkSha256": apk_sha256, "apkManifestSha256": manifest_sha256,
-        "signerSha256": context.apk_signer_sha256, "buildIdentity": identity, "kvm": True}, "APK guest receipt")
+        "signerSha256": context.apk_signer_sha256, "versionCode": context.apk_version_code,
+        "buildIdentity": identity, "kvm": True}, "APK guest receipt")
     _same(receipt.get("source"), {"build": {"commit": context.apk_sources.build_sha},
                                   "harness": {"commit": context.apk_sources.harness_sha}}, "APK guest sources")
     _same(receipt.get("inputs"), guest_inputs(api), "APK guest input pins")
@@ -108,7 +111,8 @@ def validate_guest(receipt: dict, *, context: CandidateContext, identity: dict,
     _same(receipt.get("guest"), {"sdk": api, "codename": "REL", "machine": "x86_64",
           "pageSize": 16384 if api == 37 else 4096, "emulator": True}, "APK actual guest facts")
     validate_runtime(_object(receipt.get("apk"), "APK guest execution"), api=api, identity=identity,
-        apk_sha256=apk_sha256, expected_cert_sha256=context.apk_signer_sha256, contract=contract)
+        apk_sha256=apk_sha256, expected_cert_sha256=context.apk_signer_sha256,
+        version_code=context.apk_version_code, contract=contract)
 
 
 def _sbom(sbom: dict, metadata: dict, context: CandidateContext, apk_hash: str) -> None:
@@ -161,7 +165,8 @@ def verify_apk(root: Path, context: CandidateContext) -> dict:
     _hosted(metadata, context, "APK producer")
     _fields(metadata, {"schema": "emulebb.android.apk-package/1", "status": "passed", "debug": False,
         "applicationId": APPLICATION_ID, "minSdk": MIN_SDK, "targetSdk": TARGET_SDK, "sourceDirty": False, "experimental": True,
-        "signerSha256": context.apk_signer_sha256, "buildIdentity": identity, "runtimeExecution": "not-run",
+        "signerSha256": context.apk_signer_sha256, "versionCode": context.apk_version_code,
+        "buildIdentity": identity, "runtimeExecution": "not-run",
         "toolInputs": tool_inputs(), "abis": list(TARGETS), "sbom": names["sbom"],
         "sbomSha256": _sha256(root / names["sbom"])}, "APK producer")
     _positive(metadata.get("versionCode"), "APK version code")
@@ -217,7 +222,8 @@ def verify_apk(root: Path, context: CandidateContext) -> dict:
     _hosted(qualification, context, "APK qualification")
     _fields(qualification, {"schema": "emulebb.android.apk-qualification/1", "status": "passed",
         "apkSha256": apk_hash, "apkManifestSha256": manifest_hash, "signerSha256": context.apk_signer_sha256,
-        "buildIdentity": identity, "runtimeExecution": "executed", "deviceQualification": "emulator-only"}, "APK qualification")
+        "buildIdentity": identity, "versionCode": context.apk_version_code,
+        "runtimeExecution": "executed", "deviceQualification": "emulator-only"}, "APK qualification")
     _same(qualification.get("source"), {"build": {"commit": context.apk_sources.build_sha},
         "harness": {"commit": context.apk_sources.harness_sha}}, "APK qualification sources")
     proofs = qualification.get("proofs")
@@ -234,4 +240,4 @@ def verify_apk(root: Path, context: CandidateContext) -> dict:
     return {"asset": names["apk"], "sha256": apk_hash, "manifest": names["manifest"],
             "manifestSha256": manifest_hash, "qualification": names["proof"],
             "qualificationSha256": _sha256(root / names["proof"]), "androidApis": sorted(APIS),
-            "signerSha256": context.apk_signer_sha256, "runtimeExecution": "executed"}
+            "signerSha256": context.apk_signer_sha256, "versionCode": context.apk_version_code, "runtimeExecution": "executed"}

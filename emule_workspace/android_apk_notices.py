@@ -53,16 +53,45 @@ def _file(root: Path, descriptor: object) -> Path:
     return path
 
 
-def _declared_license(pom: Path, group: str, name: str, version: str) -> str:
-    if pom.stat().st_size > 1024 * 1024:
-        raise RuntimeError("Runtime Maven POM exceeds the notice metadata limit")
-    root = ET.fromstring(pom.read_bytes())
+def _declared_license(pom: Path, group: str, name: str, version: str, parents: list[Path]) -> str:
+    """Apply ordinary concrete Maven parent inheritance to verified exported POMs."""
+    if len(parents) > 8:
+        raise RuntimeError("Runtime Maven parent chain exceeds its reviewed bound")
     ns = {"m": "http://maven.apache.org/POM/4.0.0"}
-    # These directly resolved Maven publications declare concrete coordinates;
-    # do not guess inherited properties or a license from the artifact's name.
-    if tuple(root.findtext("m:" + field, namespaces=ns) for field in ("groupId", "artifactId", "version")) != (group, name, version):
-        raise RuntimeError("Runtime Maven POM identity differs from the resolved component")
-    licenses = root.findall("m:licenses/m:license", ns)
+    def field(node, key):
+        values = node.findall("m:" + key, ns)
+        if len(values) > 1:
+            raise RuntimeError("Runtime Maven POM repeats an identity field")
+        return (values[0].text or "").strip() if values else None
+    expected, seen, licenses = (group, name, version), set(), None
+    documents = [pom, *parents]
+    for index, path in enumerate(documents):
+        if path.stat().st_size > 1024 * 1024:
+            raise RuntimeError("Runtime Maven POM exceeds the notice metadata limit")
+        root = ET.fromstring(path.read_bytes())
+        if root.tag != "{" + ns["m"] + "}project":
+            raise RuntimeError("Runtime Maven metadata must contain a standard project POM")
+        parent_nodes = root.findall("m:parent", ns)
+        if len(parent_nodes) > 1:
+            raise RuntimeError("Runtime Maven POM repeats its parent")
+        parent = tuple(field(parent_nodes[0], key) for key in ("groupId", "artifactId", "version")) if parent_nodes else None
+        coordinates = (field(root, "groupId") or (parent[0] if parent else None), field(root, "artifactId"),
+                       field(root, "version") or (parent[2] if parent else None))
+        for identity in (coordinates, *((parent,) if parent is not None else ())):
+            if any(not isinstance(item, str) or re.fullmatch(r"[A-Za-z0-9_.+-]+", item) is None for item in identity):
+                raise RuntimeError("Runtime Maven inheritance requires concrete coordinate values")
+        if coordinates != expected:
+            raise RuntimeError("Runtime Maven POM identity differs from the resolved component or parent link")
+        if coordinates in seen:
+            raise RuntimeError("Runtime Maven parent chain contains a cycle")
+        seen.add(coordinates)
+        declared = root.findall("m:licenses/m:license", ns)
+        if licenses is None and declared:
+            licenses = declared
+        if parent is None and index != len(documents) - 1 or parent is not None and index == len(documents) - 1:
+            raise RuntimeError("Runtime Maven parent chain is incomplete or has unrelated metadata")
+        expected = parent
+    licenses = licenses or []
     urls = [urlsplit(node.findtext("m:url", "", ns)) for node in licenses]
     if not urls or any(url.scheme not in {"https", "http"} or url.netloc not in {"www.apache.org", "apache.org"}
                        or url.path not in {"/licenses/LICENSE-2.0", "/licenses/LICENSE-2.0.txt", "/licenses/LICENSE-2.0.html"}
@@ -92,7 +121,11 @@ def stage_runtime_notices(inventory: Path, destination: Path, cache: Path, *, va
             raise RuntimeError("Runtime graph repeats a component identity")
         coordinates.add(coordinate)
         pom = _file(inventory, component.get("pom"))
-        license_id = _declared_license(pom, group, name, version)
+        parent_records = component.get("pomParents", [])
+        if not isinstance(parent_records, list) or len(parent_records) > 8:
+            raise RuntimeError("Runtime Maven parents need a bounded checksum-bound chain")
+        parents = [_file(inventory, item) for item in parent_records]
+        license_id = _declared_license(pom, group, name, version, parents)
         if group == "org.jetbrains.kotlin" and name == "kotlin-stdlib":
             if version != "2.2.10":
                 raise RuntimeError("Review the selected Kotlin JVM runtime's upstream third-party notices")
@@ -132,7 +165,7 @@ def stage_runtime_notices(inventory: Path, destination: Path, cache: Path, *, va
                 embedded_notices(archive)
             audited.append({**descriptor, "embeddedNotices": embedded})
         result.append({"group": group, "name": name, "version": version, "license": license_id,
-                       "pom": component["pom"], "artifacts": audited})
+                       "pom": component["pom"], "pomParents": parent_records, "artifacts": audited})
     return {"schema": "emulebb.android.runtime-notices/1", "configuration": value["configuration"],
             "components": result}
 

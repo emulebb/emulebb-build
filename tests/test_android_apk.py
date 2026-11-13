@@ -231,6 +231,8 @@ def test_gradle_preflight_never_compiles_native_or_claims_an_apk(tmp_path, monke
     (mini / "miniupnpc/LICENSE").write_text("../LICENSE")
     (pcp / "COPYING").write_text(license_text)
     monkeypatch.setattr(apk, "stage_runtime_notices", lambda *args, **kwargs: {"components": []})
+    if scope == "kotlin":
+        monkeypatch.setattr(apk, "stage_source_notices", lambda *args: pytest.fail("Kotlin compilation needs no notice preparation"))
     source = "a" * 40
     version = "0.1.0-beta.2.nightly.20261113.gaaaaaaa"
     monkeypatch.setattr(apk.release, "_emulebb_rust_package_provenance", lambda *_args:

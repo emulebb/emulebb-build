@@ -71,7 +71,7 @@ def public_names(version: str) -> dict[str, str]:
             "sbom": stem + ".sbom.spdx.json", "proof": stem + "-apk-lifecycle.json"}
 
 
-def write_github_outputs(apk: Path, destination: Path, *, version: str, source_sha: str, signer_sha256: str) -> None:
+def write_github_outputs(apk: Path, destination: Path, *, version: str, source_sha: str, signer_sha256: str, version_code: int) -> None:
     """Expose only a completed production artifact's verified paths and identities."""
     names = public_names(version)
     root = apk.parent
@@ -80,11 +80,13 @@ def write_github_outputs(apk: Path, destination: Path, *, version: str, source_s
     release._assert_emulebb_rust_hosted_artifact(data)
     if (apk.name != names["apk"] or data.get("status") != "passed" or data.get("debug") is not False
             or data.get("buildIdentity") != {"sourceRevision": source_sha, "version": version, "channel": "nightly"}
+            or type(data.get("versionCode")) is not int or data["versionCode"] != version_code
             or data.get("signerSha256") != signer_sha256 or data.get("apk", {}).get("sha256") != release._sha256(apk)
             or data.get("sbomSha256") != release._sha256(root / names["sbom"])):
         raise RuntimeError("GitHub APK outputs require the exact verified production package")
     outputs = {"apk_path": str(apk), "manifest_path": str(manifest), "manifest_sha256": release._sha256(manifest),
-               "sbom_path": str(root / names["sbom"]), "apk_sha256": data["apk"]["sha256"], "signer_sha256": signer_sha256}
+               "sbom_path": str(root / names["sbom"]), "apk_sha256": data["apk"]["sha256"], "signer_sha256": signer_sha256,
+               "apk_version_code": str(version_code)}
     if any("\n" in value or "\r" in value for value in outputs.values()):
         raise RuntimeError("GitHub APK output values must be single-line paths or identities")
     with destination.open("a", encoding="utf-8", newline="\n") as stream:
@@ -281,7 +283,6 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
             native.mkdir()
             notices = scratch / "notices"
             notices.mkdir()
-            stage_source_notices(rust, mini, pcp, notices)
             runtime_inventory = scratch / "runtime-inventory"
             verification = ["--write-verification-metadata", "sha256"] if author_gradle_verification else ["--dependency-verification", "strict"]
             def gradle(task, label):
@@ -315,6 +316,7 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 release._assert_emulebb_rust_package_provenance(layout, rust, provenance)
                 report.update(status="passed", scope="kotlin-compilation", applicationQualification="not-run")
                 return report_root / "build.json"
+            stage_source_notices(rust, mini, pcp, notices)
             flavor = "debug" if debug else "release"
             gradle("emulebbRuntimeInventory", "runtime-classpath")
             runtime = stage_runtime_notices(runtime_inventory, notices, output / "cache/android-apk-notices", variant=flavor)

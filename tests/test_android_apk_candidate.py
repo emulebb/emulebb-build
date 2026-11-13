@@ -26,8 +26,9 @@ def evidence(tmp_path, monkeypatch):
     root.mkdir()
     context = candidate.CandidateContext(VERSION, "nightly", SOURCE, WORKFLOW,
         apk_sources=candidate.ApkSourceContext("8" * 40, "9" * 40), apk_signer_sha256="c" * 64,
-        release_validator_build_sha="a" * 40, apk_harness_root=tmp_path / "harness")
-    contract = {"required_apk_cases": lambda api: {"start-stop", "delivery-collision", "browser", "doze"} | ({"lan-denial"} if api == 37 else set()),
+        release_validator_build_sha="a" * 40, apk_harness_root=tmp_path / "harness", apk_version_code=2)
+    contract = {"MIN_SCREEN_OFF_DWELL_SECONDS": 60, "MIN_SCREEN_OFF_SAMPLES": 3,
+        "required_apk_cases": lambda api: {"start-stop", "delivery-collision", "browser", "doze"} | ({"lan-denial"} if api == 37 else set()),
         "APK_FILE_LINK_CASES": frozenset({"resolve", "pending", "confirm"}),
         "FILE_LINK_BROWSER_REQUIRED_CHECKS": frozenset({"signInPreserved", "cancelWithoutEnqueue", "explicitConfirmation", "repeatedNavigationWithoutEnqueue"})}
     names = public_names(VERSION)
@@ -94,7 +95,7 @@ def evidence(tmp_path, monkeypatch):
     passed = lambda names: [{"name": name, "status": "passed"} for name in sorted(names)]
     for api in sorted(apk.APIS):
         execution = {"schema": "emulebb.android.apk-lifecycle/1", "status": "passed", "apkSha256": metadata["apk"]["sha256"],
-            "sourceRevision": identity["sourceRevision"], "signerSha256": context.apk_signer_sha256, "androidApiLevel": api,
+            "sourceRevision": identity["sourceRevision"], "signerSha256": context.apk_signer_sha256, "androidApiLevel": api, "versionCode": 2,
             "runtimeExecution": "executed", "deviceQualification": "emulator-only", "physicalDevice": "not-run",
             "cases": passed(contract["required_apk_cases"](api)),
             "localTransfer": {"status": "passed", "sizeBytes": 1024, "sha256": "d" * 64, "collisionPreserved": True,
@@ -103,16 +104,16 @@ def evidence(tmp_path, monkeypatch):
                 "browser": {"schema": "emulebb-rust.webui-file-link-proof/1", "status": "passed", "buildIdentity": identity,
                     "confirmation": {"status": "passed", "sizeBytes": 1, "state": "paused", "transferHash": "e" * 32,
                                      **{key: True for key in contract["FILE_LINK_BROWSER_REQUIRED_CHECKS"]}}, "cleanup": {"status": "passed"}}},
-            "endurance": {"requestedSeconds": 0, "observedSeconds": 60.5, "samples": 3, "minimumDwellSeconds": 60, "over24Hours": False}}
+            "endurance": {"requestedSeconds": 0, "observedSeconds": 60.5, "samples": 3, "minimumDwellSeconds": 60, "minimumSamples": 3, "over24Hours": False}}
         proofs.append({"schema": "emulebb.android.guest-validation/1", "status": "passed", "origin": "github-actions", "workflow": WORKFLOW,
             "scope": "apk-lifecycle", "applicationQualification": "apk-lifecycle", "selectedGuest": "apk" + str(api),
             "apkSha256": metadata["apk"]["sha256"], "apkManifestSha256": release._sha256(root / names["manifest"]),
-            "signerSha256": context.apk_signer_sha256, "buildIdentity": identity, "source": source, "kvm": True,
+            "signerSha256": context.apk_signer_sha256, "versionCode": 2, "buildIdentity": identity, "source": source, "kvm": True,
             "inputs": {"api": api}, "imageId": "sha256:" + "f" * 64, "guest": {"sdk": api, "codename": "REL", "machine": "x86_64",
             "pageSize": 16384 if api == 37 else 4096, "emulator": True}, "apk": execution})
     qualification = {"schema": "emulebb.android.apk-qualification/1", "status": "passed", "origin": "github-actions", "workflow": WORKFLOW,
         "apkSha256": metadata["apk"]["sha256"], "apkManifestSha256": release._sha256(root / names["manifest"]),
-        "signerSha256": context.apk_signer_sha256, "buildIdentity": identity, "source": source,
+        "signerSha256": context.apk_signer_sha256, "versionCode": 2, "buildIdentity": identity, "source": source,
         "runtimeExecution": "executed", "deviceQualification": "emulator-only", "proofs": proofs}
     save(names["proof"], qualification)
     return root, context, metadata, qualification, save
@@ -124,11 +125,12 @@ def test_apk_binds_four_guest_proofs_to_distinct_producer_and_native_authorities
     assert result["androidApis"] == [34, 35, 36, 37] and result["signerSha256"] == "c" * 64
     assert context.source["emulebbBuild"] != context.apk_materials["emulebbBuild"]
     assert set(candidate.public_names(context)) - candidate.public_names(replace(context,
-        apk_sources=None, apk_signer_sha256=None, apk_harness_root=None)) == set(public_names(VERSION).values())
+        apk_sources=None, apk_signer_sha256=None, apk_harness_root=None, apk_version_code=None)) == set(public_names(VERSION).values())
 
 
 @pytest.mark.parametrize("fault", ["missing-middle-api", "duplicate-api", "wrong-cert", "wrong-run", "wrong-harness", "wrong-apk",
-    "missing-case", "failed-case", "browser-not-executed", "collision-not-preserved", "short-doze", "wrong-page-size", "wrong-input-pins"])
+    "missing-case", "failed-case", "browser-not-executed", "collision-not-preserved", "short-doze", "two-samples", "wrong-page-size", "wrong-input-pins",
+    "wrong-version-code", "wrong-installed-code"])
 def test_incomplete_or_substituted_runtime_evidence_cannot_publish(evidence, fault):
     root, context, metadata, proof, save = evidence
     guest = proof["proofs"][1]
@@ -143,6 +145,9 @@ def test_incomplete_or_substituted_runtime_evidence_cannot_publish(evidence, fau
     elif fault == "browser-not-executed": guest["apk"]["fileLinks"]["browser"]["confirmation"]["explicitConfirmation"] = False
     elif fault == "collision-not-preserved": guest["apk"]["localTransfer"]["collisionPreserved"] = False
     elif fault == "short-doze": guest["apk"]["endurance"]["observedSeconds"] = 1
+    elif fault == "two-samples": guest["apk"]["endurance"]["samples"] = 2
+    elif fault == "wrong-version-code": guest["versionCode"] = 3
+    elif fault == "wrong-installed-code": guest["apk"]["versionCode"] = 3
     elif fault == "wrong-page-size": proof["proofs"][-1]["guest"]["pageSize"] = 4096
     elif fault == "wrong-input-pins": guest["inputs"] = {"api": 99}
     save(public_names(VERSION)["proof"], proof)
@@ -150,7 +155,7 @@ def test_incomplete_or_substituted_runtime_evidence_cannot_publish(evidence, fau
         apk.verify_apk(root, context)
 
 
-@pytest.mark.parametrize("fault", ["native-producer", "local-origin", "unsigned-debug", "wrong-workflow", "native-hash"])
+@pytest.mark.parametrize("fault", ["native-producer", "local-origin", "unsigned-debug", "wrong-workflow", "native-hash", "version-code"])
 def test_changed_producer_authority_or_native_bytes_cannot_be_hidden_by_new_receipt_hash(evidence, fault):
     root, context, metadata, proof, save = evidence
     if fault == "native-producer": metadata["source"]["emulebbBuild"] = {"commit": context.source["emulebbBuild"]}
@@ -158,6 +163,7 @@ def test_changed_producer_authority_or_native_bytes_cannot_be_hidden_by_new_rece
     elif fault == "unsigned-debug": metadata["debug"] = True
     elif fault == "wrong-workflow": metadata["workflow"] = {**WORKFLOW, "workflowSha": "b" * 40}
     elif fault == "native-hash": metadata["native"]["arm64-v8a"]["sha256"] = "b" * 64
+    elif fault == "version-code": metadata["versionCode"] = 3
     save(public_names(VERSION)["manifest"], metadata)
     digest = release._sha256(root / public_names(VERSION)["manifest"])
     proof["apkManifestSha256"] = digest
@@ -169,8 +175,8 @@ def test_changed_producer_authority_or_native_bytes_cannot_be_hidden_by_new_rece
 
 def test_missing_apk_authority_is_rejected_without_changing_native_context(evidence):
     _root, context, _metadata, _proof, _save = evidence
-    assert replace(context, apk_sources=None, apk_signer_sha256=None, apk_harness_root=None).checked()
-    for field in ("apk_sources", "apk_signer_sha256", "release_validator_build_sha", "apk_harness_root"):
+    assert replace(context, apk_sources=None, apk_signer_sha256=None, apk_harness_root=None, apk_version_code=None).checked()
+    for field in ("apk_sources", "apk_signer_sha256", "release_validator_build_sha", "apk_harness_root", "apk_version_code"):
         with pytest.raises(RuntimeError):
             replace(context, **{field: None}).checked()
 
@@ -191,7 +197,7 @@ def test_release_reader_uses_its_own_revision_instead_of_the_native_producer_pin
 def test_foreign_apk_harness_revision_is_rejected_before_contract_code_execution(tmp_path, monkeypatch):
     context = candidate.CandidateContext(VERSION, "nightly", SOURCE, WORKFLOW,
         apk_sources=candidate.ApkSourceContext("8" * 40, "9" * 40), apk_signer_sha256="c" * 64,
-        release_validator_build_sha="a" * 40, apk_harness_root=tmp_path)
+        release_validator_build_sha="a" * 40, apk_harness_root=tmp_path, apk_version_code=2)
     def reject(root, revision, label):
         assert revision == "9" * 40
         raise RuntimeError("wrong selected Harness revision")
@@ -206,10 +212,11 @@ def test_ci_outputs_bind_actual_verified_apk_and_never_echo_signing_credentials(
     monkeypatch.setattr(release, "_emulebb_rust_artifact_origin", lambda: {"origin": "github-actions", "workflow": WORKFLOW})
     destination = root.parent / "github-output"
     write_github_outputs(root / public_names(VERSION)["apk"], destination, version=VERSION,
-                         source_sha=SOURCE["emulebbRust"], signer_sha256=context.apk_signer_sha256)
+                         source_sha=SOURCE["emulebbRust"], signer_sha256=context.apk_signer_sha256, version_code=2)
     outputs = dict(line.split("=", 1) for line in destination.read_text().splitlines())
     assert outputs["apk_sha256"] == metadata["apk"]["sha256"]
     assert outputs["manifest_sha256"] == release._sha256(root / public_names(VERSION)["manifest"])
+    assert outputs["apk_version_code"] == "2"
     with pytest.raises(RuntimeError):
         write_github_outputs(root / public_names(VERSION)["apk"], destination, version=VERSION,
-                             source_sha=SOURCE["emulebbRust"], signer_sha256="b" * 64)
+                             source_sha=SOURCE["emulebbRust"], signer_sha256="b" * 64, version_code=2)

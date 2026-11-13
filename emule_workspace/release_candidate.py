@@ -101,6 +101,7 @@ class CandidateContext:
     apk_signer_sha256: str | None = None
     release_validator_build_sha: str | None = None
     apk_harness_root: Path | None = None
+    apk_version_code: int | None = None
 
     def checked(self) -> CandidateContext:
         if not isinstance(self.version, str) or not _is_release_version(self.version):
@@ -129,7 +130,7 @@ class CandidateContext:
                 not isinstance(self.release_validator_build_sha, str) or SHA.fullmatch(self.release_validator_build_sha) is None):
             raise RuntimeError("Candidate reader requires an explicit full Build revision")
         if self.apk_sources is None:
-            if self.apk_signer_sha256 is not None or self.apk_harness_root is not None:
+            if self.apk_signer_sha256 is not None or self.apk_harness_root is not None or self.apk_version_code is not None:
                 raise RuntimeError("APK signer and Harness require an explicit APK source context")
         else:
             if not isinstance(self.apk_sources, ApkSourceContext):
@@ -138,7 +139,8 @@ class CandidateContext:
             if (self.channel != "nightly" or self.platform_profile != "full"
                     or self.release_validator_build_sha is None
                     or not isinstance(self.apk_signer_sha256, str) or HASH.fullmatch(self.apk_signer_sha256) is None
-                    or not isinstance(self.apk_harness_root, Path) or not self.apk_harness_root.is_absolute()):
+                    or not isinstance(self.apk_harness_root, Path) or not self.apk_harness_root.is_absolute()
+                    or type(self.apk_version_code) is not int or not 1 <= self.apk_version_code <= 2_100_000_000):
                 raise RuntimeError("APK selection requires nightly/full scope, trusted signer, reader and Harness checkout")
         return self
 
@@ -162,7 +164,8 @@ def _authority_record(context: CandidateContext) -> dict:
     if context.release_validator_build_sha is not None:
         result["releaseValidatorBuild"] = context.release_validator_build_sha
     if context.apk_sources is not None:
-        result.update(apkSources=context.apk_sources.record(), apkSignerSha256=context.apk_signer_sha256)
+        result.update(apkSources=context.apk_sources.record(), apkSignerSha256=context.apk_signer_sha256,
+                      apkVersionCode=context.apk_version_code)
     return result
 
 
@@ -637,7 +640,7 @@ def _original_context(saved: dict, context: CandidateContext) -> CandidateContex
     _fields(saved, {"formatVersion": 4, "releaseVersion": context.version,
                     "channel": context.channel, "platformProfile": context.platform_profile}, "Saved candidate")
     _same(saved.get("source"), context.source, "Saved candidate source")
-    for key in ("releaseValidatorBuild", "apkSources", "apkSignerSha256"):
+    for key in ("releaseValidatorBuild", "apkSources", "apkSignerSha256", "apkVersionCode"):
         _same(saved.get(key), _authority_record(context).get(key), "Saved candidate " + key)
     workflow = _object(saved.get("workflow"), "Saved candidate workflow")
     _hosted({"origin": "github-actions", "workflow": workflow}, context, "Saved candidate")
