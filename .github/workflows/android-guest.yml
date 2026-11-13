@@ -65,7 +65,7 @@ jobs:
         with:
           persist-credentials: false
           repository: emulebb/emulebb-build-tests
-          ref: 05348f926a47ae5b8c42b230a55384920ad7f524
+          ref: 7c680ed68e478c2f22c56c65f21f12c3790d3826
           path: repos/emulebb-build-tests
       - name: Set up pinned Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -133,7 +133,7 @@ jobs:
           # WHY: a main-branch job can write the default-branch Actions cache.
           # Execute only independently resolved official main code on dispatch,
           # never arbitrary input-selected code; automatic events stay pinned.
-          rust_sha='5aba7940cc53eeae20dd3fb19bbb1c275717b7f2'
+          rust_sha='250c555b76650ad69fc546444a69f4b245b16d6e'
           if [[ "$SOURCE_EVENT" == 'workflow_dispatch' ]]; then
             if [[ ! "$REQUESTED_RUST_SHA" =~ ^[0-9a-f]{40}$ ]]; then
               echo 'Rust source must be an exact lowercase 40-character commit SHA' >&2
@@ -165,7 +165,7 @@ jobs:
         with:
           persist-credentials: false
           repository: emulebb/emulebb-build-tests
-          ref: 05348f926a47ae5b8c42b230a55384920ad7f524
+          ref: 7c680ed68e478c2f22c56c65f21f12c3790d3826
           path: repos/emulebb-build-tests
       - name: Checkout pinned MiniUPnP source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

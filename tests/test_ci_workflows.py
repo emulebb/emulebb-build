@@ -50,7 +50,7 @@ def test_android_tls_runtime_is_additional_pinned_source_bound_guest_proof():
     assert {name: value["ref"] for name, value in checkouts.items()} == {
         "emulebb/emulebb-rust": "${{ steps.rust-source.outputs.rust_sha }}",
         "emulebb/emulebb-tooling": "26abd1eab97b28977f2d55adba17e6ba28821498",
-        "emulebb/emulebb-build-tests": "05348f926a47ae5b8c42b230a55384920ad7f524",
+        "emulebb/emulebb-build-tests": "7c680ed68e478c2f22c56c65f21f12c3790d3826",
         "emulebb/emulebb-miniupnp": "4e7a10948004ca2085ac8103e14fc77edb898b4c",
         "emulebb/emulebb-libpcpnatpmp": "a6e787f837e507336a8774522c33b54264ef4a4b",
     }
@@ -82,7 +82,7 @@ def test_android_tls_runtime_is_additional_pinned_source_bound_guest_proof():
     inputs = events["workflow_dispatch"]["inputs"]
     assert set(inputs) == {"rust_ref"}
     assert inputs["rust_ref"]["type"] == "string" and inputs["rust_ref"]["required"] is True
-    baseline = "5aba7940cc53eeae20dd3fb19bbb1c275717b7f2"
+    baseline = "250c555b76650ad69fc546444a69f4b245b16d6e"
     assert "default" not in inputs["rust_ref"]
     assert f"rust_sha='{baseline}'" in select["run"]
     assert select["env"] == {
@@ -158,7 +158,7 @@ def test_android_tls_automatic_selector_ignores_manual_data(tmp_path, event):
     result = _run_tls_script(select["run"], tmp_path, SOURCE_EVENT=event,
                              REQUESTED_RUST_SHA="$(touch injected)", GITHUB_OUTPUT=output.as_posix(), mock_remote="untrusted")
     assert result.returncode == 0, result.stderr
-    assert output.read_text() == "rust_sha=5aba7940cc53eeae20dd3fb19bbb1c275717b7f2\n"
+    assert output.read_text() == "rust_sha=250c555b76650ad69fc546444a69f4b245b16d6e\n"
     assert not (tmp_path / "injected").exists()
     assert not (tmp_path / "git-called").exists()
 
