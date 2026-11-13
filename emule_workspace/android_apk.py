@@ -24,9 +24,19 @@ SIGNING_ENV = ("EMULEBB_ANDROID_KEYSTORE", "EMULEBB_ANDROID_KEY_ALIAS",
                "EMULEBB_ANDROID_KEYSTORE_PASSWORD", "EMULEBB_ANDROID_KEY_PASSWORD")
 
 
+def gradle_plugin_version(rust: Path) -> str:
+    """Read the one explicit APK plugin pin from its owning Gradle source."""
+    text = (rust / "android/build.gradle.kts").read_text(encoding="utf-8")
+    versions = re.findall(r'id\("com\.android\.application"\)\s+version\s+"([0-9]+\.[0-9]+\.[0-9]+)"', text)
+    if len(versions) != 1:
+        raise RuntimeError("APK project requires exactly one explicit stable Android Gradle plugin pin")
+    return versions[0]
+
+
 def probe_gradle(layout, *, wsl_distro: str = "Ubuntu") -> Path:
     """Resolve the exact APK plugin with the pinned Gradle/JDK before native compilation."""
     prepare_toolchain(layout, wsl_distro=wsl_distro)
+    plugin = gradle_plugin_version(layout.emulebb_rust_repo_root)
     output = layout.output_root.resolve()
     root = output / "reports/android-apk-gradle" / uuid4().hex
     project = root / "project"
@@ -35,7 +45,7 @@ def probe_gradle(layout, *, wsl_distro: str = "Ubuntu") -> Path:
         'pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }\n'
         'rootProject.name = "android-apk-toolchain-probe"\n', encoding="utf-8")
     (project / "build.gradle.kts").write_text(
-        'plugins { id("com.android.application") version "9.2.0" apply false }\n', encoding="utf-8")
+        f'plugins {{ id("com.android.application") version "{plugin}" apply false }}\n', encoding="utf-8")
     with LinuxDocker(wsl_distro) as docker:
         home = output / "cache/android-apk-gradle-probe"
         home.mkdir(parents=True, exist_ok=True)
@@ -152,7 +162,7 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
     selected_signing, expected_signer = None, None
     if retained_signing:
         from .android_signing import retained_signing_inputs
-        selected_signing, expected_signer = retained_signing_inputs(layout.output_root)
+        selected_signing, expected_signer = retained_signing_inputs()
     if not debug:
         signing_inputs(selected_signing if selected_signing is not None else dict(os.environ))
     rust, output = layout.emulebb_rust_repo_root, layout.output_root.resolve()

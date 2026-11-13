@@ -8,6 +8,23 @@ from emule_workspace import android_apk as apk
 from emule_workspace.android_validation import compiler_environment
 
 
+@pytest.mark.parametrize("version", ["9.5.1", "9.2.0"])
+def test_tools_probe_uses_the_source_owned_gradle_plugin_pin(tmp_path, version):
+    project = tmp_path / "android"
+    project.mkdir()
+    (project / "build.gradle.kts").write_text(f'plugins {{ id("com.android.application") version "{version}" apply false }}')
+    assert apk.gradle_plugin_version(tmp_path) == version
+
+
+@pytest.mark.parametrize("version", ["9.+", "latest.release", "9.5.1-alpha01"])
+def test_tools_probe_rejects_floating_or_prerelease_plugin_pins(tmp_path, version):
+    project = tmp_path / "android"
+    project.mkdir()
+    (project / "build.gradle.kts").write_text(f'plugins {{ id("com.android.application") version "{version}" apply false }}')
+    with pytest.raises(RuntimeError, match="pin"):
+        apk.gradle_plugin_version(tmp_path)
+
+
 def test_apk_api_floor_does_not_change_cli_compilation():
     for abi in ("arm64-v8a", "x86_64"):
         assert any("android28-clang" in value for value in compiler_environment(abi).values())

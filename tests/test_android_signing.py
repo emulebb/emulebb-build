@@ -1,6 +1,5 @@
-"""Signing provisioning must preserve one identity and never expose private inputs."""
+"""Retained signing keys are never replaced and uploads do not reveal secrets."""
 import json
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -16,88 +15,32 @@ def test_exclusive_credentials_never_replace_existing_key_material(tmp_path):
     assert json.loads(path.read_text())["password"] == "synthetic-first"
 
 
-def test_windows_acl_query_uses_dotnet_without_optional_powershell_modules(tmp_path, monkeypatch):
-    sid = "S-1-5-21-1000"
-    def inspect(arguments, **kwargs):
-        script = arguments[-1]
-        assert "Get-Acl" not in script and "New-Object" not in script
-        assert "GetAccessControl()" in script
-        assert "GetAccessRules(" in script and "$acl.Access" not in script
-        assert kwargs["env"]["ANDROID_SIGNING_ACL_PATH"] == str(tmp_path)
-        return json.dumps({"owner": sid, "protected": True, "rules": [
-            {"sid": sid, "kind": "Allow", "rights": 2032127},
-            {"sid": signing.SYSTEM_SID, "kind": "Allow", "rights": 2032127}]})
-    monkeypatch.setattr(signing.subprocess, "check_output", inspect)
-    signing._verify_acl(tmp_path, sid)
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows native ACL integration")
-def test_windows_private_directory_is_verified_without_security_module(tmp_path):
-    root = tmp_path / "synthetic-private-directory"
-    signing.private_directory(root, create=True)
-    signing.private_directory(root, create=False)
-
-
-def test_retained_credentials_are_read_only_after_private_file_verification(tmp_path, monkeypatch):
-    root = tmp_path / "tools/signing/android"
-    root.mkdir(parents=True)
-    monkeypatch.setattr(signing, "private_directory", lambda *args, **kwargs: None)
-    def reject(_root):
-        raise RuntimeError("synthetic unsafe file ACL")
-    monkeypatch.setattr(signing, "_verify_material", reject)
-    with pytest.raises(RuntimeError, match="unsafe file ACL"):
-        signing.retained_signing_inputs(tmp_path)
-
-
-@pytest.mark.parametrize("unsafe", ["extra", "owner", "inherited", "rights", "deny"])
-def test_windows_acl_verification_rejects_broad_access(tmp_path, monkeypatch, unsafe):
-    sid = "S-1-5-21-1000"
-    acl = {"owner": sid, "protected": True, "rules": [
-        {"sid": sid, "kind": "Allow", "rights": 2032127},
-        {"sid": signing.SYSTEM_SID, "kind": "Allow", "rights": 2032127}]}
-    if unsafe == "extra":
-        acl["rules"].append({"sid": "S-1-1-0", "kind": "Allow", "rights": 1})
-    elif unsafe == "owner":
-        acl["owner"] = signing.SYSTEM_SID
-    elif unsafe == "inherited":
-        acl["protected"] = False
-    elif unsafe == "rights":
-        acl["rules"][0]["rights"] = 1
-    else:
-        acl["rules"][0]["kind"] = "Deny"
-    monkeypatch.setattr(signing.subprocess, "check_output", lambda *args, **kwargs: json.dumps(acl))
-    with pytest.raises(RuntimeError, match="ACL"):
-        signing._verify_acl(tmp_path, sid)
-
-
 def test_missing_local_key_cannot_replace_existing_github_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(signing, "signing_root", lambda: tmp_path / "absent")
     monkeypatch.setattr(signing.subprocess, "check_output", lambda *args, **kwargs:
                         json.dumps([{"name": signing.GITHUB_SECRETS[0]}]))
-    monkeypatch.setattr(signing, "prepare_toolchain", lambda *_args, **_kwargs: pytest.fail("must not prepare"))
     with pytest.raises(RuntimeError, match="already exist"):
         signing.provision_signing(SimpleNamespace(output_root=tmp_path))
 
 
 def test_partial_local_state_is_preserved_for_inspection(tmp_path, monkeypatch):
-    root = tmp_path / "tools/signing/android"
-    root.mkdir(parents=True)
-    (root / "release.p12").write_bytes(b"synthetic-retained-key")
+    monkeypatch.setattr(signing, "signing_root", lambda: tmp_path)
+    (tmp_path / "release.p12").write_bytes(b"synthetic-retained-key")
     monkeypatch.setattr(signing.subprocess, "check_output", lambda *args, **kwargs: "[]")
-    monkeypatch.setattr(signing, "private_directory", lambda *args, **kwargs: None)
     with pytest.raises(RuntimeError, match="Partial"):
         signing.provision_signing(SimpleNamespace(output_root=tmp_path))
-    assert (root / "release.p12").read_bytes() == b"synthetic-retained-key"
+    assert (tmp_path / "release.p12").read_bytes() == b"synthetic-retained-key"
 
 
 def test_failed_secret_upload_retries_same_retained_key(tmp_path, monkeypatch, capsys):
-    root = tmp_path / "tools/signing/android"
-    root.mkdir(parents=True)
+    root = tmp_path / "operator-profile"
+    root.mkdir()
+    monkeypatch.setattr(signing, "signing_root", lambda: root)
     (root / "release.p12").write_bytes(b"synthetic-retained-key")
     (root / "credentials.json").write_text(json.dumps({"password": "synthetic-password", "alias": "release"}))
-    (root / "identity.json").write_text(json.dumps({"repository": signing.REPOSITORY, "signerSha256": "a" * 64}))
+    (root / "identity.json").write_text(json.dumps({"schema": "emulebb.android.signing-identity/1",
+        "repository": signing.REPOSITORY, "alias": "release", "signerSha256": "a" * 64}))
     monkeypatch.setattr(signing.subprocess, "check_output", lambda *args, **kwargs: "[]")
-    monkeypatch.setattr(signing, "private_directory", lambda *args, **kwargs: None)
-    monkeypatch.setattr(signing, "_verify_material", lambda *_args: None)
     monkeypatch.setattr(signing, "prepare_toolchain", lambda *_args, **_kwargs: None)
     class Docker:
         def __init__(self, _distro): pass
@@ -122,23 +65,6 @@ def test_failed_secret_upload_retries_same_retained_key(tmp_path, monkeypatch, c
     assert (root / "release.p12").read_bytes() == b"synthetic-retained-key"
     fail = False
     result = signing.provision_signing(layout)
-    assert result["signerSha256"] == "a" * 64
-    assert len(calls) == 6
+    assert result["signerSha256"] == "a" * 64 and len(calls) == 6
     assert calls[-1][1]["input"] == calls[-2][1]["input"] == "synthetic-password"
     assert "synthetic-password" not in capsys.readouterr().out
-
-
-def test_unsafe_existing_file_acl_is_rejected_before_reading_or_mounting(tmp_path, monkeypatch):
-    root = tmp_path / "tools/signing/android"
-    root.mkdir(parents=True)
-    for name in ("release.p12", "credentials.json", "identity.json"):
-        (root / name).write_bytes(b"synthetic-unread-material")
-    monkeypatch.setattr(signing.subprocess, "check_output", lambda *args, **kwargs: "[]")
-    monkeypatch.setattr(signing, "private_directory", lambda *args, **kwargs: None)
-    def reject(_root):
-        raise RuntimeError("unsafe existing file ACL")
-    monkeypatch.setattr(signing, "_verify_material", reject)
-    monkeypatch.setattr(signing, "prepare_toolchain", lambda *args, **kwargs: pytest.fail("must not prepare or mount"))
-    monkeypatch.setattr(signing.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not upload"))
-    with pytest.raises(RuntimeError, match="unsafe existing file ACL"):
-        signing.provision_signing(SimpleNamespace(output_root=tmp_path))
