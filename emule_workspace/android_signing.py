@@ -64,10 +64,27 @@ def private_directory(path: Path, *, create: bool) -> None:
     if os.name == "nt":
         sid = _operator_sid()
         if create:
-            subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r",
-                            "*" + sid + ":(OI)(CI)F", "*" + SYSTEM_SID + ":(OI)(CI)F"],
-                           check=True, capture_output=True)
-            subprocess.run(["icacls", str(path), "/setowner", "*" + sid], check=True, capture_output=True)
+            # WHY: Python's Windows mode-0700 mkdir can create an explicit
+            # Administrators ACE. Removing inheritance retains that broad grant;
+            # construct a fresh native DACL with exactly the two intended SIDs.
+            script = (
+                "$ErrorActionPreference='Stop';"
+                "$sid=[System.Security.Principal.SecurityIdentifier]::new($env:ANDROID_SIGNING_OPERATOR_SID);"
+                "$system=[System.Security.Principal.SecurityIdentifier]::new('S-1-5-18');"
+                "$acl=[System.Security.AccessControl.DirectorySecurity]::new();"
+                "$acl.SetAccessRuleProtection($true,$false);$acl.SetOwner($sid);"
+                "$flags=[System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor "
+                "[System.Security.AccessControl.InheritanceFlags]::ObjectInherit;"
+                "foreach($identity in @($sid,$system)){"
+                "$rule=[System.Security.AccessControl.FileSystemAccessRule]::new($identity,"
+                "[System.Security.AccessControl.FileSystemRights]::FullControl,$flags,"
+                "[System.Security.AccessControl.PropagationFlags]::None,"
+                "[System.Security.AccessControl.AccessControlType]::Allow);$acl.AddAccessRule($rule)};"
+                "[System.IO.DirectoryInfo]::new($env:ANDROID_SIGNING_ACL_PATH).SetAccessControl($acl)"
+            )
+            child = dict(os.environ, ANDROID_SIGNING_ACL_PATH=str(path), ANDROID_SIGNING_OPERATOR_SID=sid)
+            subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                           env=child, check=True, capture_output=True)
         _verify_acl(path, sid)
     else:
         stat = path.stat()
