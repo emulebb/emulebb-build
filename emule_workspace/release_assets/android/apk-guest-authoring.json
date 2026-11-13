@@ -1,0 +1,8 @@
+{
+  "source": "https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml",
+  "assets": {
+    "system-image-apk34": {"version": "34-r14", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-34_r14.zip", "sha1": "e0f6c9a0691aa27bd597d0deb1bcfdc943ac8ca7", "size": 1563721130},
+    "system-image-apk35": {"version": "35-r9", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-35_r09.zip", "sha1": "0103e6dab21290c4b9d16550a3ce99476f884eef", "size": 1738815903},
+    "system-image-apk36": {"version": "36-r7", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-36_r07.zip", "sha1": "c6bf44bdcd885bb902b4ba752d111a073ad7a817", "size": 1895447397}
+  }
+}

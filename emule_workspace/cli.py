@@ -696,6 +696,16 @@ def prepare_rust_android_apk_gradle(*, workspace_options, layout) -> None:
     _locked("prepare-rust-android-apk-gradle", probe)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("author-rust-android-apk-guest-inputs")
+@_common_options
+def author_rust_android_apk_guest_inputs(*, workspace_options, layout) -> None:
+    """Download official API34–36 archives and retain their proposed SHA-256 pins."""
+    from .android_toolchain import author_apk_guest_inputs
+    def author(**kwargs):
+        print(author_apk_guest_inputs(kwargs["layout"]))
+    _locked("author-rust-android-apk-guest-inputs", author)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("probe-rust-android-apk-device")
 @click.option("--adb", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
 @click.option("--serial", required=True, help="Exact operator-selected connected Wi-Fi serial.")

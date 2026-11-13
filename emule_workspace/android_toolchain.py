@@ -6,6 +6,7 @@ compilation and release signing belong to subsequent explicit operations.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -13,11 +14,92 @@ import shutil
 import subprocess
 import tempfile
 from urllib.parse import urlsplit
+import urllib.request
 from uuid import uuid4
 
 from .python_runtime import download_verified, sha256
 
 from .android_inputs import ROLES, emulator_inputs, emulator_subset, tool_inputs
+
+APK_GUEST_AUTHORING = Path(__file__).parent / "release_assets/android/apk-guest-authoring.json"
+
+
+def author_apk_guest_inputs(layout) -> Path:
+    """Bootstrap SHA-256 pins from immutable official archives and catalog SHA-1s.
+
+    Only this explicit authoring command uses Google's published SHA-1 checksum;
+    normal guest preparation continues to require reviewed SHA-256 source pins.
+    """
+    from .config import resolve_required_workspace_roots
+    from .git import git_output
+    _workspace, output = resolve_required_workspace_roots()
+    if layout.output_root.resolve() != output:
+        raise RuntimeError("Android guest authoring requires the inherited output root")
+    declaration = json.loads(APK_GUEST_AUTHORING.read_text(encoding="utf-8"))
+    author = {"emulebbBuild": {"commit": git_output(Path(__file__).resolve().parents[1], "rev-parse", "HEAD").strip()},
+              "declarationSha256": sha256(APK_GUEST_AUTHORING), "catalog": declaration["source"]}
+    records = {}
+    for role, item in declaration["assets"].items():
+        folder = output / "cache/android-emulator-authoring" / item["sha1"]
+        if not folder.resolve().is_relative_to(output):
+            raise RuntimeError("Android guest authoring cache must remain under output")
+        folder.mkdir(parents=True, exist_ok=True)
+        index = folder / "pin.json"
+        temporary = None
+        try:
+            if index.is_symlink():
+                raise RuntimeError("Android authoring index cannot redirect outside its owned cache")
+            if index.is_file() and not index.is_symlink():
+                prior = json.loads(index.read_text(encoding="utf-8"))
+                if not isinstance(prior.get("sha256"), str) or re.fullmatch(r"[0-9a-f]{64}", prior["sha256"]) is None:
+                    raise RuntimeError("Android authoring index requires a SHA-256 cache identity")
+                source = output / "cache/android-emulator-inputs" / prior["sha256"] / urlsplit(item["url"]).path.rsplit("/", 1)[-1]
+                if source.is_symlink() or not source.resolve().is_relative_to(output):
+                    raise RuntimeError("Android authoring requires an owned regular cached archive")
+                stream = source.open("rb")
+            else:
+                temporary = folder / (uuid4().hex + ".part")
+                stream = urllib.request.urlopen(urllib.request.Request(item["url"], headers={"User-Agent": "emulebb-workspace-bootstrap"}), timeout=120)
+            sha1, archive_digest, size = hashlib.sha1(), hashlib.sha256(), 0
+            target = temporary.open("xb") if temporary is not None else None
+            try:
+                with stream:
+                    while block := stream.read(1024 * 1024):
+                        size += len(block)
+                        if size > item["size"]:
+                            raise RuntimeError("Android authoring archive exceeds its official size")
+                        sha1.update(block)
+                        archive_digest.update(block)
+                        if target is not None:
+                            target.write(block)
+            finally:
+                if target is not None:
+                    target.close()
+            if size != item["size"] or sha1.hexdigest() != item["sha1"]:
+                raise RuntimeError("Android authoring archive differs from its official catalog checksum")
+            record = {"version": item["version"], "url": item["url"], "sha256": archive_digest.hexdigest(), "kind": "zip"}
+            cache = output / "cache/android-emulator-inputs" / record["sha256"] / urlsplit(item["url"]).path.rsplit("/", 1)[-1]
+            if cache.is_symlink() or not cache.resolve().is_relative_to(output):
+                raise RuntimeError("Android authored archive requires an owned cache path")
+            if temporary is not None:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                if cache.exists():
+                    if not cache.is_file() or sha256(cache) != record["sha256"]:
+                        raise RuntimeError("Android authored cache already contains different bytes")
+                else:
+                    temporary.replace(cache)
+            index.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+            records[role] = record
+            print("Verified Android guest archive: " + role, flush=True)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    directory = output / "reports/android-guest-authoring" / uuid4().hex
+    directory.mkdir(parents=True)
+    report = directory / "reviewed-pins.json"
+    report.write_text(json.dumps({"schema": "emulebb.android.guest-pin-authoring/1", "source": author,
+                                 "assets": records}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
 
 
 def fetch_tool_inputs() -> Path:
