@@ -338,7 +338,7 @@ def _kvm_group(docker) -> str:
     return group
 
 
-def _guest_failure_details(directory: Path) -> dict:
+def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = frozenset()) -> dict:
     """Allowlist guest phases and OS facts; never publish private log text."""
     path = directory / "guest/report.json"
     try:
@@ -350,13 +350,16 @@ def _guest_failure_details(directory: Path) -> dict:
         return {"phase": "unknown"}
     if not isinstance(guest, dict) or guest.get("schema") != "emulebb.android.emulator-boot/1":
         return {"phase": "unknown"}
-    phases = {"adb-start", "emulator-start", "guest-boot", "guest-properties", "guest-validation", "tls-execution", "complete"}
+    phases = {"adb-start", "emulator-start", "guest-boot", "guest-properties", "guest-validation", "tls-execution", "apk-lifecycle", "complete"}
     properties = {"sdk", "codename", "abis64", "qemu", "machine", "pageSize"}
     phase = guest.get("phase")
     value = {"phase": phase if isinstance(phase, str) and phase in phases else "unknown"}
     # Only fixed owner messages become public reason codes. Raw tracebacks,
     # bootstrap contents, keys and daemon output remain private to the guest.
     reasons = {
+        "Owned Android emulator did not complete boot within its bound": "guest-boot-timeout",
+        "Owned Android emulator exited before boot; inspect the private emulator log": "emulator-exited-before-boot",
+        "Owned Android emulator cleanup failed": "owned-emulator-cleanup-failed",
         "Owned Android ADB command failed": "owned-adb-command-failed",
         "Android TLS proof did not execute exactly one successful required test": "tls-case-incomplete",
         "Android guest TLS payload hash differs from its source-bound bytes": "guest-payload-hash-mismatch",
@@ -445,6 +448,29 @@ def _guest_failure_details(directory: Path) -> dict:
     code = guest.get("emulatorExitCode")
     if type(code) is int and -255 <= code <= 255:
         value["emulatorExitCode"] = code
+    if apk_case_names and phase == "apk-lifecycle":
+        # WHY: exercise() retains its receipt even when it raises, before the
+        # outer guest can assign its successful result. Publish only contract
+        # case names and closed enums, never UI, REST or exception contents.
+        lifecycle = directory / "guest/apk-lifecycle.json"
+        try:
+            if (lifecycle.is_symlink() or not lifecycle.resolve().is_relative_to(directory.resolve())
+                    or not lifecycle.is_file() or lifecycle.stat().st_size > 65536):
+                return value
+            result = json.loads(lifecycle.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return value
+        if isinstance(result, dict) and result.get("schema") == "emulebb.android.apk-lifecycle/1":
+            public = {key: result[key] for key, allowed in (
+                ("status", {"passed", "failed"}), ("runtimeExecution", {"executed", "not-run"}))
+                if isinstance(result.get(key), str) and result[key] in allowed}
+            cases = result.get("cases")
+            if (isinstance(cases, list) and len(cases) <= len(apk_case_names)
+                    and all(isinstance(item, dict) and isinstance(item.get("name"), str)
+                            and item["name"] in apk_case_names and item.get("status") == "passed" for item in cases)
+                    and len({item["name"] for item in cases}) == len(cases)):
+                public["completedCases"] = [item["name"] for item in cases]
+            value["apkProgress"] = public
     return value
 
 
@@ -466,8 +492,10 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
     from .linux_containers import LinuxDocker, _builder_user, run_owned_container
     from .release import _emulebb_rust_artifact_origin
 
-    if (tls_startup and apk_payload is not None or apk_payload is None and image not in {"min", "current"}
-            or apk_payload is not None and image not in {"apk34", "apk35", "apk36", "apk37"}):
+    apk_role = image in {"apk34", "apk35", "apk36", "apk37"}
+    if (image not in {"min", "current", "apk34", "apk35", "apk36", "apk37"}
+            or tls_startup and (apk_payload is not None or apk_role)
+            or apk_payload is not None and not apk_role):
         raise ValueError("Select one native or APK guest qualification mode")
     inputs = emulator_subset(emulator_inputs(), (image,))
     workspace, output = resolve_required_workspace_roots()
@@ -518,7 +546,7 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         payload_identity = exported["sha256"]
         if _guest_sources(layout) != source:
             raise RuntimeError("Android TLS guest sources changed during compilation")
-    tool_report = (prepare_apk_emulator_toolchain(layout, image=image, wsl_distro=wsl_distro) if apk_payload is not None
+    tool_report = (prepare_apk_emulator_toolchain(layout, image=image, wsl_distro=wsl_distro) if apk_role
                    else prepare_emulator_toolchain(layout, images=(image,), wsl_distro=wsl_distro))
     tools = json.loads(tool_report.read_text(encoding="utf-8"))
     image_id = tools.get("image", {}).get("id", "")
@@ -539,7 +567,10 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
              "imageId": image_id, "selectedGuest": image, **_emulebb_rust_artifact_origin()}
     if tls_startup:
         value["tls"] = {"status": "failed", "payloadManifestSha256": payload_identity, "capacityBefore": capacity}
+    apk_case_names = frozenset()
     if apk_payload is not None:
+        from .android_apk_candidate import apk_contract
+        apk_case_names = frozenset(apk_contract(apk_payload["context"])["required_apk_cases"](api))
         metadata = apk_payload["metadata"]
         value.update(scope="apk-lifecycle", applicationQualification="apk-lifecycle", apkSha256=metadata["apk"]["sha256"],
             apkManifestSha256=apk_payload["manifestSha256"], signerSha256=metadata["signerSha256"],
@@ -640,7 +671,9 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         # contain local authentication material and must never be uploaded.
         value.update(status="passed", guest=expected, kvm=True)
     except BaseException as error:
-        value.update(status="failed", failureType=type(error).__name__, failureDetails=_guest_failure_details(directory))
+        value.update(status="failed", failureType=type(error).__name__,
+                     failureDetails=_guest_failure_details(directory, apk_case_names=apk_case_names))
+        print(json.dumps({"failureDetails": value["failureDetails"]}, sort_keys=True))
         raise
     finally:
         report.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")

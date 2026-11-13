@@ -568,7 +568,7 @@ def prepare_rust_android_emulator(*, images: tuple[str, ...], wsl_distro: str,
 
 @main.command("probe-rust-android-guest")
 @_common_options
-@click.option("--image", type=click.Choice(["min", "current"]), required=True)
+@click.option("--image", type=click.Choice(["min", "current", "apk34", "apk35", "apk36", "apk37"]), required=True)
 @click.option("--tls-startup", is_flag=True, help="Also execute the six fixed source-bound Android TLS cases.")
 @click.option("--wsl-distro", default="Ubuntu", show_default=True)
 def probe_rust_android_guest(*, image: str, tls_startup: bool, wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
@@ -583,7 +583,7 @@ def probe_rust_android_guest(*, image: str, tls_startup: bool, wsl_distro: str, 
 
 
 @main.command("probe-rust-android-guest-ci")
-@click.option("--image", type=click.Choice(["min", "current"]), required=True)
+@click.option("--image", type=click.Choice(["min", "current", "apk34", "apk35", "apk36", "apk37"]), required=True)
 @click.option("--tls-startup", is_flag=True, help="Also execute the six fixed source-bound Android TLS cases.")
 def probe_rust_android_guest_ci(*, image: str, tls_startup: bool) -> None:
     """Use the same guest boot owner on minimal hosted build/harness checkouts."""

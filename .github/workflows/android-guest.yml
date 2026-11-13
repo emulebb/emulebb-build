@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [min, current]
+        image: [min, current, apk34, apk35, apk36, apk37]
     env:
       EMULEBB_WORKSPACE_ROOT: ${{ github.workspace }}
       EMULEBB_TESTS_REPO: ${{ github.workspace }}/repos/emulebb-build-tests
@@ -101,6 +101,8 @@ jobs:
           path: |
             ${{ runner.temp }}/emulebb-android-out/reports/android-emulator/*/build.log
             ${{ runner.temp }}/emulebb-android-out/reports/android-emulator/*/toolchain-probe.json
+            ${{ runner.temp }}/emulebb-android-out/reports/android-apk-emulator/*/build.log
+            ${{ runner.temp }}/emulebb-android-out/reports/android-apk-emulator/*/toolchain-probe.json
             ${{ runner.temp }}/emulebb-android-out/reports/android-emulator-boot/*/validation.json
           if-no-files-found: warn
           retention-days: 14

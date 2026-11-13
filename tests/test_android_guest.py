@@ -34,8 +34,9 @@ def test_kvm_group_must_be_numeric(monkeypatch, group):
                                      "tls-success", "tls-missing", "tls-names", "tls-ignored", "tls-source",
                                      "tls-bool", "tls-pre-source", "tls-post-source", "tls-manifest",
                                      "tls-startup-missing", "tls-startup-source", "tls-startup-auth", "tls-startup-shutdown", "tls-old-schema"])
-@pytest.mark.parametrize("image,api,page", [("min", 28, 4096), ("current", 37, 16384)])
-def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_path, monkeypatch, outcome, image, api, page):
+@pytest.mark.parametrize("image,api,page", [("min", 28, 4096), ("current", 37, 16384),
+    ("apk34", 34, 4096), ("apk35", 35, 4096), ("apk36", 36, 4096), ("apk37", 37, 16384)])
+def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_path, monkeypatch, capsys, outcome, image, api, page):
     from emule_workspace import release
 
     workspace, output = tmp_path / "workspace", tmp_path / "output"
@@ -45,6 +46,11 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
     output.mkdir()
     layout = SimpleNamespace(output_root=output, tests_repo_root=harness)
     tls = outcome.startswith("tls-")
+    apk_role = image.startswith("apk")
+    if tls and apk_role:
+        with pytest.raises(ValueError, match="one native or APK"):
+            subject.probe_emulator_guest(layout, image=image, tls_startup=True)
+        return
     if tls:
         from emule_workspace import android_validation
         monkeypatch.setattr(subject.shutil, "disk_usage", lambda path: SimpleNamespace(free=30 * 1024**3))
@@ -86,7 +92,9 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
     tool_report.write_text(json.dumps({"image": {"id": image_id}, "runtimeExecution": "not-run",
         "inputs": subject.emulator_subset(subject.emulator_inputs(), (image,))}))
     prepare = Mock(return_value=tool_report)
-    monkeypatch.setattr(subject, "prepare_emulator_toolchain", prepare)
+    unused_prepare = Mock(side_effect=AssertionError("wrong toolchain role"))
+    monkeypatch.setattr(subject, "prepare_emulator_toolchain", unused_prepare if apk_role else prepare)
+    monkeypatch.setattr(subject, "prepare_apk_emulator_toolchain", prepare if apk_role else unused_prepare)
     captured = []
 
     def run(docker, arguments, log, *, timeout):
@@ -153,13 +161,20 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
     value = json.loads(public)
     assert value["status"] == ("passed" if outcome in {"success", "private-extra", "tls-success"} else "failed")
     assert value["applicationQualification"] == "not-run" and value["source"] == source
+    assert value["scope"] == "guest-boot" and "apk" not in value
+    assert "--apk-source-sha" not in captured and "--apk-manifest-sha256" not in captured
     assert "synthetic-private-token" not in public and "localAuthentication" not in public and str(tmp_path) not in public
+    public_output = capsys.readouterr().out
+    if outcome == "failure":
+        assert json.loads(public_output) == {"failureDetails": {"phase": "unknown"}}
+        assert "private command output" not in public_output
     if tls:
         compile_calls.assert_called_once_with(layout, abis=("x86_64",), wsl_distro="Ubuntu", tls_payload=True)
         assert "--tls-source-sha" in captured and "--tls-manifest-sha256" in captured
         assert str(payload_root) + ",target=/tls-payload,readonly" in " ".join(captured)
         assert value["tls"]["status"] == ("passed" if outcome == "tls-success" else "failed")
-    prepare.assert_called_once_with(layout, images=(image,), wsl_distro="Ubuntu")
+    prepare.assert_called_once_with(layout, **({"image": image} if apk_role else {"images": (image,)}), wsl_distro="Ubuntu")
+    unused_prepare.assert_not_called()
 
 
 def test_guest_sources_reject_dirty_or_changed_revisions(tmp_path, monkeypatch):
@@ -182,6 +197,40 @@ def test_failure_evidence_publishes_only_bounded_os_facts(tmp_path):
     assert subject._guest_failure_details(tmp_path) == {
         "phase": "guest-validation", "property": "pageSize", "emulatorExitCode": 1,
         "observedGuest": {"sdk": "28", "codename": "REL", "pageSize": "4096", "qemu": "1"}}
+
+
+@pytest.mark.parametrize("message,reason", [
+    ("Owned Android emulator did not complete boot within its bound", "guest-boot-timeout"),
+    ("Owned Android emulator exited before boot; inspect the private emulator log", "emulator-exited-before-boot"),
+    ("Owned Android emulator cleanup failed", "owned-emulator-cleanup-failed")])
+def test_boot_failure_diagnostics_use_only_fixed_reason_codes(tmp_path, message, reason):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({
+        "schema": "emulebb.android.emulator-boot/1", "phase": "guest-boot", "error": message}))
+    assert subject._guest_failure_details(tmp_path) == {"phase": "guest-boot", "reason": reason}
+
+
+@pytest.mark.parametrize("fault", [None, "private-case", "duplicate", "private-enums", "oversize", "malformed", "schema"])
+def test_apk_failure_progress_projects_only_source_owned_completed_cases(tmp_path, fault):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1",
+        "phase": "apk-lifecycle", "error": "synthetic-private-key-and-ui"}))
+    receipt = {"schema": "emulebb.android.apk-lifecycle/1", "status": "failed", "runtimeExecution": "executed",
+        "cases": [{"name": "authenticated-rest", "status": "passed"}], "private": "synthetic-private-key-and-ui"}
+    if fault == "private-case": receipt["cases"][0]["name"] = "synthetic-private-key-and-ui"
+    if fault == "duplicate": receipt["cases"] *= 2
+    if fault == "private-enums": receipt.update(status=["synthetic-private"], runtimeExecution="synthetic-private")
+    if fault == "schema": receipt["schema"] = "unknown"
+    text = " " * 65537 if fault == "oversize" else "not json" if fault == "malformed" else json.dumps(receipt)
+    (tmp_path / "guest/apk-lifecycle.json").write_text(text)
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"authenticated-rest", "install"}))
+    if fault in {"oversize", "malformed", "schema"}:
+        assert result == {"phase": "apk-lifecycle"}
+    else:
+        expected = {} if fault == "private-enums" else {"status": "failed", "runtimeExecution": "executed"}
+        if fault not in {"private-case", "duplicate"}: expected["completedCases"] = ["authenticated-rest"]
+        assert result == {"phase": "apk-lifecycle", "apkProgress": expected}
+    assert "synthetic-private" not in json.dumps(result)
 
 
 @pytest.mark.parametrize("payload", ["not JSON", "[]", '{"schema":"other"}', " " * 65537],

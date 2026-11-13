@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from emule_workspace import cli
@@ -95,7 +96,8 @@ def test_physical_android_apk_adapter_uses_exact_harness_owner_under_lock_withou
     assert "phone.example.invalid" not in result.output
 
 
-def test_ci_android_guest_uses_shared_owner_under_lock(tmp_path, monkeypatch):
+@pytest.mark.parametrize("selected_image", ["current", "apk34", "apk35", "apk36", "apk37"])
+def test_ci_android_guest_uses_shared_owner_under_lock(tmp_path, monkeypatch, selected_image):
     import os
     from emule_workspace import android_toolchain, release
 
@@ -117,7 +119,7 @@ def test_ci_android_guest_uses_shared_owner_under_lock(tmp_path, monkeypatch):
         return invoke
 
     def probe(layout, *, image):
-        assert called == ["locked"] and image == "current"
+        assert called == ["locked"] and image == selected_image
         assert layout.tests_repo_root == harness and layout.emule_workspace_root == workspace
         assert layout.output_root == output
         called.append("probed")
@@ -126,7 +128,7 @@ def test_ci_android_guest_uses_shared_owner_under_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_locked", locked)
     monkeypatch.setattr(android_toolchain, "probe_emulator_guest", probe)
     before = os.environ.copy()
-    result = CliRunner().invoke(cli.main, ["probe-rust-android-guest-ci", "--image", "current"])
+    result = CliRunner().invoke(cli.main, ["probe-rust-android-guest-ci", "--image", selected_image])
     assert result.exit_code == 0, result.output
     assert called == ["locked", "probed"] and os.environ == before
 

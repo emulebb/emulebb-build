@@ -21,7 +21,7 @@ def test_android_guest_proof_uploads_only_public_construction_and_sanitized_resu
     assert workflow["permissions"] == {"contents": "read"}
     job = workflow["jobs"]["boot"]
     assert job["runs-on"] == "ubuntu-24.04"
-    assert set(job["strategy"]["matrix"]["image"]) == {"min", "current"}
+    assert set(job["strategy"]["matrix"]["image"]) == {"min", "current", "apk34", "apk35", "apk36", "apk37"}
     steps = job["steps"]
     assert any("probe-rust-android-guest-ci" in step.get("run", "") for step in steps)
     uploads = [step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")]
@@ -29,6 +29,7 @@ def test_android_guest_proof_uploads_only_public_construction_and_sanitized_resu
     root = "${{ runner.temp }}/emulebb-android-out/reports/"
     assert set(uploads[0]["with"]["path"].splitlines()) == {
         root + "android-emulator/*/build.log", root + "android-emulator/*/toolchain-probe.json",
+        root + "android-apk-emulator/*/build.log", root + "android-apk-emulator/*/toolchain-probe.json",
         root + "android-emulator-boot/*/validation.json"}
     for step in steps:
         if step.get("uses", "").startswith("actions/checkout@"):
@@ -42,7 +43,7 @@ def test_android_tls_runtime_is_additional_pinned_source_bound_guest_proof():
 
     workflow = yaml.safe_load((_repo_root() / ".github/workflows/android-guest.yml").read_text(encoding="utf-8"))
     assert workflow["permissions"] == {"contents": "read"}
-    assert set(workflow["jobs"]["boot"]["strategy"]["matrix"]["image"]) == {"min", "current"}
+    assert set(workflow["jobs"]["boot"]["strategy"]["matrix"]["image"]) == {"min", "current", "apk34", "apk35", "apk36", "apk37"}
     job = workflow["jobs"]["tls-runtime"]
     assert job["runs-on"] == "ubuntu-24.04" and job["timeout-minutes"] == 60
     checkouts = {step["with"]["repository"]: step["with"] for step in job["steps"]
