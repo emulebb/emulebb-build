@@ -49,16 +49,33 @@ def test_public_apk_names_cannot_escape_output():
             apk.public_names(value)
 
 
-@pytest.mark.parametrize("change", [None, "name", "versionName", "versionCode", "sdkVersion", "native-code"])
+@pytest.mark.parametrize("change", [None, "name", "versionName", "versionCode", "minSdkVersion", "native-code"])
 def test_packaged_manifest_is_verified_against_release(change):
     text = ("package: name='org.emulebb.android' versionName='0.1.0' versionCode='1'\n"
-            "sdkVersion:'34'\ntargetSdkVersion:'37'\nnative-code: 'arm64-v8a' 'x86_64'\n")
+            "minSdkVersion:'34'\ntargetSdkVersion:'37'\nnative-code: 'arm64-v8a' 'x86_64'\n")
     if change is None:
         apk.audit_badging(text, version="0.1.0", version_code=1)
     else:
         altered = text.replace(change, "unrecognized-field", 1)
         with pytest.raises(RuntimeError):
             apk.audit_badging(altered, version="0.1.0", version_code=1)
+
+
+def test_pinned_aapt2_badging_uses_explicit_min_sdk_version_field():
+    version = "0.1.0-beta.2.nightly.20261113.g09bbc2d1"
+    text = ("package: name='org.emulebb.android' versionCode='1' "
+        f"versionName='{version}' platformBuildVersionName='17' platformBuildVersionCode='37' "
+        "compileSdkVersion='37' compileSdkVersionCodename='17'\n"
+        "minSdkVersion:'34'\ntargetSdkVersion:'37'\n"
+        "uses-permission: name='android.permission.FOREGROUND_SERVICE_SPECIAL_USE'\n"
+        "application-label:'eMuleBB'\napplication: label='eMuleBB' icon=''\n"
+        "launchable-activity: name='org.emulebb.android.MainActivity'  label='' icon=''\n"
+        "native-code: 'arm64-v8a' 'x86_64'\n")
+    apk.audit_badging(text, version=version, version_code=1)
+    with pytest.raises(RuntimeError, match="SDK bounds"):
+        apk.audit_badging(text.replace("minSdkVersion", "sdkVersion"), version=version, version_code=1)
+    with pytest.raises(RuntimeError, match="SDK bounds"):
+        apk.audit_badging(text + "minSdkVersion:'34'\n", version=version, version_code=1)
 
 
 def test_missing_release_signing_fails_before_build(monkeypatch):

@@ -91,7 +91,7 @@ def audit_badging(text: str, *, version: str, version_code: int) -> None:
     fields = dict(re.findall(r"([a-zA-Z]+)='([^']*)'", packages[0]))
     if any(fields.get(key) != value for key, value in expected.items()):
         raise RuntimeError("APK package identity differs from the requested source release")
-    for field, expected_value in (("sdkVersion", MIN_SDK), ("targetSdkVersion", TARGET_SDK)):
+    for field, expected_value in (("minSdkVersion", MIN_SDK), ("targetSdkVersion", TARGET_SDK)):
         if re.findall(r"^" + field + r":'([0-9]+)'$", text, re.MULTILINE) != [str(expected_value)]:
             raise RuntimeError("APK SDK bounds differ from its declared package contract")
     native = [line for line in text.splitlines() if line.startswith("native-code:")]
