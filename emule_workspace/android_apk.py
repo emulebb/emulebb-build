@@ -110,7 +110,10 @@ def _container_environment(values: dict[str, str]) -> list[str]:
 def certificate_sha256(text: str) -> str:
     """Read one signer identity from pinned apksigner's scheme-specific output."""
     identities, labels = set(), set()
-    pattern = re.compile(r"(?P<label>Signer #(?P<number>[1-9][0-9]*) certificate|V[123](?:\.1)? Signer: certificate) "
+    counts = [line for line in text.splitlines() if line.startswith("Number of signers:")]
+    if counts and counts != ["Number of signers: 1"]:
+        raise RuntimeError("APK signature verification did not identify exactly one signer")
+    pattern = re.compile(r"(?P<label>Signer #(?P<number>[1-9][0-9]*) certificate|(?:V[12]|V3(?:\.[012])?) Signer: certificate) "
                          r"SHA-256 digest: (?P<digest>[0-9a-fA-F]{64})")
     for line in text.splitlines():
         if "certificate SHA-256 digest:" not in line:

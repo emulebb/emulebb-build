@@ -85,6 +85,32 @@ def test_pinned_apksigner_formats_identify_one_certificate_across_schemes(text):
     assert apk.certificate_sha256(text) == "a" * 64
 
 
+@pytest.mark.parametrize("scheme", ["V3.0", "V3.1", "V3.2"])
+def test_pinned_verbose_production_signer_output_uses_certificate_and_single_signer_count(scheme):
+    text = ("Verifies\n"
+        "Verified using v1 scheme (JAR signing): false\n"
+        "Verified using v2 scheme (APK Signature Scheme v2): false\n"
+        "Verified using v3 scheme (APK Signature Scheme v3): true\n"
+        "Verified using v3.1 scheme (APK Signature Scheme v3.1): false\n"
+        "Verified using v3.2 scheme (APK Signature Scheme v3.2): false\n"
+        "Verified using v4 scheme (APK Signature Scheme v4): false\n"
+        "Verified for SourceStamp: false\n"
+        "Number of signers: 1\n"
+        f"{scheme} Signer: certificate DN: CN=eMuleBB\n"
+        f"{scheme} Signer: certificate SHA-256 digest: " + "a" * 64 + "\n"
+        f"{scheme} Signer: key algorithm: RSA\n"
+        f"{scheme} Signer: key size (bits): 4096\n"
+        f"{scheme} Signer: public key SHA-256 digest: " + "b" * 64 + "\n")
+    assert apk.certificate_sha256(text) == "a" * 64
+
+
+@pytest.mark.parametrize("count", ["0", "2", "01", "1\nNumber of signers: 1"])
+def test_verbose_signer_count_must_identify_exactly_one_signer(count):
+    text = "Number of signers: " + count + "\nV3.0 Signer: certificate SHA-256 digest: " + "a" * 64
+    with pytest.raises(RuntimeError, match="exactly one signer"):
+        apk.certificate_sha256(text)
+
+
 @pytest.mark.parametrize("text", ["a" * 64,
     "prefix V2 Signer: certificate SHA-256 digest: " + "a" * 64,
     "Signer #2 certificate SHA-256 digest: " + "a" * 64,
