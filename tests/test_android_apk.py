@@ -1,5 +1,5 @@
 """APK production must isolate signing secrets and preserve daemon build defaults."""
-from pathlib import Path
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -42,6 +42,30 @@ def test_missing_release_signing_fails_before_build(monkeypatch):
     with pytest.raises(RuntimeError, match="four"):
         apk.package_apk(SimpleNamespace(), release_version="0.1.0-beta.2.nightly.20261113.g" + "a" * 7,
                         channel="nightly", expected_source_sha="a" * 40, version_code=1)
+
+
+@pytest.mark.parametrize("debug,retained,author", [(False, False, True), (True, True, False)])
+def test_authoring_and_retained_signing_modes_cannot_be_mixed(debug, retained, author):
+    with pytest.raises(ValueError):
+        apk.package_apk(SimpleNamespace(), release_version="0.1.0-beta.2.nightly.20261113.gaaaaaaa",
+            channel="nightly", expected_source_sha="a" * 40, version_code=1, debug=debug,
+            retained_signing=retained, author_gradle_verification=author)
+
+
+def test_retained_passwords_are_scoped_to_signer_child(tmp_path, monkeypatch):
+    scratch = _signing(tmp_path, monkeypatch)
+    selected = {name: os.environ[name] for name in apk.SIGNING_ENV}
+    selected[apk.SIGNING_ENV[2]] = "synthetic-retained-password"
+    selected[apk.SIGNING_ENV[3]] = "synthetic-retained-password"
+    def run(_docker, arguments, _log, **kwargs):
+        if "sign" in arguments:
+            assert kwargs["environment"][apk.SIGNING_ENV[2]] == "synthetic-retained-password"
+            assert "synthetic-retained-password" not in " ".join(arguments)
+        return "Signer #1 certificate SHA-256 digest: " + "a" * 64
+    monkeypatch.setattr(apk, "run_owned_container", run)
+    apk._sign(SimpleNamespace(path=str), base=[], image="reviewed", scratch=scratch, output=tmp_path,
+        unsigned=tmp_path / "unsigned.apk", signed=tmp_path / "signed.apk", report_root=tmp_path, signing=selected)
+    assert os.environ[apk.SIGNING_ENV[2]] == "synthetic-store-secret"
 
 
 def _signing(tmp_path, monkeypatch):

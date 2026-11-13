@@ -15,6 +15,31 @@ def test_exclusive_credentials_never_replace_existing_key_material(tmp_path):
     assert json.loads(path.read_text())["password"] == "synthetic-first"
 
 
+def test_windows_acl_query_uses_dotnet_without_optional_powershell_modules(tmp_path, monkeypatch):
+    sid = "S-1-5-21-1000"
+    def inspect(arguments, **kwargs):
+        script = arguments[-1]
+        assert "Get-Acl" not in script and "New-Object" not in script
+        assert "GetAccessControl()" in script
+        assert kwargs["env"]["ANDROID_SIGNING_ACL_PATH"] == str(tmp_path)
+        return json.dumps({"owner": sid, "protected": True, "rules": [
+            {"sid": sid, "kind": "Allow", "rights": 2032127},
+            {"sid": signing.SYSTEM_SID, "kind": "Allow", "rights": 2032127}]})
+    monkeypatch.setattr(signing.subprocess, "check_output", inspect)
+    signing._verify_acl(tmp_path, sid)
+
+
+def test_retained_credentials_are_read_only_after_private_file_verification(tmp_path, monkeypatch):
+    root = tmp_path / "tools/signing/android"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(signing, "private_directory", lambda *args, **kwargs: None)
+    def reject(_root):
+        raise RuntimeError("synthetic unsafe file ACL")
+    monkeypatch.setattr(signing, "_verify_material", reject)
+    with pytest.raises(RuntimeError, match="unsafe file ACL"):
+        signing.retained_signing_inputs(tmp_path)
+
+
 @pytest.mark.parametrize("unsafe", ["extra", "owner", "inherited", "rights", "deny"])
 def test_windows_acl_verification_rejects_broad_access(tmp_path, monkeypatch, unsafe):
     sid = "S-1-5-21-1000"

@@ -32,14 +32,17 @@ def _verify_acl(path: Path, sid: str, *, protected: bool = True) -> None:
     # of localized icacls prose or assumption about inherited directory access.
     script = (
         "$ErrorActionPreference='Stop';"
-        "$acl=Get-Acl -LiteralPath $env:EMULEBB_SIGNING_ACL_PATH;"
+        "$path=$env:ANDROID_SIGNING_ACL_PATH;"
+        "$item=if([System.IO.Directory]::Exists($path)){[System.IO.DirectoryInfo]::new($path)}"
+        "else{[System.IO.FileInfo]::new($path)};"
+        "$acl=$item.GetAccessControl();"
         "$rules=@($acl.Access | ForEach-Object { @{"
         "sid=$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;"
         "kind=[string]$_.AccessControlType;rights=[int]$_.FileSystemRights} });"
         "@{protected=$acl.AreAccessRulesProtected;"
         "owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value;rules=$rules} | ConvertTo-Json -Depth 4 -Compress"
     )
-    child = dict(os.environ, EMULEBB_SIGNING_ACL_PATH=str(path))
+    child = dict(os.environ, ANDROID_SIGNING_ACL_PATH=str(path))
     result = subprocess.check_output(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
                                      text=True, env=child)
     acl = json.loads(result)
@@ -90,6 +93,23 @@ def _exclusive_json(path: Path, value: dict) -> None:
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def retained_signing_inputs(output: Path) -> tuple[dict[str, str], str]:
+    """Read explicitly selected retained credentials only after native privacy checks."""
+    root = output.resolve() / "tools/signing/android"
+    private_directory(root, create=False)
+    _verify_material(root)
+    credentials = json.loads((root / "credentials.json").read_text(encoding="utf-8"))
+    identity = json.loads((root / "identity.json").read_text(encoding="utf-8"))
+    fingerprint = identity.get("signerSha256", "")
+    password = credentials.get("password")
+    if (identity.get("schema") != "emulebb.android.signing-identity/1"
+            or identity.get("repository") != REPOSITORY or identity.get("alias") != "release"
+            or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None
+            or credentials.get("alias") != "release" or not isinstance(password, str) or not password):
+        raise RuntimeError("Retained Android signing identity is incomplete or inconsistent")
+    return dict(zip(SIGNING_ENV, (str(root / "release.p12"), "release", password, password))), fingerprint
 
 
 def _signing_child(password: str) -> dict[str, str]:

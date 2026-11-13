@@ -98,9 +98,11 @@ def _container_environment(values: dict[str, str]) -> list[str]:
 
 
 def _sign(docker, *, base: list[str], image: str, scratch: Path, output: Path,
-          unsigned: Path, signed: Path, report_root: Path) -> str:
+          unsigned: Path, signed: Path, report_root: Path,
+          signing: dict[str, str] | None = None) -> str:
     """Expose passwords only to the signing subprocess, using apksigner env references."""
-    key, alias = signing_inputs(dict(os.environ))
+    selected = signing if signing is not None else dict(os.environ)
+    key, alias = signing_inputs(selected)
     secret_root = scratch / "signing"
     secret_root.mkdir(mode=0o700)
     secret_key = secret_root / "release.keystore"
@@ -109,6 +111,7 @@ def _sign(docker, *, base: list[str], image: str, scratch: Path, output: Path,
         secret_key.chmod(0o600)
         child = dict(os.environ)
         passwords = SIGNING_ENV[2:]
+        child.update({name: selected[name] for name in passwords})
         if os.name == "nt":
             child["WSLENV"] = ":".join(filter(None, (child.get("WSLENV", ""), *passwords)))
         # WHY: only this container receives signing secrets. General Gradle and
@@ -134,7 +137,8 @@ def _sign(docker, *, base: list[str], image: str, scratch: Path, output: Path,
 
 
 def package_apk(layout, *, release_version: str, channel: str, expected_source_sha: str,
-                version_code: int, wsl_distro: str = "Ubuntu", debug: bool = False) -> Path:
+                version_code: int, wsl_distro: str = "Ubuntu", debug: bool = False,
+                retained_signing: bool = False, author_gradle_verification: bool = False) -> Path:
     """Build both JNI ABIs, bundled SPA and APK from one immutable source selection.
 
     Debug builds are explicit local test inputs. Nightly publication always
@@ -143,10 +147,18 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
     identity(release_version, channel, expected_source_sha)
     if not 1 <= version_code <= 2_100_000_000:
         raise ValueError("APK versionCode must be between 1 and 2100000000")
+    if (debug and retained_signing) or (author_gradle_verification and not debug):
+        raise ValueError("Gradle verification authoring requires debug; retained signing requires release")
+    selected_signing, expected_signer = None, None
+    if retained_signing:
+        from .android_signing import retained_signing_inputs
+        selected_signing, expected_signer = retained_signing_inputs(layout.output_root)
     if not debug:
-        signing_inputs(dict(os.environ))
+        signing_inputs(selected_signing if selected_signing is not None else dict(os.environ))
     rust, output = layout.emulebb_rust_repo_root, layout.output_root.resolve()
     provenance = release._emulebb_rust_package_provenance(layout, rust)
+    if not author_gradle_verification and not (rust / "android/gradle/verification-metadata.xml").is_file():
+        raise RuntimeError("APK source requires reviewed Gradle dependency verification metadata")
     if provenance["source"]["emulebbRust"]["commit"] != expected_source_sha:
         raise RuntimeError("APK source differs from the requested revision")
     if not release_version.startswith(release._emulebb_rust_workspace_version(rust) + ".nightly."):
@@ -238,12 +250,19 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 report["native"][abi] = {"elfAudit": audit, "sha256": release._sha256(library),
                                         "runtimeDependencies": dependencies}
             task = "assembleDebug" if debug else "assembleRelease"
-            execute("gradle", ["gradle", "--no-daemon", "--console=plain", "--project-dir", path(project),
-                "-PandroidBuildRoot=" + path(scratch / "gradle-build"),
-                "-PemulebbNativeDir=" + path(native), "-PemulebbWebuiDir=" + path(webui),
-                "-PemulebbNoticesDir=" + path(notices),
-                "-PemulebbVersionName=" + release_version, "-PemulebbVersionCode=" + str(version_code),
-                ":app:" + task], network="bridge")
+            verification = ["--write-verification-metadata", "sha256"] if author_gradle_verification else ["--dependency-verification", "strict"]
+            try:
+                execute("gradle", ["gradle", "--no-daemon", "--console=plain", "--project-dir", path(project),
+                    "--project-cache-dir", path(home / "gradle-project-cache"), *verification,
+                    "-PandroidBuildRoot=" + path(scratch / "gradle-build"),
+                    "-PemulebbNativeDir=" + path(native), "-PemulebbWebuiDir=" + path(webui),
+                    "-PemulebbNoticesDir=" + path(notices),
+                    "-PemulebbVersionName=" + release_version, "-PemulebbVersionCode=" + str(version_code),
+                    ":app:" + task], network="bridge")
+            finally:
+                metadata = project / "gradle/verification-metadata.xml"
+                if author_gradle_verification and metadata.is_file():
+                    shutil.copy2(metadata, report_root / "verification-metadata.xml")
             flavor = "debug" if debug else "release"
             unsigned = scratch / "gradle-build/app/outputs/apk" / flavor / ("app-debug.apk" if debug else "app-release-unsigned.apk")
             names = public_names(release_version)
@@ -260,7 +279,9 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 signer = match[1].lower()
             else:
                 signer = _sign(docker, base=base, image=image, scratch=scratch, output=output,
-                               unsigned=unsigned, signed=signed, report_root=report_root)
+                               unsigned=unsigned, signed=signed, report_root=report_root, signing=selected_signing)
+                if expected_signer is not None and signer != expected_signer:
+                    raise RuntimeError("Signed APK differs from the retained public certificate identity")
             tools = "/opt/android-tools/sdk/build-tools/" + tool_inputs()["assets"]["build-tools"]["version"]
             execute("zip-alignment", [tools + "/zipalign", "-c", "-P", "16", "4", path(signed)])
             badging = execute("apk-manifest", [tools + "/aapt2", "dump", "badging", path(signed)], capture=True)
