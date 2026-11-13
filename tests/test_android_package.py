@@ -144,3 +144,31 @@ def test_hosted_android_package_command_keeps_source_identity_and_lock(tmp_path,
     assert called[1] == {"abi": "arm64-v8a", "release_version": VERSION, "channel": "nightly",
                          "expected_source_sha": SOURCE["emulebbRust"]}
     assert os.environ == before
+
+
+def test_local_android_package_reuses_existing_producer_without_changing_environment(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from click.testing import CliRunner
+    from emule_workspace import cli
+    layout = object()
+    options = SimpleNamespace(workspace_root=tmp_path, output_root=tmp_path / "output", workspace_name="workspace")
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: layout)
+    events = []
+    def locked(name, operation):
+        def invoke(**kwargs):
+            events.append(name)
+            return operation(**kwargs)
+        return invoke
+    monkeypatch.setattr(cli, "_locked", locked)
+    def produce(selected, **kwargs):
+        assert selected is layout and events == ["package-rust-android"]
+        assert kwargs == {"abi": "arm64-v8a", "release_version": VERSION, "channel": "nightly", "expected_source_sha": SOURCE["emulebbRust"]}
+        return tmp_path / "peer.tar.zst"
+    monkeypatch.setattr(package, "package_android", produce)
+    before = os.environ.copy()
+    result = CliRunner().invoke(cli.main, ["package-rust-android", "--abi", "arm64-v8a", "--release-version", VERSION,
+        "--channel", "nightly", "--expected-source-sha", SOURCE["emulebbRust"]])
+    assert result.exit_code == 0, result.output
+    assert os.environ == before

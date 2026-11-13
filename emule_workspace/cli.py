@@ -662,6 +662,22 @@ def package_rust_android_ci(*, abi: str, release_version: str, channel: str, exp
     _locked("package-rust-android-ci", package)(workspace_options=options, layout=layout)
 
 
+@main.command("package-rust-android")
+@click.option("--abi", required=True, type=click.Choice(["arm64-v8a", "x86_64"]))
+@click.option("--release-version", required=True)
+@click.option("--channel", required=True, type=click.Choice(["nightly"]))
+@click.option("--expected-source-sha", required=True)
+@_common_options
+def package_rust_android(*, abi: str, release_version: str, channel: str, expected_source_sha: str,
+                         workspace_options, layout) -> None:
+    """Use the existing canonical native producer for one exact local peer archive."""
+    from .android_package import package_android
+    def package(**kwargs):
+        print(package_android(kwargs["layout"], abi=abi, release_version=release_version,
+                              channel=channel, expected_source_sha=expected_source_sha))
+    _locked("package-rust-android", package)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("package-rust-android-apk-ci")
 @click.option("--release-version", required=True)
 @click.option("--channel", required=True, type=click.Choice(["nightly"]))

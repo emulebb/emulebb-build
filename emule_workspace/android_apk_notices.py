@@ -21,6 +21,17 @@ KOTLIN_NOTICES = {
 }
 
 
+def stage_source_license(source: Path, destination: Path) -> None:
+    """Copy one complete canonical Android source license without following placeholders."""
+    if source.is_symlink() or not source.is_file() or source.stat().st_size > 1024 * 1024:
+        raise RuntimeError("Android packaging requires a canonical regular source license: " + destination.name)
+    content = source.read_bytes()
+    lower = content.lower()
+    if len(content) < 64 or b"copyright" not in lower or not any(word in lower for word in (b"license", b"redistribution")):
+        raise RuntimeError("Android source notice is not complete license text: " + destination.name)
+    destination.write_bytes(content)
+
+
 def stage_source_notices(rust: Path, mini: Path, pcp: Path, destination: Path) -> None:
     """Use canonical license texts, including Windows checkouts without symlinks."""
     for source, name in ((rust / "LICENSE", "eMuleBB-LICENSE"),
@@ -28,13 +39,7 @@ def stage_source_notices(rust: Path, mini: Path, pcp: Path, destination: Path) -
                          (pcp / "COPYING", "libpcpnatpmp-COPYING")):
         # WHY: miniupnpc/LICENSE is an upstream ../LICENSE symlink. Windows
         # checkouts can expose that ten-byte placeholder instead of license text.
-        if source.is_symlink() or not source.is_file() or source.stat().st_size > 1024 * 1024:
-            raise RuntimeError("APK requires a canonical regular source license: " + name)
-        content = source.read_bytes()
-        lower = content.lower()
-        if len(content) < 64 or b"copyright" not in lower or not any(word in lower for word in (b"license", b"redistribution")):
-            raise RuntimeError("APK source notice is not complete license text: " + name)
-        (destination / name).write_bytes(content)
+        stage_source_license(source, destination / name)
 
 
 def _file(root: Path, descriptor: object) -> Path:
