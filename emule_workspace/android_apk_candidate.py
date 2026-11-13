@@ -62,6 +62,7 @@ def validate_runtime(execution: dict, *, api: int, identity: dict, apk_sha256: s
     _cases(execution.get("cases"), contract["required_apk_cases"](api), "APK lifecycle")
     transfer = _object(execution.get("localTransfer"), "APK local transfer")
     _fields(transfer, {"status": "passed", "collisionPreserved": True, "deliveredInSharedStorage": True,
+                      "completedDeliverySurvivesRestart": True,
                       "peerSourceRevision": identity["sourceRevision"]}, "APK local transfer")
     _positive(transfer.get("sizeBytes"), "APK delivered size")
     if not isinstance(transfer.get("sha256"), str) or HASH.fullmatch(transfer["sha256"]) is None:

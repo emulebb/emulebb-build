@@ -706,6 +706,104 @@ def author_rust_android_apk_guest_inputs(*, workspace_options, layout) -> None:
     _locked("author-rust-android-apk-guest-inputs", author)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("prepare-rust-android-apk-emulator")
+@click.option("--image", required=True, type=click.Choice(["apk34", "apk35", "apk36", "apk37"]))
+@_common_options
+def prepare_rust_android_apk_emulator(*, image: str, workspace_options, layout) -> None:
+    """Prepare pinned emulator/browser tools without booting or qualifying an APK."""
+    from .android_toolchain import prepare_apk_emulator_toolchain
+    def prepare(**kwargs):
+        print(prepare_apk_emulator_toolchain(kwargs["layout"], image=image))
+    _locked("prepare-rust-android-apk-emulator", prepare)(workspace_options=workspace_options, layout=layout)
+
+
+def _apk_evidence_options(function):
+    for name, options in (
+        ("--apk-payload", {"type": click.Path(path_type=Path, exists=True, file_okay=False)}),
+        ("--apk-manifest-name", {}), ("--apk-manifest-sha256", {}), ("--apk-source-sha", {}),
+        ("--expected-cert-sha256", {}), ("--apk-version-code", {"type": click.IntRange(1, 2_100_000_000)}),
+        ("--release-version", {}), ("--apk-build-ref", {}), ("--apk-harness-ref", {}),
+    ):
+        function = click.option(name, required=True, **options)(function)
+    return click.option("--github-output", type=click.Path(path_type=Path, dir_okay=False))(function)
+
+
+def _apk_evidence_arguments(values):
+    return {"payload": values["apk_payload"], "manifest_name": values["apk_manifest_name"],
+        "manifest_sha256": values["apk_manifest_sha256"], "source_sha": values["apk_source_sha"],
+        "signer_sha256": values["expected_cert_sha256"], "version_code": values["apk_version_code"],
+        "version": values["release_version"], "build_ref": values["apk_build_ref"], "harness_ref": values["apk_harness_ref"]}
+
+
+def _apk_evidence_layout():
+    options, layout = _android_ci_layout()
+    value = os.environ.get("EMULEBB_TESTS_REPO", "")
+    harness = Path(value).resolve()
+    if not value or not harness.is_dir() or not harness.is_relative_to(layout.emule_workspace_root):
+        raise click.ClickException("APK qualification requires EMULEBB_TESTS_REPO below the inherited workspace")
+    return options, replace(layout, tests_repo_root=harness)
+
+
+def _apk_evidence_output(path, destination, name):
+    if destination is not None:
+        if "\n" in str(path) or "\r" in str(path):
+            raise click.ClickException("APK evidence output must be one generated path")
+        with destination.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(name + "=" + str(path) + "\n")
+    print(path)
+
+
+@main.command("qualify-rust-android-apk-ci")
+@click.option("--image", required=True, type=click.Choice(["apk34", "apk35", "apk36", "apk37"]))
+@click.option("--peer-artifacts", required=True, type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--peer-build-ref", required=True)
+@click.option("--soak-seconds", default=0, show_default=True, type=click.IntRange(0, 7 * 86400))
+@_apk_evidence_options
+def qualify_rust_android_apk_ci(**values) -> None:
+    """Qualify one exact signed APK on one pinned API through the existing guest owner."""
+    from .android_apk_qualification import qualify
+    options, layout = _apk_evidence_layout()
+    def probe(**kwargs):
+        report = qualify(kwargs["layout"], **_apk_evidence_arguments(values), image=values["image"],
+            peer_artifacts=values["peer_artifacts"], peer_build_ref=values["peer_build_ref"], soak_seconds=values["soak_seconds"])
+        _apk_evidence_output(report, values["github_output"], "qualification_path")
+    _locked("qualify-rust-android-apk-ci", probe)(workspace_options=options, layout=layout)
+
+
+@main.command("assemble-rust-android-apk-evidence-ci")
+@click.option("--evidence-dir", required=True, type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--release-dir", required=True, type=click.Path(path_type=Path, file_okay=False))
+@_apk_evidence_options
+def assemble_rust_android_apk_evidence_ci(**values) -> None:
+    """Bind all four API receipts into the single canonical public APK proof."""
+    from .android_apk_qualification import assemble
+    options, layout = _apk_evidence_layout()
+    def combine(**kwargs):
+        report = assemble(kwargs["layout"], **_apk_evidence_arguments(values),
+            evidence_dir=values["evidence_dir"], release_dir=values["release_dir"])
+        _apk_evidence_output(report, values["github_output"], "qualification_path")
+    _locked("assemble-rust-android-apk-evidence-ci", combine)(workspace_options=options, layout=layout)
+
+
+@main.command("prepare-rust-android-apk-peer")
+@click.option("--abi", required=True, type=click.Choice(["arm64-v8a", "x86_64"]))
+@click.option("--peer-artifacts", required=True, type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--release-version", required=True)
+@click.option("--expected-source-sha", required=True)
+@click.option("--peer-build-ref", required=True)
+@_common_options
+def prepare_rust_android_apk_peer(*, abi: str, peer_artifacts: Path, release_version: str,
+        expected_source_sha: str, peer_build_ref: str, workspace_options, layout) -> None:
+    """Inspect and flatten a canonical same-source native archive without compiling."""
+    from .android_apk_qualification import prepare_peer
+    from .release import _sha256
+    def prepare(**kwargs):
+        directory = prepare_peer(kwargs["layout"], artifacts=peer_artifacts, abi=abi, version=release_version,
+            source_sha=expected_source_sha, peer_build_ref=peer_build_ref)
+        print(json.dumps({"peer_payload": str(directory), "peer_manifest_sha256": _sha256(directory / "manifest.json")}))
+    _locked("prepare-rust-android-apk-peer", prepare)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("probe-rust-android-apk-device")
 @click.option("--adb", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
 @click.option("--serial", required=True, help="Exact operator-selected connected Wi-Fi serial.")
@@ -727,6 +825,10 @@ def author_rust_android_apk_guest_inputs(*, workspace_options, layout) -> None:
 @click.option("--compatibility-receipt-sha256")
 @click.option("--configuration-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False))
 @click.option("--configuration-receipt-sha256")
+@click.option("--peer-payload", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--peer-manifest-sha256")
+@click.option("--peer-abi", type=click.Choice(["arm64-v8a", "x86_64"]))
+@click.option("--rust-source", type=click.Path(path_type=Path, exists=True, file_okay=False))
 @_common_options
 def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, apk_payload: Path,
         apk_manifest_name: str, apk_manifest_sha256: str, apk_source_sha: str, expected_cert_sha256: str,
@@ -735,9 +837,13 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
         configure_storage: bool, allow_owned_compatible_update: bool, compatibility_receipt: Path | None,
         compatibility_receipt_sha256: str | None, configuration_receipt: Path | None,
         configuration_receipt_sha256: str | None,
+        peer_payload: Path | None, peer_manifest_sha256: str | None, peer_abi: str | None, rust_source: Path | None,
         workspace_options, layout) -> None:
     """Use the persisted physical-device owner with one explicit connected phone."""
     def probe(**kwargs):
+        if rust_source is not None:
+            from .release_candidate import _checked_checkout
+            _checked_checkout(rust_source, apk_source_sha, "Physical APK peer Rust source")
         arguments = [kwargs["layout"].tests_repo_root / "scripts/probe-android-apk-device.py"]
         values = {"adb": adb, "serial": serial, "server-port": server_port, "apk-payload": apk_payload,
             "apk-manifest-name": apk_manifest_name, "apk-manifest-sha256": apk_manifest_sha256,
@@ -746,7 +852,8 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
             "installation-receipt": installation_receipt,
             "installation-receipt-sha256": installation_receipt_sha256,
             "compatibility-receipt": compatibility_receipt, "compatibility-receipt-sha256": compatibility_receipt_sha256,
-            "configuration-receipt": configuration_receipt, "configuration-receipt-sha256": configuration_receipt_sha256}
+            "configuration-receipt": configuration_receipt, "configuration-receipt-sha256": configuration_receipt_sha256,
+            "peer-payload": peer_payload, "peer-manifest-sha256": peer_manifest_sha256, "peer-abi": peer_abi, "rust-source": rust_source}
         for name, value in values.items():
             if value is not None:
                 arguments.extend(("--" + name, str(value)))

@@ -275,6 +275,43 @@ def prepare_emulator_toolchain(layout, *, images: tuple[str, ...] = (), wsl_dist
     return report
 
 
+def prepare_apk_emulator_toolchain(layout, *, image: str, wsl_distro: str = "Ubuntu") -> Path:
+    """Add pinned offline Playwright/Chromium only to the selected APK test image."""
+    from .linux_containers import LinuxDocker, _builder_user, run_owned_container
+    base = json.loads(prepare_emulator_toolchain(layout, images=(image,), wsl_distro=wsl_distro).read_text())
+    root = Path(__file__).resolve().parents[1]
+    directory = layout.output_root / "reports/android-apk-emulator" / uuid4().hex
+    directory.mkdir(parents=True)
+    tag = "local/emulebb-android-apk-emulator:" + image
+    with LinuxDocker(wsl_distro) as docker:
+        context = docker.path(root)
+        with (directory / "build.log").open("w", encoding="utf-8") as stream:
+            subprocess.run([*docker.prefix, "docker", "build", "--platform", "linux/amd64",
+                "--build-arg", "EMULATOR_IMAGE=" + base["image"]["tag"],
+                "--file", context + "/emule_workspace/release_assets/android/Dockerfile.apk-emulator",
+                "--tag", tag, context], stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=1200)
+        if docker.run("image", "inspect", "--format", "{{.Id}}", base["image"]["tag"], capture=True, timeout=30).stdout.strip() != base["image"]["id"]:
+            raise RuntimeError("Selected emulator SDK image changed during browser layering")
+        identity = docker.run("image", "inspect", "--format", "{{.Id}}", tag, capture=True, timeout=30).stdout.strip()
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None:
+            raise RuntimeError("APK emulator/browser image requires its actual content identity")
+        run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", _builder_user(docker),
+            "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777", "--env", "HOME=/tmp/home",
+            identity, "python3", "-B", "-m", "emule_workspace.android_probe", "--emulator", "--browser"],
+            directory / "probe.log", timeout=180)
+    value = json.loads((directory / "probe.log").read_text(encoding="utf-8"))
+    expected_browser = json.loads((root / "emule_workspace/release_assets/android/apk-browser.json").read_text())
+    if (value.get("inputs") != base["inputs"] or value.get("runtimeExecution") != "not-run"
+            or value.get("browser", {}).get("status") != "passed"
+            or value["browser"].get("inputs") != expected_browser or value["browser"].get("runtimeExecution") != "executed"):
+        raise RuntimeError("APK emulator/browser image did not prove its pinned offline tools")
+    value["image"] = {"tag": tag, "id": identity}
+    report = directory / "toolchain-probe.json"
+    report.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
+
+
 def _guest_sources(layout) -> dict:
     """Record only clean contributing revisions, without private remotes or paths."""
     from .git import git_output
@@ -421,13 +458,17 @@ TLS_CASE_NAMES = frozenset({
 })
 
 
-def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_startup: bool = False) -> Path:
-    """Run the shared guest boot harness locally or on hosted KVM, without an APK."""
+def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_startup: bool = False,
+                         apk_payload: dict | None = None) -> Path:
+    """Run the shared owned guest harness; APK mode adds its existing production UI proof."""
     from .android_install import emulator_layout
     from .config import resolve_required_workspace_roots
     from .linux_containers import LinuxDocker, _builder_user, run_owned_container
     from .release import _emulebb_rust_artifact_origin
 
+    if (tls_startup and apk_payload is not None or apk_payload is None and image not in {"min", "current"}
+            or apk_payload is not None and image not in {"apk34", "apk35", "apk36", "apk37"}):
+        raise ValueError("Select one native or APK guest qualification mode")
     inputs = emulator_subset(emulator_inputs(), (image,))
     workspace, output = resolve_required_workspace_roots()
     if layout.output_root.resolve() != output:
@@ -477,7 +518,8 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         payload_identity = exported["sha256"]
         if _guest_sources(layout) != source:
             raise RuntimeError("Android TLS guest sources changed during compilation")
-    tool_report = prepare_emulator_toolchain(layout, images=(image,), wsl_distro=wsl_distro)
+    tool_report = (prepare_apk_emulator_toolchain(layout, image=image, wsl_distro=wsl_distro) if apk_payload is not None
+                   else prepare_emulator_toolchain(layout, images=(image,), wsl_distro=wsl_distro))
     tools = json.loads(tool_report.read_text(encoding="utf-8"))
     image_id = tools.get("image", {}).get("id", "")
     if (re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None or tools.get("inputs") != inputs
@@ -486,7 +528,7 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
     role = "system-image-" + image
     image_path = emulator_layout(inputs)[role][1]
     api = int(inputs["assets"][role]["version"].split(".")[0].split("-")[0])
-    page_size = 4096 if image == "min" else 16384
+    page_size = 16384 if image in {"current", "apk37"} else 4096
     directory = output / "reports/android-emulator-boot" / uuid4().hex
     if not directory.resolve().is_relative_to(output):
         raise RuntimeError("Android boot evidence must remain below the output root")
@@ -497,6 +539,11 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
              "imageId": image_id, "selectedGuest": image, **_emulebb_rust_artifact_origin()}
     if tls_startup:
         value["tls"] = {"status": "failed", "payloadManifestSha256": payload_identity, "capacityBefore": capacity}
+    if apk_payload is not None:
+        metadata = apk_payload["metadata"]
+        value.update(scope="apk-lifecycle", applicationQualification="apk-lifecycle", apkSha256=metadata["apk"]["sha256"],
+            apkManifestSha256=apk_payload["manifestSha256"], signerSha256=metadata["signerSha256"],
+            versionCode=metadata["versionCode"], buildIdentity=metadata["buildIdentity"])
     try:
         if _guest_sources(layout) != source:
             raise RuntimeError("Android guest boot sources changed during tool preparation")
@@ -515,18 +562,28 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
                 "--mount", f"type=bind,source={docker.path(harness)},target=/harness,readonly",
                 *(["--mount", f"type=bind,source={docker.path(payload_manifest.parent)},target=/tls-payload,readonly"]
                   if tls_startup else []),
+                *(["--mount", f"type=bind,source={docker.path(apk_payload['payload'])},target=/apk-payload,readonly",
+                   "--mount", f"type=bind,source={docker.path(apk_payload['peer'])},target=/apk-peer-payload,readonly",
+                   "--mount", f"type=bind,source={docker.path(layout.emulebb_rust_repo_root)},target=/rust-source,readonly",
+                   "--env", "EMULEBB_RUST_REPO=/rust-source"] if apk_payload is not None else []),
                 image_id, "python3", "-B", "/harness/scripts/probe-android-emulator.py",
                 "--sdk-root", "/opt/android-emulator", "--image-dir", "/opt/android-emulator/" + image_path,
                 "--api", str(api), "--page-size", str(page_size), "--output-root", "/output",
                 "--report-dir", "/output/guest",
                 *(["--tls-source-sha", payload_value["source"]["emulebbRust"]["commit"],
-                   "--tls-manifest-sha256", payload_identity] if tls_startup else [])],
-                directory / "container.log", timeout=900 if tls_startup else 480)
+                   "--tls-manifest-sha256", payload_identity] if tls_startup else []),
+                *(["--apk-source-sha", apk_payload["metadata"]["buildIdentity"]["sourceRevision"],
+                   "--apk-manifest-sha256", apk_payload["manifestSha256"], "--apk-manifest-name", apk_payload["manifestName"],
+                   "--expected-cert-sha256", apk_payload["context"].apk_signer_sha256,
+                   "--apk-peer-manifest-sha256", apk_payload["peerManifestSha256"], "--apk-rust-source", "/rust-source",
+                   "--apk-soak-seconds", str(apk_payload["soakSeconds"])] if apk_payload is not None else [])],
+                directory / "container.log", timeout=(1800 + apk_payload["soakSeconds"]) if apk_payload is not None else 900 if tls_startup else 480)
         guest = json.loads((directory / "guest/report.json").read_text(encoding="utf-8"))
         expected = {"sdk": api, "codename": "REL", "machine": "x86_64", "pageSize": page_size, "emulator": True}
         facts = guest.get("guest")
         if (guest.get("schema") != "emulebb.android.emulator-boot/1" or guest.get("status") != "passed"
-                or guest.get("scope") != "guest-boot" or guest.get("applicationQualification") != "not-run"
+                or guest.get("scope") != ("apk-lifecycle" if apk_payload is not None else "guest-boot")
+                or guest.get("applicationQualification") != ("apk-lifecycle" if apk_payload is not None else "not-run")
                 or guest.get("kvm") is not True or not isinstance(facts, dict)
                 or any(facts.get(key) != item for key, item in expected.items())
                 or not isinstance(facts.get("supported64BitAbis"), list)
@@ -534,6 +591,17 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
             raise RuntimeError("Android boot harness did not prove the requested stable guest")
         if _guest_sources(layout) != source:
             raise RuntimeError("Android guest boot sources changed during qualification")
+        if apk_payload is not None:
+            from .android_apk_candidate import apk_contract, validate_guest
+            from .android_apk_qualification import admitted_apk
+            from .release import _assert_emulebb_rust_package_provenance
+            value.update(status="passed", guest=expected, kvm=True, apk=guest.get("apk"))
+            validate_guest(value, context=apk_payload["context"], identity=metadata["buildIdentity"],
+                apk_sha256=metadata["apk"]["sha256"], manifest_sha256=apk_payload["manifestSha256"], api=api,
+                contract=apk_contract(apk_payload["context"]))
+            admitted_apk(apk_payload["payload"], manifest_name=apk_payload["manifestName"],
+                manifest_sha256=apk_payload["manifestSha256"], context=apk_payload["context"])
+            _assert_emulebb_rust_package_provenance(layout, layout.emulebb_rust_repo_root, apk_payload["provenance"])
         if tls_startup:
             from .release import _assert_emulebb_rust_package_provenance, _sha256
 
@@ -572,7 +640,7 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         # contain local authentication material and must never be uploaded.
         value.update(status="passed", guest=expected, kvm=True)
     except BaseException as error:
-        value.update(failureType=type(error).__name__, failureDetails=_guest_failure_details(directory))
+        value.update(status="failed", failureType=type(error).__name__, failureDetails=_guest_failure_details(directory))
         raise
     finally:
         report.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")

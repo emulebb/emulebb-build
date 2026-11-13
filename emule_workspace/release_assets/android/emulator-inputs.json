@@ -14,6 +14,24 @@
       "sha256": "ff6ce81aa1424951a214da5f392f8e12382de46d33c08aeaa5d21caba6a39b62",
       "kind": "zip"
     },
+    "system-image-apk34": {
+      "version": "34-r14",
+      "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-34_r14.zip",
+      "sha256": "783a40134baf4f3012d4464fbe1571b1612a0dbd2e7a44d14bd8328923443833",
+      "kind": "zip"
+    },
+    "system-image-apk35": {
+      "version": "35-r9",
+      "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-35_r09.zip",
+      "sha256": "c67b9ba0ff5bc0eb6d046871bfa228af14d4d47b02f0cdae94f048e511b7566e",
+      "kind": "zip"
+    },
+    "system-image-apk36": {
+      "version": "36-r7",
+      "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-36_r07.zip",
+      "sha256": "b1bb0769d0bed7698e61f203d7dc9bf6e7c37cd01a39d0d8788a11186bc78160",
+      "kind": "zip"
+    },
     "system-image-current": {
       "version": "37.2-r7",
       "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-ps16k-37.2_r07.zip",

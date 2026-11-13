@@ -69,7 +69,7 @@ def probe(*, apk: bool = False) -> dict:
             "commandLinePackageRevision": properties["Pkg.Revision"], "probes": versions}
 
 
-def probe_emulator(*, require_kvm: bool = False) -> dict:
+def probe_emulator(*, require_kvm: bool = False, browser: bool = False) -> dict:
     """Prove offline tool execution and installed image metadata, not guest boot."""
     if platform.system() != "Linux" or platform.machine() != "x86_64" or os.getuid() == 0:
         raise RuntimeError("Emulator tool probes require non-root native Linux x86_64")
@@ -95,7 +95,7 @@ def probe_emulator(*, require_kvm: bool = False) -> dict:
                 raise RuntimeError("Installed emulator ADB package revision differs from its pin")
         else:
             api, revision = item["version"].split("-r")
-            tag = "default" if role == "system-image-min" else "page_size_16kb"
+            tag = "default" if role == "system-image-min" else "page_size_16kb" if role in {"system-image-current", "system-image-apk37"} else "google_apis"
             if (properties.get("Pkg.Revision") != revision or properties.get("AndroidVersion.ApiLevel") != api
                     or properties.get("SystemImage.Abi") != "x86_64"
                     or tag not in properties.get("SystemImage.TagId", "").split(",")
@@ -122,20 +122,41 @@ def probe_emulator(*, require_kvm: bool = False) -> dict:
         kvm["usable"] = acceleration.returncode == 0
     if require_kvm and not kvm["usable"]:
         raise RuntimeError("Hardware-accelerated Android execution requires usable KVM; no software fallback")
-    return {"schema": "emulebb.android-emulator-toolchain-probe/1", "inputs": inputs,
+    result = {"schema": "emulebb.android-emulator-toolchain-probe/1", "inputs": inputs,
             "uid": os.getuid(), "gid": os.getgid(), "metadata": metadata,
             "versionOutput": version.stdout.strip(), "adbVersionOutput": adb.stdout.strip(),
             "kvm": kvm, "runtimeExecution": "not-run"}
+    if browser:
+        from importlib.metadata import version
+        from playwright.sync_api import sync_playwright
+        expected_browser = json.loads((Path(__file__).parent / "release_assets/android/apk-browser.json").read_text())
+        if version("playwright") != expected_browser["version"]:
+            raise RuntimeError("APK browser probe requires the pinned Playwright SDK")
+        with sync_playwright() as playwright:
+            chromium = playwright.chromium.launch(headless=True)
+            try:
+                page = chromium.new_page()
+                page.set_content("<title>eMuleBB qualification</title>")
+                if page.title() != "eMuleBB qualification":
+                    raise RuntimeError("APK browser did not execute its offline page probe")
+                result["browser"] = {"status": "passed", "runtimeExecution": "executed", "inputs": expected_browser,
+                                     "playwrightVersion": version("playwright"), "chromiumVersion": chromium.version}
+            finally:
+                chromium.close()
+    return result
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--emulator", action="store_true")
     parser.add_argument("--apk", action="store_true")
+    parser.add_argument("--browser", action="store_true")
     parser.add_argument("--require-kvm", action="store_true")
     arguments = parser.parse_args()
     if arguments.apk and arguments.emulator:
         parser.error("--apk and --emulator are mutually exclusive")
+    if arguments.browser and not arguments.emulator:
+        parser.error("--browser requires --emulator")
     if arguments.require_kvm and not arguments.emulator:
         parser.error("--require-kvm requires --emulator")
-    print(json.dumps(probe_emulator(require_kvm=arguments.require_kvm) if arguments.emulator else probe(apk=arguments.apk), sort_keys=True))
+    print(json.dumps(probe_emulator(require_kvm=arguments.require_kvm, browser=arguments.browser) if arguments.emulator else probe(apk=arguments.apk), sort_keys=True))

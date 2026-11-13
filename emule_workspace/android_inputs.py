@@ -9,7 +9,9 @@ from urllib.parse import urlsplit
 CONFIG = Path(__file__).parent / "release_assets/android/toolchain.json"
 ROLES = frozenset({"command-line-tools", "ndk", "build-tools", "platform", "platform-tools", "gradle", "jdk", "android-cli"})
 EMULATOR_CONFIG = CONFIG.with_name("emulator-inputs.json")
-EMULATOR_ROLES = frozenset({"emulator", "system-image-min", "system-image-current"})
+EMULATOR_ROLES = frozenset({"emulator", "system-image-min", "system-image-current",
+                           "system-image-apk34", "system-image-apk35", "system-image-apk36"})
+APK_IMAGES = ("apk34", "apk35", "apk36", "apk37")
 
 
 def tool_inputs(config: Path = CONFIG) -> dict:
@@ -24,10 +26,12 @@ def emulator_inputs(config: Path = EMULATOR_CONFIG) -> dict:
 
 def emulator_subset(inputs: dict, images: tuple[str, ...]) -> dict:
     """Select emulator/ADB and requested guests without compiler-only inputs."""
-    if len(set(images)) != len(images) or any(image not in {"min", "current"} for image in images):
-        raise ValueError("Select unique minimum/current Android images")
-    roles = {"emulator", *("system-image-" + image for image in images)}
-    assets = {role: item for role, item in inputs["assets"].items() if role in roles}
+    canonical = ["current" if image == "apk37" else image for image in images]
+    if len(set(canonical)) != len(canonical) or any(image not in {"min", "current", *APK_IMAGES} for image in images):
+        raise ValueError("Select unique supported native or APK Android images")
+    assets = {"emulator": inputs["assets"]["emulator"]}
+    for image, source in zip(images, canonical):
+        assets["system-image-" + image] = inputs["assets"]["system-image-" + source]
     # WHY: guest boot needs ADB, but not the SDK/NDK/JDK/Gradle stack. Reuse
     # its single reviewed pin without depending on unrelated upstream downloads.
     assets["platform-tools"] = tool_inputs()["assets"]["platform-tools"]

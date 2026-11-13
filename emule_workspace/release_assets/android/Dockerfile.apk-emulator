@@ -1,0 +1,17 @@
+ARG EMULATOR_IMAGE
+FROM ${EMULATOR_IMAGE} AS emulator
+FROM mcr.microsoft.com/playwright/python:v1.65.1-noble@sha256:0ab41a37431309d72b7a26f40ef1fdb464a62740196b2143965a2f59dc090409
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    python3-venv libpulse0 libegl1 libgl1 libxcb1 libxkbcommon0 && rm -rf /var/lib/apt/lists/*
+COPY --from=emulator /opt/android-emulator /opt/android-emulator
+COPY --from=emulator /opt/emulebb /opt/emulebb
+COPY emule_workspace/release_assets/ci_linux/requirements.txt /opt/emulebb/emule_workspace/release_assets/ci_linux/requirements.txt
+COPY emule_workspace/release_assets/android/apk-browser-requirements.txt \
+     emule_workspace/release_assets/android/apk-browser.json /opt/emulebb/emule_workspace/release_assets/android/
+RUN python3 -m venv /opt/apk-test-python \
+    && /opt/apk-test-python/bin/python -m pip install --require-hashes --only-binary=:all: --no-cache-dir \
+       --disable-pip-version-check -r /opt/emulebb/emule_workspace/release_assets/android/apk-browser-requirements.txt
+ENV PYTHONPATH=/opt/emulebb PYTHONDONTWRITEBYTECODE=1 \
+    ANDROID_HOME=/opt/android-emulator ANDROID_SDK_ROOT=/opt/android-emulator \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PATH=/opt/apk-test-python/bin:/opt/android-emulator/emulator:/opt/android-emulator/platform-tools:${PATH}

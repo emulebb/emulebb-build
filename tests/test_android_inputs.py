@@ -30,6 +30,24 @@ def test_guest_tool_selection_uses_shared_adb_pin_and_excludes_compilers():
     assert selected["assets"]["platform-tools"] == inputs.tool_inputs()["assets"]["platform-tools"]
 
 
+@pytest.mark.parametrize("image,version,tag", [("apk34", "34-r14", "google_apis"), ("apk35", "35-r9", "google_apis"),
+                                              ("apk36", "36-r7", "google_apis"), ("apk37", "37.2-r7", "google_apis_ps16k")])
+def test_additive_apk_guests_use_pinned_supported_apis_and_correct_image_tags(image, version, tag):
+    from emule_workspace.android_install import emulator_layout
+    selected = inputs.emulator_subset(inputs.emulator_inputs(), (image,))
+    role = "system-image-" + image
+    assert selected["assets"][role]["version"] == version
+    assert set(selected["assets"]) == {"emulator", "platform-tools", role}
+    assert "/" + tag + "/" in emulator_layout(selected)[role][1]
+
+
+def test_current_native_and_apk37_share_one_pin_without_ambiguous_duplicate_installation():
+    value = inputs.emulator_inputs()
+    assert inputs.emulator_subset(value, ("apk37",))["assets"]["system-image-apk37"] == value["assets"]["system-image-current"]
+    with pytest.raises(ValueError, match="unique"):
+        inputs.emulator_subset(value, ("current", "apk37"))
+
+
 @pytest.mark.parametrize("role,changes", [
     ("emulator", {"url": "https://dl.google.com/android/repository/emulator-linux_x64-latest.zip"}),
     ("emulator", {"sha256": "f" * 63}),
