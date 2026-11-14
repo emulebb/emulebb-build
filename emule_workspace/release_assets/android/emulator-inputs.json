@@ -12,49 +12,57 @@
       "version": "28-r4",
       "url": "https://dl.google.com/android/repository/sys-img/android/x86_64-28_r04.zip",
       "sha256": "ff6ce81aa1424951a214da5f392f8e12382de46d33c08aeaa5d21caba6a39b62",
-      "kind": "zip"
+      "kind": "zip",
+      "packageRevision": "4"
     },
     "system-image-apk31": {
       "version": "31-r14",
       "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-31_r14.zip",
       "sha256": "7e7081f5784e98dd391ddae52573a75bc1db17a2fd286cb20be46d3eec251f94",
-      "kind": "zip"
+      "kind": "zip",
+      "packageRevision": "12"
     },
     "system-image-apk32": {
       "version": "32-r8",
       "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-32_r08.zip",
       "sha256": "2709bcc5a4aa98539b12c2169df606dfe9184fc3b4a0aac7120f319721e63bf1",
-      "kind": "zip"
+      "kind": "zip",
+      "packageRevision": "4"
     },
     "system-image-apk33": {
       "version": "33-r17",
       "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-33_r17.zip",
       "sha256": "0455f853dcaf23e89b44f810e4b6391e8ef356326ec0e6c25b7f3f9de9ff5659",
-      "kind": "zip"
+      "kind": "zip",
+      "packageRevision": "17"
     },
     "system-image-apk34": {
       "version": "34-r14",
       "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-34_r14.zip",
       "sha256": "783a40134baf4f3012d4464fbe1571b1612a0dbd2e7a44d14bd8328923443833",
-      "kind": "zip"
+      "kind": "zip",
+      "packageRevision": "14"
     },
     "system-image-apk35": {
       "version": "35-r9",
       "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-35_r09.zip",
       "sha256": "c67b9ba0ff5bc0eb6d046871bfa228af14d4d47b02f0cdae94f048e511b7566e",
-      "kind": "zip"
+      "kind": "zip",
+      "packageRevision": "9"
     },
     "system-image-apk36": {
       "version": "36-r7",
       "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-36_r07.zip",
       "sha256": "b1bb0769d0bed7698e61f203d7dc9bf6e7c37cd01a39d0d8788a11186bc78160",
-      "kind": "zip"
+      "kind": "zip",
+      "packageRevision": "7"
     },
     "system-image-current": {
       "version": "37.2-r7",
       "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-ps16k-37.2_r07.zip",
       "sha256": "02d2cdb501d11f70f318a2e542e8b997edb0d468855399d8c8efae22721b9b8c",
-      "kind": "zip"
+      "kind": "zip",
+      "packageRevision": "7"
     }
   }
 }

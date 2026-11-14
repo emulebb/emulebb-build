@@ -94,9 +94,9 @@ def probe_emulator(*, require_kvm: bool = False, browser: bool = False) -> dict:
             if properties.get("Pkg.Revision") != item["version"]:
                 raise RuntimeError("Installed emulator ADB package revision differs from its pin")
         else:
-            api, revision = item["version"].split("-r")
+            api, _publication_revision = item["version"].split("-r")
             tag = "default" if role == "system-image-min" else "page_size_16kb" if role in {"system-image-current", "system-image-apk37"} else "google_apis"
-            if (properties.get("Pkg.Revision") != revision or properties.get("AndroidVersion.ApiLevel") != api
+            if (properties.get("Pkg.Revision") != item["packageRevision"] or properties.get("AndroidVersion.ApiLevel") != api
                     or properties.get("SystemImage.Abi") != "x86_64"
                     or tag not in properties.get("SystemImage.TagId", "").split(",")
                     or properties.get("AndroidVersion.PreviewSdkInt", "0") != "0"):

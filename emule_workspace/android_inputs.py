@@ -47,10 +47,15 @@ def _read_inputs(config: Path, schema: str, roles: frozenset[str]) -> dict:
             or not isinstance(value["assets"], dict) or set(value["assets"]) != roles):
         raise RuntimeError("Expected the complete reviewed Linux x86_64 Android tool inputs")
     for role, item in value["assets"].items():
-        if (not isinstance(item, dict) or set(item) != {"version", "url", "sha256", "kind"}
+        # WHY: the official archive publication revision can differ from the
+        # embedded package revision; both are mandatory, independently pinned.
+        guest = role.startswith("system-image-")
+        required = {"version", "url", "sha256", "kind"} | ({"packageRevision"} if guest else set())
+        if (not isinstance(item, dict) or set(item) != required
                 or not all(isinstance(part, str) for part in item.values())
                 or re.fullmatch(r"[0-9]+(?:\.[0-9]+)*(?:[+-](?:r)?[0-9]+)?", item["version"]) is None
-                or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None):
+                or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+                or (guest and re.fullmatch(r"[1-9][0-9]*", item["packageRevision"]) is None)):
             raise RuntimeError(f"Invalid reviewed Android input: {role}")
         expected_kind = "binary" if role == "android-cli" else "tar.gz" if role == "jdk" else "zip"
         if item["kind"] != expected_kind:

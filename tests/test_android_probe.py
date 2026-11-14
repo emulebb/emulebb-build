@@ -154,3 +154,34 @@ def test_wrong_guest_variant_fails_before_emulator_execution(emulator_environmen
     monkeypatch.setattr(probe.subprocess, "run", lambda *args, **kwargs: pytest.fail("mismatched guest execution"))
     with pytest.raises(RuntimeError, match="differs from its pin"):
         probe.probe_emulator()
+
+
+@pytest.mark.parametrize("image,api,revision", [("apk31", "31", "12"), ("apk32", "32", "4"), ("apk33", "33", "17")])
+@pytest.mark.parametrize("fault", ["none", "wrong-revision", "wrong-api", "wrong-sha"])
+def test_published_guest_archive_and_installed_package_revisions_are_independent(
+        emulator_environment, monkeypatch, image, api, revision, fault):
+    from emule_workspace.android_inputs import emulator_inputs, emulator_subset
+    source = emulator_inputs()
+    selected = emulator_subset(source, (image,))
+    installed = json.loads(json.dumps(selected))
+    if fault == "wrong-sha":
+        installed["assets"]["system-image-" + image]["sha256"] = "f" * 64
+    monkeypatch.setattr(probe, "emulator_inputs", lambda: source)
+    original = Path.read_text
+    def read(path, *args, **kwargs):
+        if path.name == "emulator-inputs.json":
+            return json.dumps(installed)
+        if "android-" + api + "/" in path.as_posix():
+            actual_revision = "999" if fault == "wrong-revision" else revision
+            actual_api = "99" if fault == "wrong-api" else api
+            return (f"Pkg.Revision={actual_revision}\nAndroidVersion.ApiLevel={actual_api}\n"
+                    "SystemImage.Abi=x86_64\nSystemImage.TagId=google_apis\n")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", read)
+    if fault == "none":
+        result = probe.probe_emulator()
+        assert result["metadata"]["system-image-" + image]["Pkg.Revision"] == revision
+    else:
+        monkeypatch.setattr(probe.subprocess, "run", lambda *args, **kwargs: pytest.fail("unverified guest execution"))
+        with pytest.raises(RuntimeError, match="differ|differs"):
+            probe.probe_emulator()

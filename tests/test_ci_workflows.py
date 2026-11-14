@@ -29,6 +29,7 @@ def test_android_guest_proof_uploads_only_public_construction_and_sanitized_resu
     root = "${{ runner.temp }}/emulebb-android-out/reports/"
     assert set(uploads[0]["with"]["path"].splitlines()) == {
         root + "android-emulator/*/build.log", root + "android-emulator/*/toolchain-probe.json",
+        root + "android-emulator/*/toolchain-probe.log",
         root + "android-apk-emulator/*/build.log", root + "android-apk-emulator/*/toolchain-probe.json",
         root + "android-emulator-boot/*/validation.json"}
     for step in steps:
