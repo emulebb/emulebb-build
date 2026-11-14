@@ -35,7 +35,8 @@ def synthetic_bundle(root, monkeypatch, *, abi="arm64-v8a", cpp=False):
         path.mkdir(parents=True, exist_ok=True)
     for name in ("LICENSE", "emulebb-rust-settings.example.toml"):
         (rust / name).write_text("Synthetic public fixture")
-    (mini / "miniupnpc/LICENSE").write_text("Synthetic BSD fixture")
+    (mini / "LICENSE").write_text("BSD License\nCopyright Synthetic Authors\n" + "Redistribution is permitted. " * 5)
+    (mini / "miniupnpc/LICENSE").write_text("../LICENSE")
     (pcp / "COPYING").write_text("Synthetic BSD fixture")
     binary = native_elf(output / "compiled/emulebb-rust", abi)
     webui = output / "webui"

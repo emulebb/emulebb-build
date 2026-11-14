@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import zipfile
 
 from .android_inputs import emulator_inputs, emulator_subset, tool_inputs
 from .android_install import emulator_layout
@@ -18,7 +19,7 @@ def _properties(path: Path) -> dict[str, str]:
             if "=" in line and not line.lstrip().startswith("#") for key, value in [line.split("=", 1)]}
 
 
-def probe() -> dict:
+def probe(*, apk: bool = False) -> dict:
     """Prove actual native execution; never claim APK or device qualification."""
     inputs = tool_inputs()
     if platform.system() != "Linux" or platform.machine() != "x86_64" or os.getuid() == 0:
@@ -42,7 +43,20 @@ def probe() -> dict:
     }
     ndk = root / "sdk/ndk" / inputs["assets"]["ndk"]["version"] / "toolchains/llvm/prebuilt/linux-x86_64/bin"
     for target in ("aarch64-linux-android", "x86_64-linux-android"):
-        commands[target] = ([str(ndk / (target + "28-clang")), "--version"], "clang version")
+        commands[target] = ([str(ndk / (target + ("31" if apk else "28") + "-clang")), "--version"], "clang version")
+    if apk:
+        build_tools = root / "sdk/build-tools" / inputs["assets"]["build-tools"]["version"]
+        source = Path.home() / "alignment-input.zip"
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("probe.txt", "APK build-tool execution probe")
+        commands.update({
+            "aapt2": ([str(build_tools / "aapt2"), "version"], "Android Asset Packaging Tool"),
+            "apksigner": ([str(build_tools / "apksigner"), "version"], "."),
+            "zipalign": ([str(build_tools / "zipalign"), "-f", "-P", "16", "4", str(source),
+                          str(source.with_name("alignment-output.zip"))], ""),
+            "zipalign-check": ([str(build_tools / "zipalign"), "-c", "-P", "16", "4",
+                                str(source.with_name("alignment-output.zip"))], ""),
+        })
     versions = {}
     for name, (command, expected) in commands.items():
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -50,12 +64,12 @@ def probe() -> dict:
         if result.returncode or expected not in result.stdout or len(result.stdout) > 65536:
             raise RuntimeError(f"Unexpected Android tool version probe: {name}\n{result.stdout[:65536]}")
         versions[name] = result.stdout.strip()
-    return {"schema": "emulebb.android-toolchain-probe/1", "host": inputs["host"],
+    return {"schema": "emulebb.android-apk-toolchain-probe/1" if apk else "emulebb.android-toolchain-probe/1", "host": inputs["host"],
             "uid": os.getuid(), "gid": os.getgid(), "inputs": inputs,
             "commandLinePackageRevision": properties["Pkg.Revision"], "probes": versions}
 
 
-def probe_emulator(*, require_kvm: bool = False) -> dict:
+def probe_emulator(*, require_kvm: bool = False, browser: bool = False) -> dict:
     """Prove offline tool execution and installed image metadata, not guest boot."""
     if platform.system() != "Linux" or platform.machine() != "x86_64" or os.getuid() == 0:
         raise RuntimeError("Emulator tool probes require non-root native Linux x86_64")
@@ -80,9 +94,9 @@ def probe_emulator(*, require_kvm: bool = False) -> dict:
             if properties.get("Pkg.Revision") != item["version"]:
                 raise RuntimeError("Installed emulator ADB package revision differs from its pin")
         else:
-            api, revision = item["version"].split("-r")
-            tag = "default" if role == "system-image-min" else "page_size_16kb"
-            if (properties.get("Pkg.Revision") != revision or properties.get("AndroidVersion.ApiLevel") != api
+            api, _publication_revision = item["version"].split("-r")
+            tag = "default" if role == "system-image-min" else "page_size_16kb" if role in {"system-image-current", "system-image-apk37"} else "google_apis"
+            if (properties.get("Pkg.Revision") != item["packageRevision"] or properties.get("AndroidVersion.ApiLevel") != api
                     or properties.get("SystemImage.Abi") != "x86_64"
                     or tag not in properties.get("SystemImage.TagId", "").split(",")
                     or properties.get("AndroidVersion.PreviewSdkInt", "0") != "0"):
@@ -108,17 +122,41 @@ def probe_emulator(*, require_kvm: bool = False) -> dict:
         kvm["usable"] = acceleration.returncode == 0
     if require_kvm and not kvm["usable"]:
         raise RuntimeError("Hardware-accelerated Android execution requires usable KVM; no software fallback")
-    return {"schema": "emulebb.android-emulator-toolchain-probe/1", "inputs": inputs,
+    result = {"schema": "emulebb.android-emulator-toolchain-probe/1", "inputs": inputs,
             "uid": os.getuid(), "gid": os.getgid(), "metadata": metadata,
             "versionOutput": version.stdout.strip(), "adbVersionOutput": adb.stdout.strip(),
             "kvm": kvm, "runtimeExecution": "not-run"}
+    if browser:
+        from importlib.metadata import version
+        from playwright.sync_api import sync_playwright
+        expected_browser = json.loads((Path(__file__).parent / "release_assets/android/apk-browser.json").read_text())
+        if version("playwright") != expected_browser["version"]:
+            raise RuntimeError("APK browser probe requires the pinned Playwright SDK")
+        with sync_playwright() as playwright:
+            chromium = playwright.chromium.launch(headless=True)
+            try:
+                page = chromium.new_page()
+                page.set_content("<title>eMuleBB qualification</title>")
+                if page.title() != "eMuleBB qualification":
+                    raise RuntimeError("APK browser did not execute its offline page probe")
+                result["browser"] = {"status": "passed", "runtimeExecution": "executed", "inputs": expected_browser,
+                                     "playwrightVersion": version("playwright"), "chromiumVersion": chromium.version}
+            finally:
+                chromium.close()
+    return result
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--emulator", action="store_true")
+    parser.add_argument("--apk", action="store_true")
+    parser.add_argument("--browser", action="store_true")
     parser.add_argument("--require-kvm", action="store_true")
     arguments = parser.parse_args()
+    if arguments.apk and arguments.emulator:
+        parser.error("--apk and --emulator are mutually exclusive")
+    if arguments.browser and not arguments.emulator:
+        parser.error("--browser requires --emulator")
     if arguments.require_kvm and not arguments.emulator:
         parser.error("--require-kvm requires --emulator")
-    print(json.dumps(probe_emulator(require_kvm=arguments.require_kvm) if arguments.emulator else probe(), sort_keys=True))
+    print(json.dumps(probe_emulator(require_kvm=arguments.require_kvm, browser=arguments.browser) if arguments.emulator else probe(apk=arguments.apk), sort_keys=True))

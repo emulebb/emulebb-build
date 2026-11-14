@@ -118,7 +118,8 @@ def write_bundle(layout, *, root: Path, scratch: Path, binary: Path, webui: Path
     release._stage_emulebb_rust_bootstrap(rust, stage)
     mini, pcp = release._emulebb_rust_native_source_roots(layout)
     (stage / "licenses").mkdir()
-    shutil.copy2(mini / "miniupnpc/LICENSE", stage / "licenses/MiniUPnPc-LICENSE")
+    from .android_apk_notices import stage_source_license
+    stage_source_license(mini / "LICENSE", stage / "licenses/MiniUPnPc-LICENSE")
     shutil.copy2(pcp / "COPYING", stage / "licenses/libpcpnatpmp-COPYING")
     runtime = deepcopy(report["runtimeDependencies"][abi])
     for item in runtime["bundled"]:
@@ -147,7 +148,6 @@ def write_bundle(layout, *, root: Path, scratch: Path, binary: Path, webui: Path
         "Run ./run-developer.sh from this writable unpacked directory (or add --profile .).\n"
         "The default profile is the executable directory; --profile paths resolve from the shell working directory.\n"
         "Open http://127.0.0.1:20017/ and enter change_me_123change_me_123change_me_123.\n"
-        "Replace the shared starter key before exposing the API outside this computer.\n"
         "The adjacent webui directory supplies the browser console. Never publish profile secrets.\n",
         encoding="utf-8",
     )

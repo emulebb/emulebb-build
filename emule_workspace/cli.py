@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -13,6 +14,7 @@ from typing import Any, TypeVar
 
 import click
 
+from .android_inputs import APK_IMAGES
 from .build_tests import invoke_build_tests
 from .artifact_audit import audit_workspace_artifacts, print_artifact_audit
 from .build import build_apps as invoke_build_apps
@@ -567,7 +569,7 @@ def prepare_rust_android_emulator(*, images: tuple[str, ...], wsl_distro: str,
 
 @main.command("probe-rust-android-guest")
 @_common_options
-@click.option("--image", type=click.Choice(["min", "current"]), required=True)
+@click.option("--image", type=click.Choice(["min", "current", *APK_IMAGES]), required=True)
 @click.option("--tls-startup", is_flag=True, help="Also execute the six fixed source-bound Android TLS cases.")
 @click.option("--wsl-distro", default="Ubuntu", show_default=True)
 def probe_rust_android_guest(*, image: str, tls_startup: bool, wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
@@ -582,7 +584,7 @@ def probe_rust_android_guest(*, image: str, tls_startup: bool, wsl_distro: str, 
 
 
 @main.command("probe-rust-android-guest-ci")
-@click.option("--image", type=click.Choice(["min", "current"]), required=True)
+@click.option("--image", type=click.Choice(["min", "current", *APK_IMAGES]), required=True)
 @click.option("--tls-startup", is_flag=True, help="Also execute the six fixed source-bound Android TLS cases.")
 def probe_rust_android_guest_ci(*, image: str, tls_startup: bool) -> None:
     """Use the same guest boot owner on minimal hosted build/harness checkouts."""
@@ -659,6 +661,396 @@ def package_rust_android_ci(*, abi: str, release_version: str, channel: str, exp
         print(f"Experimental Android developer bundle: {archive}")
 
     _locked("package-rust-android-ci", package)(workspace_options=options, layout=layout)
+
+
+@main.command("package-rust-android")
+@click.option("--abi", required=True, type=click.Choice(["arm64-v8a", "x86_64"]))
+@click.option("--release-version", required=True)
+@click.option("--channel", required=True, type=click.Choice(["nightly"]))
+@click.option("--expected-source-sha", required=True)
+@_common_options
+def package_rust_android(*, abi: str, release_version: str, channel: str, expected_source_sha: str,
+                         workspace_options, layout) -> None:
+    """Use the existing canonical native producer for one exact local peer archive."""
+    from .android_package import package_android
+    def package(**kwargs):
+        print(package_android(kwargs["layout"], abi=abi, release_version=release_version,
+                              channel=channel, expected_source_sha=expected_source_sha))
+    _locked("package-rust-android", package)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("package-rust-android-apk-ci")
+@click.option("--release-version", required=True)
+@click.option("--channel", required=True, type=click.Choice(["nightly"]))
+@click.option("--expected-source-sha", required=True)
+@click.option("--expected-cert-sha256", required=True)
+@click.option("--version-code", required=True, type=click.IntRange(1, 2_100_000_000))
+@click.option("--github-output", type=click.Path(path_type=Path, dir_okay=False))
+def package_rust_android_apk_ci(*, release_version: str, channel: str,
+                               expected_source_sha: str, expected_cert_sha256: str, version_code: int,
+                               github_output: Path | None) -> None:
+    """Build and sign the source-bound universal Android application."""
+    from .android_apk import package_apk, write_github_outputs
+    options, layout = _android_ci_layout()
+    def package(**kwargs):
+        artifact = package_apk(kwargs["layout"], release_version=release_version, channel=channel,
+              expected_source_sha=expected_source_sha, expected_cert_sha256=expected_cert_sha256,
+              version_code=version_code)
+        if github_output is not None:
+            write_github_outputs(artifact, github_output, version=release_version,
+                                 source_sha=expected_source_sha, signer_sha256=expected_cert_sha256, version_code=version_code)
+        print(artifact)
+    _locked("package-rust-android-apk-ci", package)(workspace_options=options, layout=layout)
+
+
+@main.command("prepare-rust-android-apk-gradle")
+@_common_options
+def prepare_rust_android_apk_gradle(*, workspace_options, layout) -> None:
+    """Probe pinned Gradle/JDK and exact Android Gradle plugin resolution."""
+    from .android_apk import probe_gradle
+    def probe(**kwargs):
+        print(probe_gradle(kwargs["layout"]))
+    _locked("prepare-rust-android-apk-gradle", probe)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("author-rust-android-apk-guest-inputs")
+@click.option("--image", "images", multiple=True, type=click.Choice(["apk31", "apk32", "apk33", "apk34", "apk35", "apk36"]))
+@_common_options
+def author_rust_android_apk_guest_inputs(*, images, workspace_options, layout) -> None:
+    """Download selected official guest archives and retain proposed SHA-256 pins."""
+    from .android_toolchain import author_apk_guest_inputs
+    def author(**kwargs):
+        print(author_apk_guest_inputs(kwargs["layout"], images=images))
+    _locked("author-rust-android-apk-guest-inputs", author)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("prepare-rust-android-apk-emulator")
+@click.option("--image", required=True, type=click.Choice(APK_IMAGES))
+@_common_options
+def prepare_rust_android_apk_emulator(*, image: str, workspace_options, layout) -> None:
+    """Prepare pinned emulator/browser tools without booting or qualifying an APK."""
+    from .android_toolchain import prepare_apk_emulator_toolchain
+    def prepare(**kwargs):
+        print(prepare_apk_emulator_toolchain(kwargs["layout"], image=image))
+    _locked("prepare-rust-android-apk-emulator", prepare)(workspace_options=workspace_options, layout=layout)
+
+
+def _apk_evidence_options(function):
+    for name, options in (
+        ("--apk-payload", {"type": click.Path(path_type=Path, exists=True, file_okay=False)}),
+        ("--apk-manifest-name", {}), ("--apk-manifest-sha256", {}), ("--apk-source-sha", {}),
+        ("--expected-cert-sha256", {}), ("--apk-version-code", {"type": click.IntRange(1, 2_100_000_000)}),
+        ("--release-version", {}), ("--apk-build-ref", {}), ("--apk-harness-ref", {}),
+    ):
+        function = click.option(name, required=True, **options)(function)
+    return click.option("--github-output", type=click.Path(path_type=Path, dir_okay=False))(function)
+
+
+def _apk_evidence_arguments(values):
+    return {"payload": values["apk_payload"], "manifest_name": values["apk_manifest_name"],
+        "manifest_sha256": values["apk_manifest_sha256"], "source_sha": values["apk_source_sha"],
+        "signer_sha256": values["expected_cert_sha256"], "version_code": values["apk_version_code"],
+        "version": values["release_version"], "build_ref": values["apk_build_ref"], "harness_ref": values["apk_harness_ref"]}
+
+
+def _apk_evidence_layout():
+    options, layout = _android_ci_layout()
+    value = os.environ.get("EMULEBB_TESTS_REPO", "")
+    harness = Path(value).resolve()
+    if not value or not harness.is_dir() or not harness.is_relative_to(layout.emule_workspace_root):
+        raise click.ClickException("APK qualification requires EMULEBB_TESTS_REPO below the inherited workspace")
+    return options, replace(layout, tests_repo_root=harness)
+
+
+def _apk_evidence_output(path, destination, name):
+    if destination is not None:
+        if "\n" in str(path) or "\r" in str(path):
+            raise click.ClickException("APK evidence output must be one generated path")
+        with destination.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(name + "=" + str(path) + "\n")
+    print(path)
+
+
+@main.command("qualify-rust-android-apk-ci")
+@click.option("--image", required=True, type=click.Choice(APK_IMAGES))
+@click.option("--peer-artifacts", required=True, type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--peer-build-ref", required=True)
+@click.option("--soak-seconds", default=0, show_default=True, type=click.IntRange(0, 7 * 86400))
+@_apk_evidence_options
+def qualify_rust_android_apk_ci(**values) -> None:
+    """Qualify one exact signed APK on one pinned API through the existing guest owner."""
+    from .android_apk_qualification import qualify
+    options, layout = _apk_evidence_layout()
+    def probe(**kwargs):
+        report = qualify(kwargs["layout"], **_apk_evidence_arguments(values), image=values["image"],
+            peer_artifacts=values["peer_artifacts"], peer_build_ref=values["peer_build_ref"], soak_seconds=values["soak_seconds"])
+        _apk_evidence_output(report, values["github_output"], "qualification_path")
+    _locked("qualify-rust-android-apk-ci", probe)(workspace_options=options, layout=layout)
+
+
+@main.command("diagnose-rust-android-apk-ci")
+@click.option("--producer-run-id", required=True)
+@click.option("--producer-source-sha", required=True)
+@click.option("--apk-manifest-sha256", required=True)
+@click.option("--image", required=True, type=click.Choice(APK_IMAGES))
+@click.option("--expected-cert-sha256", required=True)
+@click.option("--diagnostic-build-ref", required=True)
+@click.option("--diagnostic-harness-ref", required=True)
+@click.option("--github-output", type=click.Path(path_type=Path, dir_okay=False))
+def diagnose_rust_android_apk_ci(**values) -> None:
+    """Replay admitted original bytes for diagnostics, never release qualification."""
+    from .android_apk_qualification import diagnose
+    options, layout = _apk_evidence_layout()
+    def probe(**kwargs):
+        report = diagnose(kwargs["layout"], producer_run_id=values["producer_run_id"],
+            producer_source_sha=values["producer_source_sha"], manifest_sha256=values["apk_manifest_sha256"],
+            image=values["image"], signer_sha256=values["expected_cert_sha256"],
+            build_ref=values["diagnostic_build_ref"], harness_ref=values["diagnostic_harness_ref"])
+        _apk_evidence_output(report, values["github_output"], "diagnostic_path")
+    _locked("diagnose-rust-android-apk-ci", probe)(workspace_options=options, layout=layout)
+
+
+@main.command("assemble-rust-android-apk-evidence-ci")
+@click.option("--evidence-dir", required=True, type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--release-dir", required=True, type=click.Path(path_type=Path, file_okay=False))
+@_apk_evidence_options
+def assemble_rust_android_apk_evidence_ci(**values) -> None:
+    """Bind all four API receipts into the single canonical public APK proof."""
+    from .android_apk_qualification import assemble
+    options, layout = _apk_evidence_layout()
+    def combine(**kwargs):
+        report = assemble(kwargs["layout"], **_apk_evidence_arguments(values),
+            evidence_dir=values["evidence_dir"], release_dir=values["release_dir"])
+        _apk_evidence_output(report, values["github_output"], "qualification_path")
+    _locked("assemble-rust-android-apk-evidence-ci", combine)(workspace_options=options, layout=layout)
+
+
+@main.command("prepare-rust-android-apk-peer")
+@click.option("--abi", required=True, type=click.Choice(["arm64-v8a", "x86_64"]))
+@click.option("--peer-artifacts", required=True, type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--release-version", required=True)
+@click.option("--expected-source-sha", required=True)
+@click.option("--peer-build-ref", required=True)
+@_common_options
+def prepare_rust_android_apk_peer(*, abi: str, peer_artifacts: Path, release_version: str,
+        expected_source_sha: str, peer_build_ref: str, workspace_options, layout) -> None:
+    """Inspect and flatten a canonical same-source native archive without compiling."""
+    from .android_apk_qualification import prepare_peer
+    from .release import _sha256
+    def prepare(**kwargs):
+        directory = prepare_peer(kwargs["layout"], artifacts=peer_artifacts, abi=abi, version=release_version,
+            source_sha=expected_source_sha, peer_build_ref=peer_build_ref)
+        print(json.dumps({"peer_payload": str(directory), "peer_manifest_sha256": _sha256(directory / "manifest.json")}))
+    _locked("prepare-rust-android-apk-peer", prepare)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("probe-rust-android-apk-device")
+@click.option("--adb", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--serial", required=True, help="Exact operator-selected connected Wi-Fi serial.")
+@click.option("--server-port", default=5037, show_default=True, type=click.IntRange(1, 65535))
+@click.option("--apk-payload", required=True, type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--apk-manifest-name", required=True)
+@click.option("--apk-manifest-sha256", required=True)
+@click.option("--apk-source-sha", required=True)
+@click.option("--expected-cert-sha256", required=True)
+@click.option("--report-dir", required=True, type=click.Path(path_type=Path, file_okay=False))
+@click.option("--execute", is_flag=True, help="Perform the bounded owned-installation runtime smoke.")
+@click.option("--reset-owned-profile", is_flag=True,
+              help="Reset only the verified owned app using the supplied installation receipt.")
+@click.option("--verify-fresh-defaults", is_flag=True, help="Verify defaults on a proven fresh owned profile.")
+@click.option("--check-system-theme", is_flag=True, help="Check system theme following and restore the baseline.")
+@click.option("--installation-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--installation-receipt-sha256")
+@click.option("--dwell-seconds", default=30, show_default=True, type=click.IntRange(15, 300))
+@click.option("--render-webui", is_flag=True)
+@click.option("--configure-storage", is_flag=True)
+@click.option("--probe-local-listeners", is_flag=True)
+@click.option("--allow-owned-compatible-update", is_flag=True)
+@click.option("--compatibility-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--compatibility-receipt-sha256")
+@click.option("--configuration-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--configuration-receipt-sha256")
+@click.option("--cleanup-transfer-report", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--cleanup-transfer-report-sha256")
+@click.option("--cleanup-transfer-fixture-sha256")
+@click.option("--peer-payload", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--peer-manifest-sha256")
+@click.option("--peer-abi", type=click.Choice(["arm64-v8a", "x86_64"]))
+@click.option("--rust-source", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@_common_options
+def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, apk_payload: Path,
+        apk_manifest_name: str, apk_manifest_sha256: str, apk_source_sha: str, expected_cert_sha256: str,
+        report_dir: Path, execute: bool, reset_owned_profile: bool, verify_fresh_defaults: bool,
+        check_system_theme: bool, installation_receipt: Path | None,
+        installation_receipt_sha256: str | None, dwell_seconds: int, render_webui: bool,
+        configure_storage: bool, probe_local_listeners: bool, allow_owned_compatible_update: bool, compatibility_receipt: Path | None,
+        compatibility_receipt_sha256: str | None, configuration_receipt: Path | None,
+        configuration_receipt_sha256: str | None, cleanup_transfer_report: Path | None,
+        cleanup_transfer_report_sha256: str | None, cleanup_transfer_fixture_sha256: str | None,
+        peer_payload: Path | None, peer_manifest_sha256: str | None, peer_abi: str | None, rust_source: Path | None,
+        workspace_options, layout) -> None:
+    """Use the persisted physical-device owner with one explicit connected phone."""
+    if (reset_owned_profile or verify_fresh_defaults or check_system_theme) and not execute:
+        raise click.UsageError("--reset-owned-profile, --verify-fresh-defaults and --check-system-theme require --execute")
+    if reset_owned_profile:
+        if installation_receipt is None or not installation_receipt_sha256:
+            raise click.UsageError("--reset-owned-profile requires --installation-receipt and --installation-receipt-sha256")
+        if (configure_storage or probe_local_listeners or allow_owned_compatible_update
+                or any(value is not None for value in (compatibility_receipt, compatibility_receipt_sha256,
+                    configuration_receipt, configuration_receipt_sha256, cleanup_transfer_report,
+                    cleanup_transfer_report_sha256, cleanup_transfer_fixture_sha256,
+                    peer_payload, peer_manifest_sha256, peer_abi, rust_source))):
+            raise click.UsageError("--reset-owned-profile conflicts with storage configuration, listener/peer probes, "
+                                   "compatible updates and prior compatibility/configuration/cleanup evidence")
+    if verify_fresh_defaults and (configure_storage or any(value is not None for value in (
+            configuration_receipt, configuration_receipt_sha256, cleanup_transfer_report,
+            cleanup_transfer_report_sha256, cleanup_transfer_fixture_sha256))):
+        raise click.UsageError("--verify-fresh-defaults conflicts with --configure-storage and prior configuration/cleanup evidence")
+    def probe(**kwargs):
+        if rust_source is not None:
+            from .release_candidate import _checked_checkout
+            _checked_checkout(rust_source, apk_source_sha, "Physical APK peer Rust source")
+        arguments = [kwargs["layout"].tests_repo_root / "scripts/probe-android-apk-device.py"]
+        values = {"adb": adb, "serial": serial, "server-port": server_port, "apk-payload": apk_payload,
+            "apk-manifest-name": apk_manifest_name, "apk-manifest-sha256": apk_manifest_sha256,
+            "apk-source-sha": apk_source_sha, "expected-cert-sha256": expected_cert_sha256,
+            "report-dir": report_dir, "dwell-seconds": dwell_seconds,
+            "installation-receipt": installation_receipt,
+            "installation-receipt-sha256": installation_receipt_sha256,
+            "compatibility-receipt": compatibility_receipt, "compatibility-receipt-sha256": compatibility_receipt_sha256,
+            "configuration-receipt": configuration_receipt, "configuration-receipt-sha256": configuration_receipt_sha256,
+            "cleanup-transfer-report": cleanup_transfer_report,
+            "cleanup-transfer-report-sha256": cleanup_transfer_report_sha256,
+            "cleanup-transfer-fixture-sha256": cleanup_transfer_fixture_sha256,
+            "peer-payload": peer_payload, "peer-manifest-sha256": peer_manifest_sha256, "peer-abi": peer_abi, "rust-source": rust_source}
+        for name, value in values.items():
+            if value is not None:
+                arguments.extend(("--" + name, str(value)))
+        arguments.extend(flag for flag, enabled in (("--execute", execute), ("--render-webui", render_webui),
+            ("--reset-owned-profile", reset_owned_profile), ("--verify-fresh-defaults", verify_fresh_defaults),
+            ("--check-system-theme", check_system_theme),
+            ("--configure-storage", configure_storage), ("--probe-local-listeners", probe_local_listeners),
+            ("--allow-owned-compatible-update", allow_owned_compatible_update)) if enabled)
+        # WHY: the exact Wi-Fi endpoint is operator state. This process owner
+        # executes without printing or retaining argv; do not add argv logging.
+        run_native(get_python_invocation().command(arguments), label="physical Android APK probe",
+                   cwd=kwargs["layout"].tests_repo_root)
+    _locked("probe-rust-android-apk-device", probe)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("android-public-sharing")
+@click.argument("action", type=click.Choice(["prepare", "start", "observe", "status", "stop", "inspect-failed-prepare", "resume-failed-prepare"]))
+@click.option("--campaign-dir", required=True, type=click.Path(path_type=Path))
+@click.option("--adb", type=click.Path(path_type=Path))
+@click.option("--serial")
+@click.option("--server-port", default=5037, type=click.IntRange(1, 65535))
+@click.option("--apk-payload", type=click.Path(path_type=Path))
+@click.option("--apk-manifest-name")
+@click.option("--apk-manifest-sha256")
+@click.option("--apk-source-sha")
+@click.option("--expected-cert-sha256")
+@click.option("--installation-receipt", type=click.Path(path_type=Path))
+@click.option("--installation-receipt-sha256")
+@click.option("--source-dir", type=click.Path(path_type=Path))
+@click.option("--expected-file-count", type=click.IntRange(min=1))
+@click.option("--expected-total-bytes", type=click.IntRange(min=1))
+@click.option("--route", type=click.Choice(["direct-wifi"]))
+@click.option("--duration-seconds", type=click.IntRange(1, 86400))
+@click.option("--interval-seconds", type=click.IntRange(5, 300))
+@click.option("--upload-limit-kibps", type=click.IntRange(1, 10240))
+@click.option("--history-max-bytes", type=click.IntRange(65536, 67108864))
+@click.option("--minimum-free-bytes", type=click.IntRange(67108864, 1099511627776))
+@click.option("--campaign-receipt-sha256")
+@click.option("--recover-stale-monitor", is_flag=True)
+@_common_options
+def android_public_sharing(*, action: str, workspace_options, layout, **values) -> None:
+    """Delegate an owned public-sharing campaign to the selected harness."""
+    prepare_fields = ("apk_payload", "apk_manifest_name", "apk_manifest_sha256", "apk_source_sha",
+        "expected_cert_sha256", "installation_receipt", "installation_receipt_sha256", "source_dir",
+        "expected_file_count", "expected_total_bytes", "route")
+    limit_fields = ("duration_seconds", "interval_seconds", "upload_limit_kibps", "history_max_bytes", "minimum_free_bytes")
+    if action != "status" and (not values["adb"] or not values["serial"]):
+        raise click.UsageError("This action requires --adb and --serial")
+    if action == "prepare":
+        if any(values[name] is None or values[name] == "" for name in prepare_fields):
+            raise click.UsageError("prepare requires all APK, installation, source and route inputs")
+        if values["campaign_receipt_sha256"] or values["recover_stale_monitor"]:
+            raise click.UsageError("prepare does not accept campaign receipt or recovery options")
+    else:
+        if not values["campaign_receipt_sha256"]:
+            raise click.UsageError("This action requires --campaign-receipt-sha256")
+        if any(values[name] is not None for name in (*prepare_fields, *limit_fields)):
+            raise click.UsageError("APK, source and limit inputs are only valid for prepare")
+        if values["recover_stale_monitor"] and action not in ("start", "observe"):
+            raise click.UsageError("--recover-stale-monitor is only valid for start or observe")
+    if action == "status" and (values["adb"] is not None or values["serial"] is not None):
+        raise click.UsageError("status does not accept device inputs")
+
+    def invoke(**kwargs):
+        arguments = [kwargs["layout"].tests_repo_root / "scripts/android-public-sharing.py", action]
+        for name, value in values.items():
+            if name == "recover_stale_monitor":
+                if value:
+                    arguments.append("--recover-stale-monitor")
+            elif value is not None and (name != "server_port" or action != "status"):
+                arguments.extend(("--" + name.replace("_", "-"), str(value)))
+        # The endpoint and campaign paths are private; never print or retain argv.
+        try:
+            run_native(get_python_invocation().command(arguments), label="Android public sharing",
+                       cwd=kwargs["layout"].tests_repo_root)
+        except Exception as exc:
+            raise click.ClickException("Android public sharing operation failed") from exc
+    if action == "status":
+        invoke(workspace_options=workspace_options, layout=layout)
+    else:
+        _locked("android-public-sharing", invoke)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("prove-rust-android-profile-compatibility")
+@click.option("--from-source-sha", required=True)
+@click.option("--to-source-sha", required=True)
+@_common_options
+def prove_rust_android_profile_compatibility(*, from_source_sha: str, to_source_sha: str,
+                                              workspace_options, layout) -> None:
+    """Prove exact schema equality for a separately authorized owned-phone update."""
+    from .android_profile import prove_profile_compatibility
+    def prove(**kwargs):
+        print(prove_profile_compatibility(kwargs["layout"], from_source_sha=from_source_sha, to_source_sha=to_source_sha))
+    _locked("prove-rust-android-profile-compatibility", prove)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("provision-rust-android-signing")
+@_common_options
+def provision_rust_android_signing(*, workspace_options, layout) -> None:
+    """Create retained release key once and configure the four GitHub signing secrets."""
+    from .android_signing import provision_signing
+    def provision(**kwargs):
+        print(json.dumps(provision_signing(kwargs["layout"]), sort_keys=True))
+    _locked("provision-rust-android-signing", provision)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("package-rust-android-apk")
+@click.option("--release-version", required=True)
+@click.option("--expected-source-sha", required=True)
+@click.option("--expected-cert-sha256", help="Trusted public release certificate SHA-256; required for production.")
+@click.option("--version-code", required=True, type=click.IntRange(1, 2_100_000_000))
+@click.option("--debug", is_flag=True, help="Explicit local test APK; never publication evidence.")
+@click.option("--retained-signing", is_flag=True, help="Explicitly use the verified operator-owned retained release identity.")
+@click.option("--author-gradle-verification", is_flag=True, help="Debug only: retain resolved dependency checksums for source review.")
+@click.option("--kotlin-only", is_flag=True, help="Compile the staged app only; no native build, APK or runtime proof.")
+@click.option("--lint-only", is_flag=True, help="Compile and lint the staged app; no native build, APK or runtime proof.")
+@_common_options
+def package_rust_android_apk(*, release_version: str, expected_source_sha: str,
+                            expected_cert_sha256: str | None, version_code: int, debug: bool, retained_signing: bool,
+                            author_gradle_verification: bool, kotlin_only: bool, lint_only: bool, workspace_options, layout) -> None:
+    """Build the universal APK through the selected registered source set."""
+    from .android_apk import package_apk
+    def package(**kwargs):
+        print(package_apk(kwargs["layout"], release_version=release_version, channel="nightly",
+              expected_source_sha=expected_source_sha, version_code=version_code, debug=debug,
+              retained_signing=retained_signing, author_gradle_verification=author_gradle_verification,
+              kotlin_only=kotlin_only, lint_only=lint_only, expected_cert_sha256=expected_cert_sha256))
+    _locked("package-rust-android-apk", package)(workspace_options=workspace_options, layout=layout)
 
 
 def _android_ci_layout():

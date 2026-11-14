@@ -9,7 +9,10 @@ from urllib.parse import urlsplit
 CONFIG = Path(__file__).parent / "release_assets/android/toolchain.json"
 ROLES = frozenset({"command-line-tools", "ndk", "build-tools", "platform", "platform-tools", "gradle", "jdk", "android-cli"})
 EMULATOR_CONFIG = CONFIG.with_name("emulator-inputs.json")
-EMULATOR_ROLES = frozenset({"emulator", "system-image-min", "system-image-current"})
+EMULATOR_ROLES = frozenset({"emulator", "system-image-min", "system-image-current",
+                           "system-image-apk31", "system-image-apk32", "system-image-apk33",
+                           "system-image-apk34", "system-image-apk35", "system-image-apk36"})
+APK_IMAGES = ("apk31", "apk32", "apk33", "apk34", "apk35", "apk36", "apk37")
 
 
 def tool_inputs(config: Path = CONFIG) -> dict:
@@ -24,10 +27,12 @@ def emulator_inputs(config: Path = EMULATOR_CONFIG) -> dict:
 
 def emulator_subset(inputs: dict, images: tuple[str, ...]) -> dict:
     """Select emulator/ADB and requested guests without compiler-only inputs."""
-    if len(set(images)) != len(images) or any(image not in {"min", "current"} for image in images):
-        raise ValueError("Select unique minimum/current Android images")
-    roles = {"emulator", *("system-image-" + image for image in images)}
-    assets = {role: item for role, item in inputs["assets"].items() if role in roles}
+    canonical = ["current" if image == "apk37" else image for image in images]
+    if len(set(canonical)) != len(canonical) or any(image not in {"min", "current", *APK_IMAGES} for image in images):
+        raise ValueError("Select unique supported native or APK Android images")
+    assets = {"emulator": inputs["assets"]["emulator"]}
+    for image, source in zip(images, canonical):
+        assets["system-image-" + image] = inputs["assets"]["system-image-" + source]
     # WHY: guest boot needs ADB, but not the SDK/NDK/JDK/Gradle stack. Reuse
     # its single reviewed pin without depending on unrelated upstream downloads.
     assets["platform-tools"] = tool_inputs()["assets"]["platform-tools"]
@@ -42,10 +47,15 @@ def _read_inputs(config: Path, schema: str, roles: frozenset[str]) -> dict:
             or not isinstance(value["assets"], dict) or set(value["assets"]) != roles):
         raise RuntimeError("Expected the complete reviewed Linux x86_64 Android tool inputs")
     for role, item in value["assets"].items():
-        if (not isinstance(item, dict) or set(item) != {"version", "url", "sha256", "kind"}
+        # WHY: the official archive publication revision can differ from the
+        # embedded package revision; both are mandatory, independently pinned.
+        guest = role.startswith("system-image-")
+        required = {"version", "url", "sha256", "kind"} | ({"packageRevision"} if guest else set())
+        if (not isinstance(item, dict) or set(item) != required
                 or not all(isinstance(part, str) for part in item.values())
                 or re.fullmatch(r"[0-9]+(?:\.[0-9]+)*(?:[+-](?:r)?[0-9]+)?", item["version"]) is None
-                or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None):
+                or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+                or (guest and re.fullmatch(r"[1-9][0-9]*", item["packageRevision"]) is None)):
             raise RuntimeError(f"Invalid reviewed Android input: {role}")
         expected_kind = "binary" if role == "android-cli" else "tar.gz" if role == "jdk" else "zip"
         if item["kind"] != expected_kind:
@@ -70,6 +80,8 @@ def _read_inputs(config: Path, schema: str, roles: frozenset[str]) -> dict:
             version = re.fullmatch(r"(?P<api>[0-9]+(?:\.[0-9]+)?)-r(?P<revision>[0-9]+)", item["version"])
             if version is None:
                 raise RuntimeError("Android system images require an API and exact revision")
+            if role.startswith("system-image-apk") and version["api"] != role.removeprefix("system-image-apk"):
+                raise RuntimeError("Android APK image role must match its exact API")
             variant = "ps16k-" if role == "system-image-current" else ""
             expected = f"x86_64-{variant}{version['api']}_r{int(version['revision']):02}.zip"
             if filename != expected:

@@ -12,6 +12,20 @@ from emule_workspace.cleanup import plan_cleanup
 from emule_workspace.config import CleanupOptions
 
 
+def test_signing_identity_and_ancestors_are_never_cleanup_candidates(tmp_path, monkeypatch):
+    from emule_workspace import cleanup
+    layout = make_layout(tmp_path)
+    retained = layout.output_root / "tools/signing/android/release.p12"
+    ordinary = layout.output_root / "tmp/generated"
+    candidates = [cleanup.CleanupCandidate(path, "directory", "synthetic", "test", 0, 0)
+                  for path in (retained, retained.parent, layout.output_root / "tools", ordinary)]
+    monkeypatch.setattr(cleanup, "_path_anomaly_candidates", lambda _layout: candidates)
+    planned = cleanup.plan_cleanup(layout, CleanupOptions(profile="deep"))
+    assert ordinary in {candidate.path for candidate in planned}
+    assert not any(candidate.path in {retained, retained.parent, layout.output_root / "tools"}
+                   for candidate in planned)
+
+
 def test_routine_cleanup_selects_old_generated_artifacts(tmp_path: Path) -> None:
     layout = make_layout(tmp_path)
     old_payload = write_file(layout.output_root / "reports" / "rest-api-smoke" / "20260501-run" / "temp" / "001.part", 10)

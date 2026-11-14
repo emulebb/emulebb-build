@@ -61,7 +61,7 @@ def emulator_layout(inputs: dict) -> dict[str, tuple[str, str]]:
         if role in {"emulator", "platform-tools"}:
             continue
         api = item["version"].split("-r")[0]
-        tag = "default" if role == "system-image-min" else "google_apis_ps16k"
+        tag = "default" if role == "system-image-min" else "google_apis_ps16k" if role in {"system-image-current", "system-image-apk37"} else "google_apis"
         layout[role] = ("x86_64", f"system-images/android-{api}/{tag}/x86_64")
     return layout
 

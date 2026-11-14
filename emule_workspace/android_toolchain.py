@@ -6,6 +6,8 @@ compilation and release signing belong to subsequent explicit operations.
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import os
 from pathlib import Path
 import re
@@ -13,11 +15,184 @@ import shutil
 import subprocess
 import tempfile
 from urllib.parse import urlsplit
+import urllib.request
 from uuid import uuid4
+import zipfile
 
 from .python_runtime import download_verified, sha256
 
-from .android_inputs import ROLES, emulator_inputs, emulator_subset, tool_inputs
+from .android_inputs import APK_IMAGES, ROLES, emulator_inputs, emulator_subset, tool_inputs
+
+APK_GUEST_AUTHORING = Path(__file__).parent / "release_assets/android/apk-guest-authoring.json"
+
+# Independent closed receipt allowlists; never trust harness-provided text.
+TRANSFER_FAILURE_PHASES = frozenset({
+    "admit-original-settings", "admit-prior-downloads-and-roots", "admit-network-binding", "fixture-directory-create",
+    "fixture-occupant-push", "persist-fixture-settings", "restart-fixture-destination", "verify-fixture-destination",
+    "peer-profile-seed", "peer-home-create", "peer-profile-push", "peer-binary-push-and-hash", "peer-process-spawn",
+    "peer-process-admission", "peer-rest-forward", "peer-source-bound-readiness", "peer-ready", "peer-graceful-shutdown",
+    "peer-shared-fixture-push", "peer-shared-file-hash", "directed-local-listener-start", "enqueue-owned-transfer",
+    "await-completed-delivery", "verify-delivered-path-and-size", "verify-delivered-bytes", "verify-collision-preserved",
+    "restart-completed-delivery", "verify-completed-delivery-metadata", "verify-completed-download-evidence",
+    "verify-completed-delivery-bytes", "cleanup-remove-owned-transfer", "cleanup-restore-original-settings", "cleanup-remove-owned-fixture",
+} | {role + "-listener-" + step for role in ("app", "peer") for step in (
+    "server-inventory", "allocate-owned-loopback-endpoint", "server-create", "created-configuration-admission",
+    "directed-connect", "connect-acknowledgement", "ready", "owned-server-disable-precondition", "owned-server-disable",
+    "owned-disabled-row-verification", "preexisting-server-configuration-preservation")})
+ADB_OPERATIONS = frozenset({"shell-mkdir", "shell-chmod", "shell-sha256", "shell-cat", "shell-script", "shell-input", "shell-dumpsys", "binary-read", "push", "forward", "install", "device-command"})
+ADB_REASONS = frozenset({"unclassified-command-failure", "output-bound-exceeded", "command-timeout", "permission-denied", "operation-not-permitted", "missing-file", "already-exists", "no-space", "connection-reset", "unclassified-os-error", "unsupported-option", "device-offline", "device-not-found", "transport-closed"})
+REST_CODES = frozenset({"BAD_REQUEST", "INVALID_ARGUMENT", "NOT_FOUND", "EMULE_ERROR", "INTERNAL_SERVER_ERROR", "UNAUTHORIZED", "FORBIDDEN", "DOWNLOAD_CONFLICT", "unrecognized"})
+REST_CONTEXTS = frozenset({"ed2k-not-configured", "ed2k-disabled", "ed2k-no-server", "vpn-guard-blocked", "client-udp-version", "kad-listener-initialization", "ed2k-listener-bind", "nat-initial-reconcile", "nat-initial-timeout", "local-bind-interface-missing", "server-not-found", "unrecognized"})
+FIXTURE_CODES = frozenset({"inventory-invalid", "inventory-limit", "nonce-invalid", "payload-authority-invalid", "protected-root", "unsafe-directory-type", "directory-redirected", "unknown-contents", "unsafe-entry-type", "entry-changed-before-delete", "entry-delete-failed", "directory-remove-failed"})
+
+
+def _safe_transfer_completion(value: object) -> dict:
+    """Independently project two closed observations, excluding paths and errors."""
+    if (not isinstance(value, dict) or not isinstance(value.get("reason"), str)
+            or value["reason"] not in {"deadline-exhausted", "lookup-failed"}
+            or not isinstance(value.get("samples"), list) or not 1 <= len(value["samples"]) <= 2):
+        return {}
+    samples = []
+    for sample in value["samples"]:
+        if (not isinstance(sample, dict)
+                or not isinstance(sample.get("sharedLookup"), str)
+                or sample["sharedLookup"] not in {"missing", "metadata-mismatch", "unavailable"}
+                or not isinstance(sample.get("transferPresence"), str)
+                or sample["transferPresence"] not in {"present", "absent", "unavailable", "ambiguous"}):
+            return {}
+        safe = {name: sample[name] for name in ("sharedLookup", "transferPresence")}
+        if sample["transferPresence"] == "present":
+            if isinstance(sample.get("state"), str) and sample["state"] in {"downloading", "paused", "queued", "checking", "completing", "completed", "error", "missingfiles"}:
+                safe["state"] = sample["state"]
+            progress = sample.get("progress")
+            if type(progress) in (int, float) and 0 <= progress <= 1 and math.isfinite(progress):
+                safe["progress"] = progress
+            for name, maximum in (("completedBytes", 2**64 - 1), ("sizeBytes", 2**64 - 1),
+                                  ("partsObtained", 2**32 - 1), ("partsTotal", 2**32 - 1)):
+                if type(sample.get(name)) is int and 0 <= sample[name] <= maximum:
+                    safe[name] = sample[name]
+            if type(sample.get("deliveryPathPresent")) is bool:
+                safe["deliveryPathPresent"] = sample["deliveryPathPresent"]
+            if isinstance(sample.get("deliveryErrorCategory"), str) and sample["deliveryErrorCategory"] in {"none", "atomic-no-replace-unsupported", "stage-create",
+                    "stage-open-payload", "stage-copy", "install", "verification", "other-present"}:
+                safe["deliveryErrorCategory"] = sample["deliveryErrorCategory"]
+        samples.append(safe)
+    return {"reason": value["reason"], "samples": samples}
+
+
+def _guest_package_revision(archive: Path, *, api: str) -> str:
+    """Read bounded package metadata from an already checksum-verified archive."""
+    try:
+        with zipfile.ZipFile(archive) as guest:
+            entries = [entry for entry in guest.infolist() if entry.filename == "x86_64/source.properties"]
+            if len(entries) != 1 or entries[0].file_size > 65536:
+                raise RuntimeError("Android guest requires one bounded source.properties")
+            lines = guest.read(entries[0]).decode("utf-8").splitlines()
+    except (OSError, UnicodeError, zipfile.BadZipFile) as error:
+        raise RuntimeError("Android guest archive metadata is invalid") from error
+    values = {}
+    for line in lines:
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if key in {"Pkg.Revision", "AndroidVersion.ApiLevel"}:
+            if key in values:
+                raise RuntimeError("Android guest package metadata is ambiguous")
+            values[key] = value
+    revision = values.get("Pkg.Revision", "")
+    if re.fullmatch(r"[1-9][0-9]*", revision) is None or values.get("AndroidVersion.ApiLevel") != api:
+        raise RuntimeError("Android guest package revision or API metadata is invalid")
+    return revision
+
+
+def author_apk_guest_inputs(layout, *, images: tuple[str, ...] = ()) -> Path:
+    """Bootstrap SHA-256 pins from immutable official archives and catalog SHA-1s.
+
+    Only this explicit authoring command uses Google's published SHA-1 checksum;
+    normal guest preparation continues to require reviewed SHA-256 source pins.
+    """
+    from .config import resolve_required_workspace_roots
+    from .git import git_output
+    _workspace, output = resolve_required_workspace_roots()
+    if layout.output_root.resolve() != output:
+        raise RuntimeError("Android guest authoring requires the inherited output root")
+    declaration = json.loads(APK_GUEST_AUTHORING.read_text(encoding="utf-8"))
+    if len(set(images)) != len(images) or any("system-image-" + image not in declaration["assets"] for image in images):
+        raise ValueError("Select unique authorable APK guest images")
+    author = {"emulebbBuild": {"commit": git_output(Path(__file__).resolve().parents[1], "rev-parse", "HEAD").strip()},
+              "declarationSha256": sha256(APK_GUEST_AUTHORING), "catalog": declaration["source"]}
+    records = {}
+    for role, item in declaration["assets"].items():
+        if images and role not in {"system-image-" + image for image in images}:
+            continue
+        folder = output / "cache/android-emulator-authoring" / item["sha1"]
+        if not folder.resolve().is_relative_to(output):
+            raise RuntimeError("Android guest authoring cache must remain under output")
+        folder.mkdir(parents=True, exist_ok=True)
+        index = folder / "pin.json"
+        temporary = None
+        try:
+            if index.is_symlink():
+                raise RuntimeError("Android authoring index cannot redirect outside its owned cache")
+            if index.is_file() and not index.is_symlink():
+                prior = json.loads(index.read_text(encoding="utf-8"))
+                if not isinstance(prior.get("sha256"), str) or re.fullmatch(r"[0-9a-f]{64}", prior["sha256"]) is None:
+                    raise RuntimeError("Android authoring index requires a SHA-256 cache identity")
+                source = output / "cache/android-emulator-inputs" / prior["sha256"] / urlsplit(item["url"]).path.rsplit("/", 1)[-1]
+                if source.is_symlink() or not source.resolve().is_relative_to(output):
+                    raise RuntimeError("Android authoring requires an owned regular cached archive")
+                stream = source.open("rb")
+            else:
+                temporary = folder / (uuid4().hex + ".part")
+                stream = urllib.request.urlopen(urllib.request.Request(item["url"], headers={"User-Agent": "emulebb-workspace-bootstrap"}), timeout=120)
+            sha1, archive_digest, size = hashlib.sha1(), hashlib.sha256(), 0
+            target = temporary.open("xb") if temporary is not None else None
+            try:
+                with stream:
+                    while block := stream.read(1024 * 1024):
+                        size += len(block)
+                        if size > item["size"]:
+                            raise RuntimeError("Android authoring archive exceeds its official size")
+                        sha1.update(block)
+                        archive_digest.update(block)
+                        if target is not None:
+                            target.write(block)
+            finally:
+                if target is not None:
+                    target.close()
+            if size != item["size"] or sha1.hexdigest() != item["sha1"]:
+                raise RuntimeError("Android authoring archive differs from its official catalog checksum")
+            # WHY: official publication revisions need not match the verified
+            # archive's installed Pkg.Revision (notably API 31 and 32).
+            archive = temporary if temporary is not None else source
+            api = item["version"].split("-r", 1)[0]
+            if role != "system-image-apk" + api.split(".", 1)[0]:
+                raise RuntimeError("Android authored guest role differs from its API")
+            package_revision = _guest_package_revision(archive, api=api)
+            record = {"version": item["version"], "url": item["url"], "sha256": archive_digest.hexdigest(),
+                      "kind": "zip", "packageRevision": package_revision}
+            cache = output / "cache/android-emulator-inputs" / record["sha256"] / urlsplit(item["url"]).path.rsplit("/", 1)[-1]
+            if cache.is_symlink() or not cache.resolve().is_relative_to(output):
+                raise RuntimeError("Android authored archive requires an owned cache path")
+            if temporary is not None:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                if cache.exists():
+                    if not cache.is_file() or sha256(cache) != record["sha256"]:
+                        raise RuntimeError("Android authored cache already contains different bytes")
+                else:
+                    temporary.replace(cache)
+            index.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+            records[role] = record
+            print("Verified Android guest archive: " + role, flush=True)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    directory = output / "reports/android-guest-authoring" / uuid4().hex
+    directory.mkdir(parents=True)
+    report = directory / "reviewed-pins.json"
+    report.write_text(json.dumps({"schema": "emulebb.android.guest-pin-authoring/1", "source": author,
+                                 "assets": records}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
 
 
 def fetch_tool_inputs() -> Path:
@@ -69,6 +244,36 @@ def _fetch_inputs(inputs: dict, cache_name: str, schema: str) -> Path:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
     return receipt
+
+
+def prepare_apk_toolchain(layout, *, wsl_distro: str = "Ubuntu") -> Path:
+    """Layer SDKmanager's registered metadata/licenses without changing CLI tools."""
+    from .linux_containers import LinuxDocker, _builder_user, run_owned_container
+    prepare_toolchain(layout, wsl_distro=wsl_distro)
+    root = Path(__file__).resolve().parents[1]
+    cache = layout.output_root.resolve() / "cache/android-tool-inputs"
+    report = layout.output_root.resolve() / "reports/android-apk-toolchain" / uuid4().hex / "toolchain-probe.json"
+    report.parent.mkdir(parents=True)
+    log = report.with_suffix(".log")
+    image = "local/emulebb-android-apk-toolchain:reviewed"
+    with LinuxDocker(wsl_distro) as docker:
+        context = docker.path(root)
+        docker.run("build", "--platform", "linux/amd64", "--build-context", f"android-inputs={docker.path(cache)}",
+            "--file", context + "/emule_workspace/release_assets/android/Dockerfile.apk",
+            "--tag", image, context, timeout=1800)
+        user = _builder_user(docker)
+        if user.split(":")[0] == "0":
+            raise RuntimeError("Run APK tool validation as a non-root Linux/WSL operator")
+        run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", user,
+            "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
+            "--env", "HOME=/tmp/home", "--env", "GRADLE_USER_HOME=/tmp/gradle",
+            image, "python3", "-B", "-m", "emule_workspace.android_probe", "--apk"], log, timeout=300)
+    probe = json.loads(log.read_text(encoding="utf-8"))
+    if probe.get("schema") != "emulebb.android-apk-toolchain-probe/1" or probe.get("inputs") != tool_inputs():
+        raise RuntimeError("APK toolchain probe returned inconsistent input identity")
+    report.write_text(json.dumps(probe, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
 
 
 def prepare_toolchain(layout, *, wsl_distro: str = "Ubuntu") -> Path:
@@ -163,6 +368,43 @@ def prepare_emulator_toolchain(layout, *, images: tuple[str, ...] = (), wsl_dist
     return report
 
 
+def prepare_apk_emulator_toolchain(layout, *, image: str, wsl_distro: str = "Ubuntu") -> Path:
+    """Add pinned offline Playwright/Chromium only to the selected APK test image."""
+    from .linux_containers import LinuxDocker, _builder_user, run_owned_container
+    base = json.loads(prepare_emulator_toolchain(layout, images=(image,), wsl_distro=wsl_distro).read_text())
+    root = Path(__file__).resolve().parents[1]
+    directory = layout.output_root / "reports/android-apk-emulator" / uuid4().hex
+    directory.mkdir(parents=True)
+    tag = "local/emulebb-android-apk-emulator:" + image
+    with LinuxDocker(wsl_distro) as docker:
+        context = docker.path(root)
+        with (directory / "build.log").open("w", encoding="utf-8") as stream:
+            subprocess.run([*docker.prefix, "docker", "build", "--platform", "linux/amd64",
+                "--build-arg", "EMULATOR_IMAGE=" + base["image"]["tag"],
+                "--file", context + "/emule_workspace/release_assets/android/Dockerfile.apk-emulator",
+                "--tag", tag, context], stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=1200)
+        if docker.run("image", "inspect", "--format", "{{.Id}}", base["image"]["tag"], capture=True, timeout=30).stdout.strip() != base["image"]["id"]:
+            raise RuntimeError("Selected emulator SDK image changed during browser layering")
+        identity = docker.run("image", "inspect", "--format", "{{.Id}}", tag, capture=True, timeout=30).stdout.strip()
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None:
+            raise RuntimeError("APK emulator/browser image requires its actual content identity")
+        run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", _builder_user(docker),
+            "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777", "--env", "HOME=/tmp/home",
+            identity, "python3", "-B", "-m", "emule_workspace.android_probe", "--emulator", "--browser"],
+            directory / "probe.log", timeout=180)
+    value = json.loads((directory / "probe.log").read_text(encoding="utf-8"))
+    expected_browser = json.loads((root / "emule_workspace/release_assets/android/apk-browser.json").read_text())
+    if (value.get("inputs") != base["inputs"] or value.get("runtimeExecution") != "not-run"
+            or value.get("browser", {}).get("status") != "passed"
+            or value["browser"].get("inputs") != expected_browser or value["browser"].get("runtimeExecution") != "executed"):
+        raise RuntimeError("APK emulator/browser image did not prove its pinned offline tools")
+    value["image"] = {"tag": tag, "id": identity}
+    report = directory / "toolchain-probe.json"
+    report.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
+
+
 def _guest_sources(layout) -> dict:
     """Record only clean contributing revisions, without private remotes or paths."""
     from .git import git_output
@@ -189,7 +431,11 @@ def _kvm_group(docker) -> str:
     return group
 
 
-def _guest_failure_details(directory: Path) -> dict:
+def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = frozenset(),
+                           apk_failure_stages: frozenset[str] = frozenset(),
+                           apk_failure_codes: frozenset[str] = frozenset(),
+                           apk_navigation_controls: frozenset[str] = frozenset(),
+                           apk_post_failure_error_categories: frozenset[str] = frozenset()) -> dict:
     """Allowlist guest phases and OS facts; never publish private log text."""
     path = directory / "guest/report.json"
     try:
@@ -201,13 +447,16 @@ def _guest_failure_details(directory: Path) -> dict:
         return {"phase": "unknown"}
     if not isinstance(guest, dict) or guest.get("schema") != "emulebb.android.emulator-boot/1":
         return {"phase": "unknown"}
-    phases = {"adb-start", "emulator-start", "guest-boot", "guest-properties", "guest-validation", "tls-execution", "complete"}
+    phases = {"adb-start", "emulator-start", "guest-boot", "guest-properties", "guest-validation", "tls-execution", "apk-lifecycle", "complete"}
     properties = {"sdk", "codename", "abis64", "qemu", "machine", "pageSize"}
     phase = guest.get("phase")
     value = {"phase": phase if isinstance(phase, str) and phase in phases else "unknown"}
     # Only fixed owner messages become public reason codes. Raw tracebacks,
     # bootstrap contents, keys and daemon output remain private to the guest.
     reasons = {
+        "Owned Android emulator did not complete boot within its bound": "guest-boot-timeout",
+        "Owned Android emulator exited before boot; inspect the private emulator log": "emulator-exited-before-boot",
+        "Owned Android emulator cleanup failed": "owned-emulator-cleanup-failed",
         "Owned Android ADB command failed": "owned-adb-command-failed",
         "Android TLS proof did not execute exactly one successful required test": "tls-case-incomplete",
         "Android guest TLS payload hash differs from its source-bound bytes": "guest-payload-hash-mismatch",
@@ -287,7 +536,7 @@ def _guest_failure_details(directory: Path) -> dict:
                     safe_startup[key] = startup[key]
             public_progress["startupFailure"] = safe_startup
         value["tlsProgress"] = public_progress
-    if isinstance(guest.get("property"), str) and guest["property"] in properties:
+    if phase in {"guest-properties", "guest-validation"} and isinstance(guest.get("property"), str) and guest["property"] in properties:
         value["property"] = guest["property"]
     observed = guest.get("observedGuest")
     if isinstance(observed, dict):
@@ -296,6 +545,137 @@ def _guest_failure_details(directory: Path) -> dict:
     code = guest.get("emulatorExitCode")
     if type(code) is int and -255 <= code <= 255:
         value["emulatorExitCode"] = code
+    if apk_case_names and phase == "apk-lifecycle":
+        # WHY: exercise() retains its receipt even when it raises, before the
+        # outer guest can assign its successful result. Publish only contract
+        # case names and closed facts, never raw UI, REST or exception contents.
+        lifecycle = directory / "guest/apk-lifecycle.json"
+        try:
+            if (lifecycle.is_symlink() or not lifecycle.resolve().is_relative_to(directory.resolve())
+                    or not lifecycle.is_file() or lifecycle.stat().st_size > 65536):
+                return value
+            result = json.loads(lifecycle.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return value
+        if isinstance(result, dict) and result.get("schema") == "emulebb.android.apk-lifecycle/1":
+            public = {key: result[key] for key, allowed in (
+                ("status", {"passed", "failed"}), ("runtimeExecution", {"executed", "not-run"}))
+                if isinstance(result.get(key), str) and result[key] in allowed}
+            cases = result.get("cases")
+            if (isinstance(cases, list) and len(cases) <= len(apk_case_names)
+                    and all(isinstance(item, dict) and isinstance(item.get("name"), str)
+                            and item["name"] in apk_case_names and item.get("status") == "passed" for item in cases)
+                    and len({item["name"] for item in cases}) == len(cases)):
+                public["completedCases"] = [item["name"] for item in cases]
+            failure = result.get("failure")
+            if (isinstance(failure, dict) and isinstance(failure.get("stage"), str)
+                    and failure["stage"] in apk_failure_stages and isinstance(failure.get("code"), str)
+                    and failure["code"] in apk_failure_codes):
+                safe_failure = {key: failure[key] for key in ("stage", "code")}
+                network = failure.get("networkWait")
+                if isinstance(network, dict):
+                    safe_network = {}
+                    if isinstance(network.get("state"), str) and network["state"] in {"waiting", "not-waiting", "unavailable"}:
+                        safe_network["state"] = network["state"]
+                    if isinstance(network.get("phase"), str) and network["phase"] in {"Stopped", "Starting", "Running", "Stopping", "Failed"}:
+                        safe_network["phase"] = network["phase"]
+                    if safe_network:
+                        safe_failure["networkWait"] = safe_network
+                if (failure["stage"] == "screen-off-doze" and isinstance(failure.get("substage"), str)
+                        and failure["substage"] in {"home", "home-check", "home-authentication", "sleep", "unplug", "force-idle", "check-idle", "check-power", "sample-authentication"}):
+                    safe_failure["substage"] = failure["substage"]
+                def safe_adb(value):
+                    if not isinstance(value, dict):
+                        return {}
+                    allowed = {"operation": ADB_OPERATIONS, "reason": ADB_REASONS,
+                               "exitCategory": {"success", "nonzero", "signal", "unavailable"}}
+                    return {name: value[name] for name, choices in allowed.items()
+                            if isinstance(value.get(name), str) and value[name] in choices}
+                adb = safe_adb(failure.get("adb"))
+                if adb:
+                    safe_failure["adb"] = adb
+                transfer = failure.get("transfer")
+                if (failure["stage"] == "local-transfer" and isinstance(transfer, dict)
+                        and isinstance(transfer.get("phase"), str) and transfer["phase"] in TRANSFER_FAILURE_PHASES
+                        and transfer.get("code") == transfer["phase"] + "-failed"):
+                    safe_transfer = {"phase": transfer["phase"], "code": transfer["code"]}
+                    adb = safe_adb(transfer.get("adb"))
+                    if adb:
+                        safe_transfer["adb"] = adb
+                    rest = transfer.get("rest")
+                    if isinstance(rest, dict):
+                        safe_rest = {}
+                        if type(rest.get("httpStatus")) is int and 100 <= rest["httpStatus"] <= 599:
+                            safe_rest["httpStatus"] = rest["httpStatus"]
+                        for name, allowed in (("apiCode", REST_CODES), ("coreContext", REST_CONTEXTS)):
+                            if isinstance(rest.get(name), str) and rest[name] in allowed:
+                                safe_rest[name] = rest[name]
+                        if safe_rest:
+                            safe_transfer["rest"] = safe_rest
+                    fixture = transfer.get("ownedFixture")
+                    if isinstance(fixture, dict) and isinstance(fixture.get("code"), str) and fixture["code"] in FIXTURE_CODES:
+                        safe_transfer["ownedFixture"] = {"code": fixture["code"]}
+                        if type(fixture.get("filesRemoved")) is int and 0 <= fixture["filesRemoved"] <= 2:
+                            safe_transfer["ownedFixture"]["filesRemoved"] = fixture["filesRemoved"]
+                    if transfer["phase"] == "await-completed-delivery":
+                        completion = _safe_transfer_completion(transfer.get("completion"))
+                        if completion:
+                            safe_transfer["completion"] = completion
+                    safe_failure["transfer"] = safe_transfer
+                launch = failure.get("initialLaunch")
+                if isinstance(launch, dict):
+                    allowed = {"result": {"ok", "timeout", "error", "unavailable"},
+                               "resumed": {"owned", "other", "unavailable"},
+                               "window": {"present", "absent", "unavailable"},
+                               "process": {"present", "unavailable"},
+                               "keyguard": {"showing", "hidden", "unavailable"}}
+                    safe_launch = {key: launch[key] for key, values in allowed.items()
+                                   if isinstance(launch.get(key), str) and launch[key] in values}
+                    if safe_launch:
+                        safe_failure["initialLaunch"] = safe_launch
+                if isinstance(failure.get("servicePhase"), str) and failure["servicePhase"] in {
+                        "Stopped", "Starting", "Running", "Stopping", "Failed"}:
+                    safe_failure["servicePhase"] = failure["servicePhase"]
+                controls = failure.get("controls")
+                if isinstance(controls, dict):
+                    safe_failure["controls"] = {name: {key: control[key] for key in ("present", "enabled")}
+                        for name in ("service_status", "api_key")
+                        if isinstance(control := controls.get(name), dict)
+                        and all(type(control.get(key)) is bool for key in ("present", "enabled"))}
+                navigation = failure.get("navigation")
+                if (isinstance(navigation, dict) and isinstance(navigation.get("control"), str)
+                        and navigation["control"] in apk_navigation_controls):
+                    safe_navigation = {"control": navigation["control"]}
+                    for name in ("displayBounds", "scrollBounds", "lastGesture"):
+                        rectangle = navigation.get(name)
+                        if (isinstance(rectangle, list) and len(rectangle) == 4
+                                and all(type(coordinate) is int and 0 <= coordinate <= 32768 for coordinate in rectangle)):
+                            safe_navigation[name] = rectangle
+                    for name in ("forwardAttempts", "backwardAttempts", "forwardProgress", "backwardProgress"):
+                        if type(navigation.get(name)) is int and 0 <= navigation[name] <= 6:
+                            safe_navigation[name] = navigation[name]
+                    if type(navigation.get("imeVisible")) is bool:
+                        safe_navigation["imeVisible"] = navigation["imeVisible"]
+                    for name, allowed in (("focusedControl", {"bind_addr", "api_key", "other-owned", "none", "ambiguous", "unavailable"}),
+                                          ("imeInputShown", {"shown", "hidden", "ambiguous", "oversize", "unavailable"})):
+                        if isinstance(navigation.get(name), str) and navigation[name] in allowed:
+                            safe_navigation[name] = navigation[name]
+                    if type(navigation.get("scrollable")) is bool:
+                        safe_navigation["scrollable"] = navigation["scrollable"]
+                    safe_failure["navigation"] = safe_navigation
+                post_ui = failure.get("postFailureUi")
+                if isinstance(post_ui, dict):
+                    safe_ui = {}
+                    if isinstance(post_ui.get("servicePhase"), str) and post_ui["servicePhase"] in {
+                            "Stopped", "Starting", "Running", "Stopping", "Failed"}:
+                        safe_ui["servicePhase"] = post_ui["servicePhase"]
+                    if (isinstance(post_ui.get("errorCategory"), str)
+                            and post_ui["errorCategory"] in apk_post_failure_error_categories):
+                        safe_ui["errorCategory"] = post_ui["errorCategory"]
+                    if safe_ui:
+                        safe_failure["postFailureUi"] = safe_ui
+                public["failure"] = safe_failure
+            value["apkProgress"] = public
     return value
 
 
@@ -309,13 +689,19 @@ TLS_CASE_NAMES = frozenset({
 })
 
 
-def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_startup: bool = False) -> Path:
-    """Run the shared guest boot harness locally or on hosted KVM, without an APK."""
+def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_startup: bool = False,
+                         apk_payload: dict | None = None) -> Path:
+    """Run the shared owned guest harness; APK mode adds its existing production UI proof."""
     from .android_install import emulator_layout
     from .config import resolve_required_workspace_roots
     from .linux_containers import LinuxDocker, _builder_user, run_owned_container
     from .release import _emulebb_rust_artifact_origin
 
+    apk_role = image in APK_IMAGES
+    if (image not in {"min", "current", *APK_IMAGES}
+            or tls_startup and (apk_payload is not None or apk_role)
+            or apk_payload is not None and not apk_role):
+        raise ValueError("Select one native or APK guest qualification mode")
     inputs = emulator_subset(emulator_inputs(), (image,))
     workspace, output = resolve_required_workspace_roots()
     if layout.output_root.resolve() != output:
@@ -365,7 +751,8 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         payload_identity = exported["sha256"]
         if _guest_sources(layout) != source:
             raise RuntimeError("Android TLS guest sources changed during compilation")
-    tool_report = prepare_emulator_toolchain(layout, images=(image,), wsl_distro=wsl_distro)
+    tool_report = (prepare_apk_emulator_toolchain(layout, image=image, wsl_distro=wsl_distro) if apk_role
+                   else prepare_emulator_toolchain(layout, images=(image,), wsl_distro=wsl_distro))
     tools = json.loads(tool_report.read_text(encoding="utf-8"))
     image_id = tools.get("image", {}).get("id", "")
     if (re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None or tools.get("inputs") != inputs
@@ -374,7 +761,7 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
     role = "system-image-" + image
     image_path = emulator_layout(inputs)[role][1]
     api = int(inputs["assets"][role]["version"].split(".")[0].split("-")[0])
-    page_size = 4096 if image == "min" else 16384
+    page_size = 16384 if image in {"current", "apk37"} else 4096
     directory = output / "reports/android-emulator-boot" / uuid4().hex
     if not directory.resolve().is_relative_to(output):
         raise RuntimeError("Android boot evidence must remain below the output root")
@@ -385,6 +772,24 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
              "imageId": image_id, "selectedGuest": image, **_emulebb_rust_artifact_origin()}
     if tls_startup:
         value["tls"] = {"status": "failed", "payloadManifestSha256": payload_identity, "capacityBefore": capacity}
+    apk_case_names = frozenset()
+    apk_failure_stages, apk_failure_codes, apk_navigation_controls = frozenset(), frozenset(), frozenset()
+    apk_post_failure_error_categories = frozenset()
+    if apk_payload is not None:
+        from .android_apk_candidate import apk_contract
+        contract = apk_contract(apk_payload["context"])
+        apk_case_names = frozenset(contract["required_apk_cases"](api))
+        apk_failure_stages = contract.get("APK_LIFECYCLE_STAGES", frozenset())
+        apk_failure_codes = contract.get("APK_LIFECYCLE_FAILURE_CODES", frozenset())
+        apk_navigation_controls = contract.get("APK_NAVIGATION_CONTROLS", frozenset())
+        apk_post_failure_error_categories = contract.get("APK_POST_FAILURE_ERROR_CATEGORIES", frozenset())
+        metadata = apk_payload["metadata"]
+        value.update(scope="apk-lifecycle", applicationQualification="apk-lifecycle", apkSha256=metadata["apk"]["sha256"],
+            apkManifestSha256=apk_payload["manifestSha256"], signerSha256=metadata["signerSha256"],
+            versionCode=metadata["versionCode"], buildIdentity=metadata["buildIdentity"])
+        if "diagnosticReplay" in apk_payload:
+            value.update(scope="apk-diagnostic-replay", applicationQualification="not-run", publicationEligible=False,
+                diagnosticReplay=apk_payload["diagnosticReplay"])
     try:
         if _guest_sources(layout) != source:
             raise RuntimeError("Android guest boot sources changed during tool preparation")
@@ -403,18 +808,28 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
                 "--mount", f"type=bind,source={docker.path(harness)},target=/harness,readonly",
                 *(["--mount", f"type=bind,source={docker.path(payload_manifest.parent)},target=/tls-payload,readonly"]
                   if tls_startup else []),
+                *(["--mount", f"type=bind,source={docker.path(apk_payload['payload'])},target=/apk-payload,readonly",
+                   "--mount", f"type=bind,source={docker.path(apk_payload['peer'])},target=/apk-peer-payload,readonly",
+                   "--mount", f"type=bind,source={docker.path(layout.emulebb_rust_repo_root)},target=/rust-source,readonly",
+                   "--env", "EMULEBB_RUST_REPO=/rust-source"] if apk_payload is not None else []),
                 image_id, "python3", "-B", "/harness/scripts/probe-android-emulator.py",
                 "--sdk-root", "/opt/android-emulator", "--image-dir", "/opt/android-emulator/" + image_path,
                 "--api", str(api), "--page-size", str(page_size), "--output-root", "/output",
                 "--report-dir", "/output/guest",
                 *(["--tls-source-sha", payload_value["source"]["emulebbRust"]["commit"],
-                   "--tls-manifest-sha256", payload_identity] if tls_startup else [])],
-                directory / "container.log", timeout=900 if tls_startup else 480)
+                   "--tls-manifest-sha256", payload_identity] if tls_startup else []),
+                *(["--apk-source-sha", apk_payload["metadata"]["buildIdentity"]["sourceRevision"],
+                   "--apk-manifest-sha256", apk_payload["manifestSha256"], "--apk-manifest-name", apk_payload["manifestName"],
+                   "--expected-cert-sha256", apk_payload["context"].apk_signer_sha256,
+                   "--apk-peer-manifest-sha256", apk_payload["peerManifestSha256"], "--apk-rust-source", "/rust-source",
+                   "--apk-soak-seconds", str(apk_payload["soakSeconds"])] if apk_payload is not None else [])],
+                directory / "container.log", timeout=(1800 + apk_payload["soakSeconds"]) if apk_payload is not None else 900 if tls_startup else 480)
         guest = json.loads((directory / "guest/report.json").read_text(encoding="utf-8"))
         expected = {"sdk": api, "codename": "REL", "machine": "x86_64", "pageSize": page_size, "emulator": True}
         facts = guest.get("guest")
         if (guest.get("schema") != "emulebb.android.emulator-boot/1" or guest.get("status") != "passed"
-                or guest.get("scope") != "guest-boot" or guest.get("applicationQualification") != "not-run"
+                or guest.get("scope") != ("apk-lifecycle" if apk_payload is not None else "guest-boot")
+                or guest.get("applicationQualification") != ("apk-lifecycle" if apk_payload is not None else "not-run")
                 or guest.get("kvm") is not True or not isinstance(facts, dict)
                 or any(facts.get(key) != item for key, item in expected.items())
                 or not isinstance(facts.get("supported64BitAbis"), list)
@@ -422,6 +837,26 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
             raise RuntimeError("Android boot harness did not prove the requested stable guest")
         if _guest_sources(layout) != source:
             raise RuntimeError("Android guest boot sources changed during qualification")
+        if apk_payload is not None:
+            from .android_apk_candidate import apk_contract, validate_guest, validate_runtime
+            from .android_apk_qualification import admitted_apk
+            from .release import _assert_emulebb_rust_package_provenance
+            value.update(status="passed", guest=expected, kvm=True, apk=guest.get("apk"))
+            if "diagnosticReplay" in apk_payload:
+                # WHY: new executor diagnostics may replay old verified bytes,
+                # but their different run/provider authority cannot qualify a
+                # release. Run every unchanged runtime gate without relabeling
+                # this deliberately ineligible receipt as publication proof.
+                validate_runtime(guest.get("apk"), api=api, identity=metadata["buildIdentity"],
+                    apk_sha256=metadata["apk"]["sha256"], expected_cert_sha256=apk_payload["context"].apk_signer_sha256,
+                    version_code=metadata["versionCode"], contract=apk_contract(apk_payload["context"]))
+            else:
+                validate_guest(value, context=apk_payload["context"], identity=metadata["buildIdentity"],
+                    apk_sha256=metadata["apk"]["sha256"], manifest_sha256=apk_payload["manifestSha256"], api=api,
+                    contract=apk_contract(apk_payload["context"]))
+            admitted_apk(apk_payload["payload"], manifest_name=apk_payload["manifestName"],
+                manifest_sha256=apk_payload["manifestSha256"], context=apk_payload.get("producerContext", apk_payload["context"]))
+            _assert_emulebb_rust_package_provenance(layout, layout.emulebb_rust_repo_root, apk_payload["provenance"])
         if tls_startup:
             from .release import _assert_emulebb_rust_package_provenance, _sha256
 
@@ -460,7 +895,12 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         # contain local authentication material and must never be uploaded.
         value.update(status="passed", guest=expected, kvm=True)
     except BaseException as error:
-        value.update(failureType=type(error).__name__, failureDetails=_guest_failure_details(directory))
+        value.update(status="failed", failureType=type(error).__name__,
+                     failureDetails=_guest_failure_details(directory, apk_case_names=apk_case_names,
+                         apk_failure_stages=apk_failure_stages, apk_failure_codes=apk_failure_codes,
+                         apk_navigation_controls=apk_navigation_controls,
+                         apk_post_failure_error_categories=apk_post_failure_error_categories))
+        print(json.dumps({"failureDetails": value["failureDetails"]}, sort_keys=True))
         raise
     finally:
         report.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")

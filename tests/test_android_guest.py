@@ -34,8 +34,9 @@ def test_kvm_group_must_be_numeric(monkeypatch, group):
                                      "tls-success", "tls-missing", "tls-names", "tls-ignored", "tls-source",
                                      "tls-bool", "tls-pre-source", "tls-post-source", "tls-manifest",
                                      "tls-startup-missing", "tls-startup-source", "tls-startup-auth", "tls-startup-shutdown", "tls-old-schema"])
-@pytest.mark.parametrize("image,api,page", [("min", 28, 4096), ("current", 37, 16384)])
-def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_path, monkeypatch, outcome, image, api, page):
+@pytest.mark.parametrize("image,api,page", [("min", 28, 4096), ("current", 37, 16384),
+    ("apk31", 31, 4096), ("apk32", 32, 4096), ("apk33", 33, 4096), ("apk34", 34, 4096), ("apk35", 35, 4096), ("apk36", 36, 4096), ("apk37", 37, 16384)])
+def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_path, monkeypatch, capsys, outcome, image, api, page):
     from emule_workspace import release
 
     workspace, output = tmp_path / "workspace", tmp_path / "output"
@@ -45,6 +46,11 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
     output.mkdir()
     layout = SimpleNamespace(output_root=output, tests_repo_root=harness)
     tls = outcome.startswith("tls-")
+    apk_role = image.startswith("apk")
+    if tls and apk_role:
+        with pytest.raises(ValueError, match="one native or APK"):
+            subject.probe_emulator_guest(layout, image=image, tls_startup=True)
+        return
     if tls:
         from emule_workspace import android_validation
         monkeypatch.setattr(subject.shutil, "disk_usage", lambda path: SimpleNamespace(free=30 * 1024**3))
@@ -86,7 +92,9 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
     tool_report.write_text(json.dumps({"image": {"id": image_id}, "runtimeExecution": "not-run",
         "inputs": subject.emulator_subset(subject.emulator_inputs(), (image,))}))
     prepare = Mock(return_value=tool_report)
-    monkeypatch.setattr(subject, "prepare_emulator_toolchain", prepare)
+    unused_prepare = Mock(side_effect=AssertionError("wrong toolchain role"))
+    monkeypatch.setattr(subject, "prepare_emulator_toolchain", unused_prepare if apk_role else prepare)
+    monkeypatch.setattr(subject, "prepare_apk_emulator_toolchain", prepare if apk_role else unused_prepare)
     captured = []
 
     def run(docker, arguments, log, *, timeout):
@@ -153,13 +161,20 @@ def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_pat
     value = json.loads(public)
     assert value["status"] == ("passed" if outcome in {"success", "private-extra", "tls-success"} else "failed")
     assert value["applicationQualification"] == "not-run" and value["source"] == source
+    assert value["scope"] == "guest-boot" and "apk" not in value
+    assert "--apk-source-sha" not in captured and "--apk-manifest-sha256" not in captured
     assert "synthetic-private-token" not in public and "localAuthentication" not in public and str(tmp_path) not in public
+    public_output = capsys.readouterr().out
+    if outcome == "failure":
+        assert json.loads(public_output) == {"failureDetails": {"phase": "unknown"}}
+        assert "private command output" not in public_output
     if tls:
         compile_calls.assert_called_once_with(layout, abis=("x86_64",), wsl_distro="Ubuntu", tls_payload=True)
         assert "--tls-source-sha" in captured and "--tls-manifest-sha256" in captured
         assert str(payload_root) + ",target=/tls-payload,readonly" in " ".join(captured)
         assert value["tls"]["status"] == ("passed" if outcome == "tls-success" else "failed")
-    prepare.assert_called_once_with(layout, images=(image,), wsl_distro="Ubuntu")
+    prepare.assert_called_once_with(layout, **({"image": image} if apk_role else {"images": (image,)}), wsl_distro="Ubuntu")
+    unused_prepare.assert_not_called()
 
 
 def test_guest_sources_reject_dirty_or_changed_revisions(tmp_path, monkeypatch):
@@ -182,6 +197,233 @@ def test_failure_evidence_publishes_only_bounded_os_facts(tmp_path):
     assert subject._guest_failure_details(tmp_path) == {
         "phase": "guest-validation", "property": "pageSize", "emulatorExitCode": 1,
         "observedGuest": {"sdk": "28", "codename": "REL", "pageSize": "4096", "qemu": "1"}}
+
+
+@pytest.mark.parametrize("message,reason", [
+    ("Owned Android emulator did not complete boot within its bound", "guest-boot-timeout"),
+    ("Owned Android emulator exited before boot; inspect the private emulator log", "emulator-exited-before-boot"),
+    ("Owned Android emulator cleanup failed", "owned-emulator-cleanup-failed")])
+def test_boot_failure_diagnostics_use_only_fixed_reason_codes(tmp_path, message, reason):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({
+        "schema": "emulebb.android.emulator-boot/1", "phase": "guest-boot", "error": message}))
+    assert subject._guest_failure_details(tmp_path) == {"phase": "guest-boot", "reason": reason}
+
+
+@pytest.mark.parametrize("fault", [None, "private-case", "duplicate", "private-enums", "oversize", "malformed", "schema"])
+def test_apk_failure_progress_projects_only_source_owned_completed_cases(tmp_path, fault):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1",
+        "phase": "apk-lifecycle", "error": "synthetic-private-key-and-ui"}))
+    receipt = {"schema": "emulebb.android.apk-lifecycle/1", "status": "failed", "runtimeExecution": "executed",
+        "cases": [{"name": "authenticated-rest", "status": "passed"}], "private": "synthetic-private-key-and-ui"}
+    if fault == "private-case": receipt["cases"][0]["name"] = "synthetic-private-key-and-ui"
+    if fault == "duplicate": receipt["cases"] *= 2
+    if fault == "private-enums": receipt.update(status=["synthetic-private"], runtimeExecution="synthetic-private")
+    if fault == "schema": receipt["schema"] = "unknown"
+    text = " " * 65537 if fault == "oversize" else "not json" if fault == "malformed" else json.dumps(receipt)
+    (tmp_path / "guest/apk-lifecycle.json").write_text(text)
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"authenticated-rest", "install"}))
+    if fault in {"oversize", "malformed", "schema"}:
+        assert result == {"phase": "apk-lifecycle"}
+    else:
+        expected = {} if fault == "private-enums" else {"status": "failed", "runtimeExecution": "executed"}
+        if fault not in {"private-case", "duplicate"}: expected["completedCases"] = ["authenticated-rest"]
+        assert result == {"phase": "apk-lifecycle", "apkProgress": expected}
+    assert "synthetic-private" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("fault", [None, "stage", "code", "phase", "control-bool", "control-name"])
+def test_apk_failure_substage_and_ui_facts_are_enum_and_bool_only(tmp_path, fault):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1",
+        "phase": "apk-lifecycle", "property": "pageSize", "error": "synthetic-private-key-and-ui"}))
+    failure = {"stage": "launch-main", "code": "required-control-missing", "servicePhase": "Stopped",
+        "controls": {"api_key": {"present": False, "enabled": False, "text": "synthetic-private-key-and-ui"}},
+        "message": "synthetic-private-key-and-ui"}
+    if fault == "stage": failure["stage"] = ["synthetic-private"]
+    if fault == "code": failure["code"] = "synthetic-private"
+    if fault == "phase": failure["servicePhase"] = "synthetic-private"
+    if fault == "control-bool": failure["controls"]["api_key"]["enabled"] = 1
+    if fault == "control-name": failure["controls"] = {"synthetic-private": {"present": True, "enabled": True}}
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
+        "status": "failed", "runtimeExecution": "not-run", "cases": [], "failure": failure}))
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
+        apk_failure_stages=frozenset({"launch-main"}), apk_failure_codes=frozenset({"required-control-missing"}))
+    expected = {"phase": "apk-lifecycle", "apkProgress": {"status": "failed", "runtimeExecution": "not-run", "completedCases": []}}
+    if fault not in {"stage", "code"}:
+        safe = {"stage": "launch-main", "code": "required-control-missing", "controls": {}}
+        if fault != "phase": safe["servicePhase"] = "Stopped"
+        if fault not in {"control-bool", "control-name"}: safe["controls"] = {"api_key": {"present": False, "enabled": False}}
+        expected["apkProgress"]["failure"] = safe
+    assert result == expected
+    assert "synthetic-private" not in json.dumps(result) and "property" not in result
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_navigation_facts_are_closed_bounded_and_not_raw_ui(tmp_path, invalid):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
+    navigation = {"control": "start_service", "displayBounds": [0, 0, 1080, 1920],
+        "scrollBounds": [0, 100, 1080, 1800], "lastGesture": [500, 1500, 500, 300],
+        "forwardAttempts": 6, "backwardAttempts": 0, "forwardProgress": 5, "backwardProgress": 0,
+        "imeVisible": True, "focusedControl": "api_key", "imeInputShown": "oversize",
+        "scrollable": True, "rawUi": "synthetic-private-key-and-ui"}
+    boot = {"userUnlocked": True, "packageStopped": False, "bootReceiverResolved": True,
+        "servicePresent": True, "serviceForeground": False, "serviceStartRequested": True,
+        "allFilesAllowed": True, "notificationsGranted": False, "localNetworkGranted": True,
+        "dozeWhitelisted": False, "backgroundRestricted": False, "latestDaemonExitReason": 10,
+        "restAttempts": 30, "restConnectionFailures": 29, "restHttpResponses": 1, "lastHttpStatus": 503,
+        "rawLog": "synthetic-private-key-and-ui"}
+    if invalid:
+        navigation.update(displayBounds=[True, 0, 1080, 1920], scrollBounds=[0, 0, 1],
+            lastGesture=[0, -1, 1, 32769], forwardAttempts=7, backwardAttempts=-1,
+            forwardProgress=True, backwardProgress="synthetic-private", imeVisible=1,
+            focusedControl="synthetic-private", imeInputShown="synthetic-private", scrollable=1)
+        boot.update({name: "synthetic-private" for name, value in boot.items() if type(value) is bool})
+        boot.update(latestDaemonExitReason=17, restAttempts=0, restConnectionFailures=True,
+            restHttpResponses=1025, lastHttpStatus=600)
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
+        "failure": {"stage": "task-manager-stop", "code": "listener-still-running", "navigation": navigation, "boot": boot}}))
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
+        apk_failure_stages=frozenset({"task-manager-stop"}), apk_failure_codes=frozenset({"listener-still-running"}),
+        apk_navigation_controls=frozenset({"start_service"}))
+    facts = result["apkProgress"]["failure"]
+    assert facts["navigation"] == ({"control": "start_service"} if invalid else {
+        key: value for key, value in navigation.items() if key != "rawUi"})
+    assert "boot" not in facts
+    assert "synthetic-private" not in json.dumps(result)
+    navigation["control"] = "synthetic-private"
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
+        "failure": {"stage": "task-manager-stop", "code": "listener-still-running", "navigation": navigation}}))
+    assert "navigation" not in subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
+        apk_failure_stages=frozenset({"task-manager-stop"}), apk_failure_codes=frozenset({"listener-still-running"}),
+        apk_navigation_controls=frozenset({"start_service"}))["apkProgress"]["failure"]
+
+
+@pytest.mark.parametrize('invalid', [False, True])
+def test_lifecycle_failure_details_are_independently_filtered(tmp_path, invalid):
+    (tmp_path / 'guest').mkdir()
+    (tmp_path / 'guest/report.json').write_text(json.dumps({'schema': 'emulebb.android.emulator-boot/1', 'phase': 'apk-lifecycle'}))
+    failure = {'stage': 'local-transfer', 'code': 'other',
+        'networkWait': {'state': 'waiting', 'phase': 'Starting', 'text': 'private'},
+        'transfer': {'phase': 'await-completed-delivery', 'code': 'await-completed-delivery-failed',
+            'adb': {'operation': 'push', 'reason': 'no-space', 'exitCategory': 'nonzero', 'raw': 'private'},
+            'rest': {'httpStatus': 409, 'apiCode': 'DOWNLOAD_CONFLICT', 'coreContext': 'unrecognized', 'raw': 'private'},
+            'ownedFixture': {'code': 'inventory-invalid', 'filesRemoved': 1, 'raw': 'private'}}}
+    if invalid:
+        failure['networkWait'] = {'state': 'private', 'phase': 'private'}
+        failure['transfer']['phase'] = 'private'
+    (tmp_path / 'guest/apk-lifecycle.json').write_text(json.dumps({'schema': 'emulebb.android.apk-lifecycle/1', 'failure': failure}))
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({'install'}),
+        apk_failure_stages=frozenset({'local-transfer'}), apk_failure_codes=frozenset({'other'}))
+    safe = result['apkProgress']['failure']
+    if invalid:
+        assert 'networkWait' not in safe and 'transfer' not in safe
+    else:
+        assert safe['networkWait'] == {'state': 'waiting', 'phase': 'Starting'}
+        assert safe['transfer']['rest']['httpStatus'] == 409 and safe['transfer']['adb']['exitCategory'] == 'nonzero'
+        assert safe['transfer']['ownedFixture'] == {'code': 'inventory-invalid', 'filesRemoved': 1}
+    assert 'private' not in json.dumps(result)
+
+
+@pytest.mark.parametrize("phase", ["await-completed-delivery", "enqueue-owned-transfer"])
+def test_completion_failure_observations_are_independently_projected(tmp_path, phase):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
+    sample = {"sharedLookup": "missing", "transferPresence": "present", "state": "completing", "progress": 1.0,
+        "completedBytes": 262144, "sizeBytes": 262144, "partsObtained": 1, "partsTotal": 1,
+        "deliveryPathPresent": False, "deliveryErrorCategory": "atomic-no-replace-unsupported"}
+    untrusted = {**sample, "path": "private", "deliveryError": "private", "hash": "private", "apiKey": "private"}
+    completion = {"reason": "deadline-exhausted", "samples": [untrusted, untrusted], "raw": "private"}
+    failure = {"stage": "local-transfer", "code": "other", "transfer": {
+        "phase": phase, "code": phase + "-failed", "completion": completion}}
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1", "failure": failure}))
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
+        apk_failure_stages=frozenset({"local-transfer"}), apk_failure_codes=frozenset({"other"}))
+    transfer = result["apkProgress"]["failure"]["transfer"]
+    if phase == "await-completed-delivery":
+        assert transfer["completion"] == {"reason": "deadline-exhausted", "samples": [sample, sample]}
+    else:
+        assert "completion" not in transfer
+    assert "private" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("change", [
+    {"reason": "private"}, {"reason": []}, {"samples": []}, {"samples": [None]},
+    {"samples": [{"sharedLookup": [], "transferPresence": "present"}]},
+    {"samples": [{"sharedLookup": "missing", "transferPresence": {}}]},
+    {"samples": [{"sharedLookup": "missing", "transferPresence": "present"}] * 3},
+])
+def test_completion_failure_rejects_unknown_or_unbounded_samples(change):
+    value = {"reason": "lookup-failed", "samples": [{"sharedLookup": "missing", "transferPresence": "absent"}]}
+    value.update(change)
+    assert subject._safe_transfer_completion(value) == {}
+
+
+@pytest.mark.parametrize("progress", [True, -1, 1.01, float("nan"), float("inf"), "private", {}, []])
+def test_completion_failure_excludes_invalid_numbers_and_arbitrary_categories(progress):
+    sample = {"sharedLookup": "metadata-mismatch", "transferPresence": "present", "state": [], "progress": progress,
+        "completedBytes": True, "sizeBytes": 2**64, "partsObtained": -1, "partsTotal": 2**32,
+        "deliveryPathPresent": "private", "deliveryErrorCategory": {"raw": "private"}}
+    assert subject._safe_transfer_completion({"reason": "lookup-failed", "samples": [sample]}) == {
+        "reason": "lookup-failed", "samples": [{"sharedLookup": "metadata-mismatch", "transferPresence": "present"}]}
+
+
+def test_completion_failure_preserves_zeroes_limits_and_omits_absent_transfer_fields():
+    sample = {"sharedLookup": "missing", "transferPresence": "present", "state": "downloading", "progress": 0,
+        "completedBytes": 0, "sizeBytes": 2**64 - 1, "partsObtained": 0, "partsTotal": 2**32 - 1,
+        "deliveryPathPresent": False, "deliveryErrorCategory": "none"}
+    absent = {**sample, "transferPresence": "absent"}
+    assert subject._safe_transfer_completion({"reason": "deadline-exhausted", "samples": [sample, absent]}) == {
+        "reason": "deadline-exhausted", "samples": [sample, {"sharedLookup": "missing", "transferPresence": "absent"}]}
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_new_failure_diagnostics_are_closed_and_never_publish_raw_values(tmp_path, invalid):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
+    launch = {"result": "ok", "resumed": "other", "window": "absent", "process": "present", "keyguard": "showing", "raw": "private"}
+    modes = {"uidMode": "deny", "packageMode": "allow", "defaultMode": "unavailable", "raw": "private"}
+    boot = {"allFilesBeforeReboot": modes, "allFilesAfterReboot": modes,
+            "serviceNotificationState": "waiting-for-network", "nativeRouteProbe": "unavailable", "raw": "private"}
+    if invalid:
+        launch = {key: "private" for key in launch}
+        boot.update(allFilesBeforeReboot={"uidMode": "private"}, allFilesAfterReboot=[],
+                    serviceNotificationState="private", nativeRouteProbe="private")
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
+        "failure": {"stage": "wait-stopped", "code": "app-not-visible", "initialLaunch": launch, "boot": boot}}))
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({'install'}),
+        apk_failure_stages=frozenset({'wait-stopped'}), apk_failure_codes=frozenset({'app-not-visible'}))
+    failure = result['apkProgress']['failure']
+    if invalid:
+        assert 'initialLaunch' not in failure and 'boot' not in failure
+    else:
+        assert failure['initialLaunch'] == {key: value for key, value in launch.items() if key != 'raw'}
+        assert 'boot' not in failure
+    assert 'private' not in json.dumps(result)
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_post_failure_ui_cannot_rewrite_stop_failure_or_expose_raw_error(tmp_path, invalid):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
+    post_ui = {"servicePhase": "Running", "resumeOnBoot": False, "errorCategory": "required-files-permission",
+        "error": "synthetic-private-error-and-key", "text": "synthetic-private-error-and-key"}
+    if invalid:
+        post_ui.update(servicePhase=["synthetic-private"], resumeOnBoot=1, errorCategory="synthetic-private")
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
+        "status": "failed", "runtimeExecution": "executed", "failure": {
+            "stage": "task-manager-stop", "code": "listener-still-running", "boot": {"servicePresent": False},
+            "postFailureUi": post_ui}}))
+    value = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
+        apk_failure_stages=frozenset({"task-manager-stop"}), apk_failure_codes=frozenset({"listener-still-running"}),
+        apk_post_failure_error_categories=frozenset({"required-files-permission", "unknown"}))
+    expected_failure = {"stage": "task-manager-stop", "code": "listener-still-running"}
+    if not invalid:
+        expected_failure["postFailureUi"] = {"servicePhase": "Running", "errorCategory": "required-files-permission"}
+    assert value == {"phase": "apk-lifecycle", "apkProgress": {"status": "failed", "runtimeExecution": "executed", "failure": expected_failure}}
+    assert "synthetic-private" not in json.dumps(value)
 
 
 @pytest.mark.parametrize("payload", ["not JSON", "[]", '{"schema":"other"}', " " * 65537],

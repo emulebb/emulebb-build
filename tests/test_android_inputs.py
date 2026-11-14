@@ -30,6 +30,24 @@ def test_guest_tool_selection_uses_shared_adb_pin_and_excludes_compilers():
     assert selected["assets"]["platform-tools"] == inputs.tool_inputs()["assets"]["platform-tools"]
 
 
+@pytest.mark.parametrize("image,version,tag", [("apk31", "31-r14", "google_apis"), ("apk32", "32-r8", "google_apis"), ("apk33", "33-r17", "google_apis"), ("apk34", "34-r14", "google_apis"), ("apk35", "35-r9", "google_apis"),
+                                              ("apk36", "36-r7", "google_apis"), ("apk37", "37.2-r7", "google_apis_ps16k")])
+def test_additive_apk_guests_use_pinned_supported_apis_and_correct_image_tags(image, version, tag):
+    from emule_workspace.android_install import emulator_layout
+    selected = inputs.emulator_subset(inputs.emulator_inputs(), (image,))
+    role = "system-image-" + image
+    assert selected["assets"][role]["version"] == version
+    assert set(selected["assets"]) == {"emulator", "platform-tools", role}
+    assert "/" + tag + "/" in emulator_layout(selected)[role][1]
+
+
+def test_current_native_and_apk37_share_one_pin_without_ambiguous_duplicate_installation():
+    value = inputs.emulator_inputs()
+    assert inputs.emulator_subset(value, ("apk37",))["assets"]["system-image-apk37"] == value["assets"]["system-image-current"]
+    with pytest.raises(ValueError, match="unique"):
+        inputs.emulator_subset(value, ("current", "apk37"))
+
+
 @pytest.mark.parametrize("role,changes", [
     ("emulator", {"url": "https://dl.google.com/android/repository/emulator-linux_x64-latest.zip"}),
     ("emulator", {"sha256": "f" * 63}),
@@ -37,6 +55,7 @@ def test_guest_tool_selection_uses_shared_adb_pin_and_excludes_compilers():
     ("system-image-min", {"url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-28_r04.zip"}),
     ("system-image-current", {"url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-37.2_r07.zip"}),
     ("system-image-current", {"version": "37.2-r8"}),
+    ("system-image-apk31", {"version": "32-r8", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-32_r08.zip"}),
 ])
 def test_emulator_input_versions_and_archive_variants_cannot_drift(tmp_path, role, changes):
     value = copy.deepcopy(inputs.emulator_inputs())
@@ -67,3 +86,18 @@ def test_invalid_inputs_fail_before_fetch(tmp_path, mutation):
     config.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(RuntimeError):
         inputs.tool_inputs(config)
+
+
+@pytest.mark.parametrize("change", [None, "", "0", "01", "latest", 12])
+def test_every_guest_requires_an_explicit_valid_package_revision(tmp_path, change):
+    value = copy.deepcopy(inputs.emulator_inputs())
+    for role in ("system-image-min", "system-image-apk31", "system-image-apk32", "system-image-current"):
+        altered = copy.deepcopy(value)
+        if change is None:
+            altered["assets"][role].pop("packageRevision")
+        else:
+            altered["assets"][role]["packageRevision"] = change
+        config = tmp_path / "emulator.json"
+        config.write_text(json.dumps(altered))
+        with pytest.raises(RuntimeError, match="Invalid reviewed Android input"):
+            inputs.emulator_inputs(config)

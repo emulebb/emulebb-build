@@ -1,0 +1,4 @@
+FROM local/emulebb-android-toolchain:reviewed
+COPY emule_workspace/android_sdk.py /opt/emulebb/emule_workspace/android_sdk.py
+RUN --mount=type=bind,from=android-inputs,target=/inputs \
+    python3 -B -m emule_workspace.android_sdk --cache /inputs --tools /opt/android-tools

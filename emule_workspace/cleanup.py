@@ -159,6 +159,13 @@ def plan_cleanup(layout: WorkspaceLayout, options: CleanupOptions) -> list[Clean
         candidates.extend(_legacy_root_log_candidates(layout))
     if options.include_profiling_artifacts:
         candidates.extend(_profiling_artifact_candidates(layout, options, now))
+    # WHY: release signing identities are retained operator state, never a
+    # generated cache. Protect their ancestors too so a broad future cleanup
+    # candidate cannot recursively erase the only install-update signing key.
+    signing = (_output_root(layout) / "tools/signing").resolve()
+    candidates = [candidate for candidate in candidates
+                  if not candidate.path.resolve().is_relative_to(signing)
+                  and not signing.is_relative_to(candidate.path.resolve())]
     return _dedupe_candidates(candidates)
 
 
@@ -170,6 +177,8 @@ def _path_anomaly_candidates(layout: WorkspaceLayout) -> list[CleanupCandidate]:
     stack = [root]
     while stack:
         current = stack.pop()
+        if current.resolve().is_relative_to((root / "tools/signing").resolve()):
+            continue
         try:
             entries = list(os.scandir(current))
         except OSError:
