@@ -261,7 +261,7 @@ def test_apk_failure_substage_and_ui_facts_are_enum_and_bool_only(tmp_path, faul
 
 
 @pytest.mark.parametrize("invalid", [False, True])
-def test_navigation_and_pre_cleanup_boot_facts_are_closed_bounded_and_not_raw_ui(tmp_path, invalid):
+def test_navigation_facts_are_closed_bounded_and_not_raw_ui(tmp_path, invalid):
     (tmp_path / "guest").mkdir()
     (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
     navigation = {"control": "start_service", "displayBounds": [0, 0, 1080, 1920],
@@ -282,20 +282,20 @@ def test_navigation_and_pre_cleanup_boot_facts_are_closed_bounded_and_not_raw_ui
         boot.update(latestDaemonExitReason=17, restAttempts=0, restConnectionFailures=True,
             restHttpResponses=1025, lastHttpStatus=600)
     (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
-        "failure": {"stage": "automatic-boot", "code": "boot-resume-timeout", "navigation": navigation, "boot": boot}}))
+        "failure": {"stage": "task-manager-stop", "code": "listener-still-running", "navigation": navigation, "boot": boot}}))
     result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
-        apk_failure_stages=frozenset({"automatic-boot"}), apk_failure_codes=frozenset({"boot-resume-timeout"}),
+        apk_failure_stages=frozenset({"task-manager-stop"}), apk_failure_codes=frozenset({"listener-still-running"}),
         apk_navigation_controls=frozenset({"start_service"}))
     facts = result["apkProgress"]["failure"]
     assert facts["navigation"] == ({"control": "start_service"} if invalid else {
         key: value for key, value in navigation.items() if key != "rawUi"})
-    assert facts["boot"] == ({} if invalid else {key: value for key, value in boot.items() if key != "rawLog"})
+    assert "boot" not in facts
     assert "synthetic-private" not in json.dumps(result)
     navigation["control"] = "synthetic-private"
     (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
-        "failure": {"stage": "automatic-boot", "code": "boot-resume-timeout", "navigation": navigation}}))
+        "failure": {"stage": "task-manager-stop", "code": "listener-still-running", "navigation": navigation}}))
     assert "navigation" not in subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
-        apk_failure_stages=frozenset({"automatic-boot"}), apk_failure_codes=frozenset({"boot-resume-timeout"}),
+        apk_failure_stages=frozenset({"task-manager-stop"}), apk_failure_codes=frozenset({"listener-still-running"}),
         apk_navigation_controls=frozenset({"start_service"}))["apkProgress"]["failure"]
 
 
@@ -317,32 +317,31 @@ def test_new_failure_diagnostics_are_closed_and_never_publish_raw_values(tmp_pat
         apk_failure_stages=frozenset({'wait-stopped'}), apk_failure_codes=frozenset({'app-not-visible'}))
     failure = result['apkProgress']['failure']
     if invalid:
-        assert 'initialLaunch' not in failure and failure['boot'] == {}
+        assert 'initialLaunch' not in failure and 'boot' not in failure
     else:
         assert failure['initialLaunch'] == {key: value for key, value in launch.items() if key != 'raw'}
-        assert failure['boot']['allFilesBeforeReboot'] == {key: value for key, value in modes.items() if key != 'raw'}
-        assert failure['boot']['serviceNotificationState'] == 'waiting-for-network'
+        assert 'boot' not in failure
     assert 'private' not in json.dumps(result)
 
 
 @pytest.mark.parametrize("invalid", [False, True])
-def test_post_failure_ui_cannot_rewrite_automatic_boot_failure_or_expose_raw_error(tmp_path, invalid):
+def test_post_failure_ui_cannot_rewrite_stop_failure_or_expose_raw_error(tmp_path, invalid):
     (tmp_path / "guest").mkdir()
     (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
-    post_ui = {"servicePhase": "Running", "resumeOnBoot": False, "errorCategory": "boot-start-blocked",
+    post_ui = {"servicePhase": "Running", "resumeOnBoot": False, "errorCategory": "required-files-permission",
         "error": "synthetic-private-error-and-key", "text": "synthetic-private-error-and-key"}
     if invalid:
         post_ui.update(servicePhase=["synthetic-private"], resumeOnBoot=1, errorCategory="synthetic-private")
     (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
         "status": "failed", "runtimeExecution": "executed", "failure": {
-            "stage": "automatic-boot", "code": "boot-resume-timeout", "boot": {"servicePresent": False},
+            "stage": "task-manager-stop", "code": "listener-still-running", "boot": {"servicePresent": False},
             "postFailureUi": post_ui}}))
     value = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
-        apk_failure_stages=frozenset({"automatic-boot"}), apk_failure_codes=frozenset({"boot-resume-timeout"}),
-        apk_post_failure_error_categories=frozenset({"boot-start-blocked", "unknown"}))
-    expected_failure = {"stage": "automatic-boot", "code": "boot-resume-timeout", "boot": {"servicePresent": False}}
+        apk_failure_stages=frozenset({"task-manager-stop"}), apk_failure_codes=frozenset({"listener-still-running"}),
+        apk_post_failure_error_categories=frozenset({"required-files-permission", "unknown"}))
+    expected_failure = {"stage": "task-manager-stop", "code": "listener-still-running"}
     if not invalid:
-        expected_failure["postFailureUi"] = {"servicePhase": "Running", "resumeOnBoot": False, "errorCategory": "boot-start-blocked"}
+        expected_failure["postFailureUi"] = {"servicePhase": "Running", "errorCategory": "required-files-permission"}
     assert value == {"phase": "apk-lifecycle", "apkProgress": {"status": "failed", "runtimeExecution": "executed", "failure": expected_failure}}
     assert "synthetic-private" not in json.dumps(value)
 

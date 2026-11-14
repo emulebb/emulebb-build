@@ -82,7 +82,8 @@ def validate_runtime(execution: dict, *, api: int, identity: dict, apk_sha256: s
     _fields(_object(browser.get("cleanup"), "APK browser cleanup"), {"status": "passed"}, "APK browser cleanup")
     endurance = _object(execution.get("endurance"), "APK screen-off observation")
     minimum_dwell, minimum_samples = contract["MIN_SCREEN_OFF_DWELL_SECONDS"], contract["MIN_SCREEN_OFF_SAMPLES"]
-    _fields(endurance, {"minimumDwellSeconds": minimum_dwell, "minimumSamples": minimum_samples}, "APK screen-off observation")
+    _fields(endurance, {"minimumDwellSeconds": minimum_dwell, "minimumSamples": minimum_samples,
+                        "activityClosed": True}, "APK screen-off observation")
     requested, observed, samples = (endurance.get(name) for name in ("requestedSeconds", "observedSeconds", "samples"))
     if (type(requested) is not int or not 0 <= requested <= 7 * 86400
             or type(observed) not in (int, float) or not math.isfinite(observed) or observed < max(minimum_dwell, requested)

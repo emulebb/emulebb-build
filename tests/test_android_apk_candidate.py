@@ -105,7 +105,7 @@ def evidence(tmp_path, monkeypatch):
                 "browser": {"schema": "emulebb-rust.webui-file-link-proof/1", "status": "passed", "buildIdentity": identity,
                     "confirmation": {"status": "passed", "sizeBytes": 1, "state": "paused", "transferHash": "e" * 32,
                                      **{key: True for key in contract["FILE_LINK_BROWSER_REQUIRED_CHECKS"]}}, "cleanup": {"status": "passed"}}},
-            "endurance": {"requestedSeconds": 0, "observedSeconds": 60.5, "samples": 3, "minimumDwellSeconds": 60, "minimumSamples": 3, "over24Hours": False}}
+            "endurance": {"activityClosed": True, "requestedSeconds": 0, "observedSeconds": 60.5, "samples": 3, "minimumDwellSeconds": 60, "minimumSamples": 3, "over24Hours": False}}
         proofs.append({"schema": "emulebb.android.guest-validation/1", "status": "passed", "origin": "github-actions", "workflow": WORKFLOW,
             "scope": "apk-lifecycle", "applicationQualification": "apk-lifecycle", "selectedGuest": "apk" + str(api),
             "apkSha256": metadata["apk"]["sha256"], "apkManifestSha256": release._sha256(root / names["manifest"]),
@@ -130,7 +130,7 @@ def test_apk_binds_four_guest_proofs_to_distinct_producer_and_native_authorities
 
 
 @pytest.mark.parametrize("fault", ["missing-middle-api", "duplicate-api", "wrong-cert", "wrong-run", "wrong-harness", "wrong-apk",
-    "missing-case", "failed-case", "browser-not-executed", "collision-not-preserved", "short-doze", "two-samples", "wrong-page-size", "wrong-input-pins",
+    "missing-case", "failed-case", "browser-not-executed", "collision-not-preserved", "short-doze", "two-samples", "activity-not-closed", "activity-closed-missing", "wrong-page-size", "wrong-input-pins",
     "wrong-version-code", "wrong-installed-code"])
 def test_incomplete_or_substituted_runtime_evidence_cannot_publish(evidence, fault):
     root, context, metadata, proof, save = evidence
@@ -147,6 +147,8 @@ def test_incomplete_or_substituted_runtime_evidence_cannot_publish(evidence, fau
     elif fault == "collision-not-preserved": guest["apk"]["localTransfer"]["collisionPreserved"] = False
     elif fault == "short-doze": guest["apk"]["endurance"]["observedSeconds"] = 1
     elif fault == "two-samples": guest["apk"]["endurance"]["samples"] = 2
+    elif fault == "activity-not-closed": guest["apk"]["endurance"]["activityClosed"] = False
+    elif fault == "activity-closed-missing": del guest["apk"]["endurance"]["activityClosed"]
     elif fault == "wrong-version-code": guest["versionCode"] = 3
     elif fault == "wrong-installed-code": guest["apk"]["versionCode"] = 3
     elif fault == "wrong-page-size": proof["proofs"][-1]["guest"]["pageSize"] = 4096
