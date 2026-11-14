@@ -73,6 +73,7 @@ def test_physical_android_apk_adapter_uses_exact_harness_owner_under_lock_withou
         assert "--execute" in command and "--render-webui" in command
         assert "--configure-storage" in command and "--allow-owned-compatible-update" in command
         assert "--probe-local-listeners" in command
+        assert not {"--reset-owned-profile", "--verify-fresh-defaults", "--check-system-theme"}.intersection(command)
         assert command[command.index("--compatibility-receipt-sha256") + 1] == "e" * 64
         assert command[command.index("--configuration-receipt-sha256") + 1] == "f" * 64
         assert command[command.index("--cleanup-transfer-report") + 1] == str(payload)
@@ -93,6 +94,91 @@ def test_physical_android_apk_adapter_uses_exact_harness_owner_under_lock_withou
         "--cleanup-transfer-report-sha256", "1" * 64, "--cleanup-transfer-fixture-sha256", "2" * 64])
     assert result.exit_code == 0, result.output
     assert events == ["probe-rust-android-apk-device", "executed"]
+    assert "phone.example.invalid" not in result.output
+
+
+@pytest.fixture
+def physical_apk_arguments(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    adb = tmp_path / "adb.exe"
+    adb.write_bytes(b"synthetic tool")
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    receipt = tmp_path / "installation.json"
+    receipt.write_text("{}")
+    harness = tmp_path / "selected-harness"
+    layout = SimpleNamespace(tests_repo_root=harness)
+    options = SimpleNamespace(workspace_root=tmp_path, workspace_name="workspace", output_root=tmp_path / "output")
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: layout)
+    arguments = ["probe-rust-android-apk-device", "--adb", str(adb),
+        "--serial", "phone.example.invalid:37099", "--apk-payload", str(payload),
+        "--apk-manifest-name", "manifest.json", "--apk-manifest-sha256", "a" * 64,
+        "--apk-source-sha", "b" * 40, "--expected-cert-sha256", "c" * 64,
+        "--report-dir", str(tmp_path / "reports")]
+    return arguments, receipt, payload, layout, options
+
+
+@pytest.mark.parametrize("flags", [
+    ["--reset-owned-profile", "--verify-fresh-defaults", "--check-system-theme"],
+    ["--verify-fresh-defaults"], ["--check-system-theme"],
+])
+def test_physical_android_fresh_profile_flags_keep_selected_owner_context(physical_apk_arguments, monkeypatch, flags):
+    import os
+    arguments, receipt, _, layout, options = physical_apk_arguments
+    events = []
+    def locked(name, operation):
+        def invoke(**kwargs):
+            assert name == "probe-rust-android-apk-device"
+            assert kwargs == {"workspace_options": options, "layout": layout}
+            events.append("locked")
+            return operation(**kwargs)
+        return invoke
+    monkeypatch.setattr(cli, "_locked", locked)
+    def execute(command, *, label, cwd):
+        assert events == ["locked"]
+        assert command[1] == str(layout.tests_repo_root / "scripts/probe-android-apk-device.py")
+        assert cwd == layout.tests_repo_root and label == "physical Android APK probe"
+        assert all(command.count(flag) == 1 for flag in flags)
+        assert command[command.index("--installation-receipt") + 1] == str(receipt)
+        assert command[command.index("--installation-receipt-sha256") + 1] == "d" * 64
+        assert "--render-webui" not in command and "--configure-storage" not in command
+        events.append("executed")
+    monkeypatch.setattr(cli, "run_native", execute)
+    before = os.environ.copy()
+    result = CliRunner().invoke(cli.main, arguments + ["--execute", "--installation-receipt", str(receipt),
+        "--installation-receipt-sha256", "d" * 64] + flags)
+    assert result.exit_code == 0, result.output
+    assert events == ["locked", "executed"] and os.environ == before
+    assert "phone.example.invalid" not in result.output
+
+
+@pytest.mark.parametrize("flags, error", [
+    (["--reset-owned-profile"], "require --execute"),
+    (["--verify-fresh-defaults"], "require --execute"),
+    (["--check-system-theme"], "require --execute"),
+    (["--execute", "--reset-owned-profile"], "requires --installation-receipt"),
+    (["--execute", "--reset-owned-profile", "--configure-storage"], "conflicts"),
+    (["--execute", "--reset-owned-profile", "--probe-local-listeners"], "conflicts"),
+    (["--execute", "--reset-owned-profile", "--allow-owned-compatible-update"], "conflicts"),
+    (["--execute", "--reset-owned-profile", "--compatibility-receipt-sha256", "e" * 64], "conflicts"),
+    (["--execute", "--reset-owned-profile", "--peer-abi", "arm64-v8a"], "conflicts"),
+    (["--execute", "--reset-owned-profile", "--configuration-receipt-sha256", "e" * 64], "conflicts"),
+    (["--execute", "--reset-owned-profile", "--cleanup-transfer-report-sha256", "e" * 64], "conflicts"),
+    (["--execute", "--verify-fresh-defaults", "--configure-storage"], "conflicts"),
+    (["--execute", "--verify-fresh-defaults", "--configuration-receipt-sha256", "e" * 64], "conflicts"),
+    (["--execute", "--verify-fresh-defaults", "--cleanup-transfer-report-sha256", "e" * 64], "conflicts"),
+])
+def test_physical_android_fresh_profile_conflicts_fail_before_lock(physical_apk_arguments, monkeypatch, flags, error):
+    arguments, receipt, _, _, _ = physical_apk_arguments
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid flags must fail before locking or device operations")
+    monkeypatch.setattr(cli, "_locked", forbidden)
+    monkeypatch.setattr(cli, "run_native", forbidden)
+    if error == "conflicts":
+        flags = flags + ["--installation-receipt", str(receipt), "--installation-receipt-sha256", "d" * 64]
+    result = CliRunner().invoke(cli.main, arguments + flags)
+    assert result.exit_code == 2 and error in result.output
     assert "phone.example.invalid" not in result.output
 
 

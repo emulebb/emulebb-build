@@ -853,6 +853,10 @@ def prepare_rust_android_apk_peer(*, abi: str, peer_artifacts: Path, release_ver
 @click.option("--expected-cert-sha256", required=True)
 @click.option("--report-dir", required=True, type=click.Path(path_type=Path, file_okay=False))
 @click.option("--execute", is_flag=True, help="Perform the bounded owned-installation runtime smoke.")
+@click.option("--reset-owned-profile", is_flag=True,
+              help="Reset only the verified owned app using the supplied installation receipt.")
+@click.option("--verify-fresh-defaults", is_flag=True, help="Verify defaults on a proven fresh owned profile.")
+@click.option("--check-system-theme", is_flag=True, help="Check system theme following and restore the baseline.")
 @click.option("--installation-receipt", type=click.Path(path_type=Path, exists=True, dir_okay=False))
 @click.option("--installation-receipt-sha256")
 @click.option("--dwell-seconds", default=30, show_default=True, type=click.IntRange(15, 300))
@@ -874,7 +878,8 @@ def prepare_rust_android_apk_peer(*, abi: str, peer_artifacts: Path, release_ver
 @_common_options
 def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, apk_payload: Path,
         apk_manifest_name: str, apk_manifest_sha256: str, apk_source_sha: str, expected_cert_sha256: str,
-        report_dir: Path, execute: bool, installation_receipt: Path | None,
+        report_dir: Path, execute: bool, reset_owned_profile: bool, verify_fresh_defaults: bool,
+        check_system_theme: bool, installation_receipt: Path | None,
         installation_receipt_sha256: str | None, dwell_seconds: int, render_webui: bool,
         configure_storage: bool, probe_local_listeners: bool, allow_owned_compatible_update: bool, compatibility_receipt: Path | None,
         compatibility_receipt_sha256: str | None, configuration_receipt: Path | None,
@@ -883,6 +888,22 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
         peer_payload: Path | None, peer_manifest_sha256: str | None, peer_abi: str | None, rust_source: Path | None,
         workspace_options, layout) -> None:
     """Use the persisted physical-device owner with one explicit connected phone."""
+    if (reset_owned_profile or verify_fresh_defaults or check_system_theme) and not execute:
+        raise click.UsageError("--reset-owned-profile, --verify-fresh-defaults and --check-system-theme require --execute")
+    if reset_owned_profile:
+        if installation_receipt is None or not installation_receipt_sha256:
+            raise click.UsageError("--reset-owned-profile requires --installation-receipt and --installation-receipt-sha256")
+        if (configure_storage or probe_local_listeners or allow_owned_compatible_update
+                or any(value is not None for value in (compatibility_receipt, compatibility_receipt_sha256,
+                    configuration_receipt, configuration_receipt_sha256, cleanup_transfer_report,
+                    cleanup_transfer_report_sha256, cleanup_transfer_fixture_sha256,
+                    peer_payload, peer_manifest_sha256, peer_abi, rust_source))):
+            raise click.UsageError("--reset-owned-profile conflicts with storage configuration, listener/peer probes, "
+                                   "compatible updates and prior compatibility/configuration/cleanup evidence")
+    if verify_fresh_defaults and (configure_storage or any(value is not None for value in (
+            configuration_receipt, configuration_receipt_sha256, cleanup_transfer_report,
+            cleanup_transfer_report_sha256, cleanup_transfer_fixture_sha256))):
+        raise click.UsageError("--verify-fresh-defaults conflicts with --configure-storage and prior configuration/cleanup evidence")
     def probe(**kwargs):
         if rust_source is not None:
             from .release_candidate import _checked_checkout
@@ -904,6 +925,8 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
             if value is not None:
                 arguments.extend(("--" + name, str(value)))
         arguments.extend(flag for flag, enabled in (("--execute", execute), ("--render-webui", render_webui),
+            ("--reset-owned-profile", reset_owned_profile), ("--verify-fresh-defaults", verify_fresh_defaults),
+            ("--check-system-theme", check_system_theme),
             ("--configure-storage", configure_storage), ("--probe-local-listeners", probe_local_listeners),
             ("--allow-owned-compatible-update", allow_owned_compatible_update)) if enabled)
         # WHY: the exact Wi-Fi endpoint is operator state. This process owner
