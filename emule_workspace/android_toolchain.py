@@ -479,6 +479,17 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
                     and failure["stage"] in apk_failure_stages and isinstance(failure.get("code"), str)
                     and failure["code"] in apk_failure_codes):
                 safe_failure = {key: failure[key] for key in ("stage", "code")}
+                launch = failure.get("initialLaunch")
+                if isinstance(launch, dict):
+                    allowed = {"result": {"ok", "timeout", "error", "unavailable"},
+                               "resumed": {"owned", "other", "unavailable"},
+                               "window": {"present", "absent", "unavailable"},
+                               "process": {"present", "unavailable"},
+                               "keyguard": {"showing", "hidden", "unavailable"}}
+                    safe_launch = {key: launch[key] for key, values in allowed.items()
+                                   if isinstance(launch.get(key), str) and launch[key] in values}
+                    if safe_launch:
+                        safe_failure["initialLaunch"] = safe_launch
                 if isinstance(failure.get("servicePhase"), str) and failure["servicePhase"] in {
                         "Stopped", "Starting", "Running", "Stopping", "Failed"}:
                     safe_failure["servicePhase"] = failure["servicePhase"]
@@ -512,6 +523,18 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
                     for name, minimum, maximum in (("latestDaemonExitReason", 0, 16), ("restAttempts", 1, 1024),
                             ("restConnectionFailures", 0, 1024), ("restHttpResponses", 0, 1024), ("lastHttpStatus", 100, 599)):
                         if type(boot.get(name)) is int and minimum <= boot[name] <= maximum:
+                            safe_boot[name] = boot[name]
+                    for name in ("allFilesBeforeReboot", "allFilesAfterReboot"):
+                        modes = boot.get(name)
+                        if isinstance(modes, dict):
+                            safe_modes = {key: modes[key] for key in ("uidMode", "packageMode", "defaultMode")
+                                          if isinstance(modes.get(key), str) and modes[key] in
+                                          {"allow", "deny", "ignore", "default", "unavailable"}}
+                            if safe_modes:
+                                safe_boot[name] = safe_modes
+                    for name, allowed_values in (("serviceNotificationState", {"waiting-for-network", "starting", "running", "stopping", "stopped", "failed", "unavailable"}),
+                                                 ("nativeRouteProbe", {"unavailable"})):
+                        if isinstance(boot.get(name), str) and boot[name] in allowed_values:
                             safe_boot[name] = boot[name]
                     safe_failure["boot"] = safe_boot
                 post_ui = failure.get("postFailureUi")

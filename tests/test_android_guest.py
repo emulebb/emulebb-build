@@ -300,6 +300,32 @@ def test_navigation_and_pre_cleanup_boot_facts_are_closed_bounded_and_not_raw_ui
 
 
 @pytest.mark.parametrize("invalid", [False, True])
+def test_new_failure_diagnostics_are_closed_and_never_publish_raw_values(tmp_path, invalid):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
+    launch = {"result": "ok", "resumed": "other", "window": "absent", "process": "present", "keyguard": "showing", "raw": "private"}
+    modes = {"uidMode": "deny", "packageMode": "allow", "defaultMode": "unavailable", "raw": "private"}
+    boot = {"allFilesBeforeReboot": modes, "allFilesAfterReboot": modes,
+            "serviceNotificationState": "waiting-for-network", "nativeRouteProbe": "unavailable", "raw": "private"}
+    if invalid:
+        launch = {key: "private" for key in launch}
+        boot.update(allFilesBeforeReboot={"uidMode": "private"}, allFilesAfterReboot=[],
+                    serviceNotificationState="private", nativeRouteProbe="private")
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
+        "failure": {"stage": "wait-stopped", "code": "app-not-visible", "initialLaunch": launch, "boot": boot}}))
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({'install'}),
+        apk_failure_stages=frozenset({'wait-stopped'}), apk_failure_codes=frozenset({'app-not-visible'}))
+    failure = result['apkProgress']['failure']
+    if invalid:
+        assert 'initialLaunch' not in failure and failure['boot'] == {}
+    else:
+        assert failure['initialLaunch'] == {key: value for key, value in launch.items() if key != 'raw'}
+        assert failure['boot']['allFilesBeforeReboot'] == {key: value for key, value in modes.items() if key != 'raw'}
+        assert failure['boot']['serviceNotificationState'] == 'waiting-for-network'
+    assert 'private' not in json.dumps(result)
+
+
+@pytest.mark.parametrize("invalid", [False, True])
 def test_post_failure_ui_cannot_rewrite_automatic_boot_failure_or_expose_raw_error(tmp_path, invalid):
     (tmp_path / "guest").mkdir()
     (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
