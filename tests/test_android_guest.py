@@ -260,6 +260,45 @@ def test_apk_failure_substage_and_ui_facts_are_enum_and_bool_only(tmp_path, faul
     assert "synthetic-private" not in json.dumps(result) and "property" not in result
 
 
+@pytest.mark.parametrize("invalid", [False, True])
+def test_navigation_and_pre_cleanup_boot_facts_are_closed_bounded_and_not_raw_ui(tmp_path, invalid):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
+    navigation = {"control": "start_service", "displayBounds": [0, 0, 1080, 1920],
+        "scrollBounds": [0, 100, 1080, 1800], "lastGesture": [500, 1500, 500, 300],
+        "forwardAttempts": 6, "backwardAttempts": 0, "forwardProgress": 5, "backwardProgress": 0,
+        "imeVisible": True, "rawUi": "synthetic-private-key-and-ui"}
+    boot = {"userUnlocked": True, "packageStopped": False, "bootReceiverResolved": True,
+        "servicePresent": True, "serviceForeground": False, "serviceStartRequested": True,
+        "allFilesAllowed": True, "notificationsGranted": False, "localNetworkGranted": True,
+        "dozeWhitelisted": False, "backgroundRestricted": False, "latestDaemonExitReason": 10,
+        "restAttempts": 30, "restConnectionFailures": 29, "restHttpResponses": 1, "lastHttpStatus": 503,
+        "rawLog": "synthetic-private-key-and-ui"}
+    if invalid:
+        navigation.update(displayBounds=[True, 0, 1080, 1920], scrollBounds=[0, 0, 1],
+            lastGesture=[0, -1, 1, 32769], forwardAttempts=7, backwardAttempts=-1,
+            forwardProgress=True, backwardProgress="synthetic-private", imeVisible=1)
+        boot.update({name: "synthetic-private" for name, value in boot.items() if type(value) is bool})
+        boot.update(latestDaemonExitReason=17, restAttempts=0, restConnectionFailures=True,
+            restHttpResponses=1025, lastHttpStatus=600)
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
+        "failure": {"stage": "automatic-boot", "code": "boot-resume-timeout", "navigation": navigation, "boot": boot}}))
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
+        apk_failure_stages=frozenset({"automatic-boot"}), apk_failure_codes=frozenset({"boot-resume-timeout"}),
+        apk_navigation_controls=frozenset({"start_service"}))
+    facts = result["apkProgress"]["failure"]
+    assert facts["navigation"] == ({"control": "start_service"} if invalid else {
+        key: value for key, value in navigation.items() if key != "rawUi"})
+    assert facts["boot"] == ({} if invalid else {key: value for key, value in boot.items() if key != "rawLog"})
+    assert "synthetic-private" not in json.dumps(result)
+    navigation["control"] = "synthetic-private"
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
+        "failure": {"stage": "automatic-boot", "code": "boot-resume-timeout", "navigation": navigation}}))
+    assert "navigation" not in subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
+        apk_failure_stages=frozenset({"automatic-boot"}), apk_failure_codes=frozenset({"boot-resume-timeout"}),
+        apk_navigation_controls=frozenset({"start_service"}))["apkProgress"]["failure"]
+
+
 @pytest.mark.parametrize("payload", ["not JSON", "[]", '{"schema":"other"}', " " * 65537],
                          ids=["malformed", "array", "schema", "oversize"])
 def test_missing_or_invalid_failure_receipt_cannot_claim_a_boot_phase(tmp_path, payload):

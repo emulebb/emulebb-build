@@ -340,7 +340,8 @@ def _kvm_group(docker) -> str:
 
 def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = frozenset(),
                            apk_failure_stages: frozenset[str] = frozenset(),
-                           apk_failure_codes: frozenset[str] = frozenset()) -> dict:
+                           apk_failure_codes: frozenset[str] = frozenset(),
+                           apk_navigation_controls: frozenset[str] = frozenset()) -> dict:
     """Allowlist guest phases and OS facts; never publish private log text."""
     path = directory / "guest/report.json"
     try:
@@ -453,7 +454,7 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
     if apk_case_names and phase == "apk-lifecycle":
         # WHY: exercise() retains its receipt even when it raises, before the
         # outer guest can assign its successful result. Publish only contract
-        # case names and closed enums, never UI, REST or exception contents.
+        # case names and closed facts, never raw UI, REST or exception contents.
         lifecycle = directory / "guest/apk-lifecycle.json"
         try:
             if (lifecycle.is_symlink() or not lifecycle.resolve().is_relative_to(directory.resolve())
@@ -486,6 +487,32 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
                         for name in ("service_status", "api_key", "resume_on_boot")
                         if isinstance(control := controls.get(name), dict)
                         and all(type(control.get(key)) is bool for key in ("present", "enabled"))}
+                navigation = failure.get("navigation")
+                if (isinstance(navigation, dict) and isinstance(navigation.get("control"), str)
+                        and navigation["control"] in apk_navigation_controls):
+                    safe_navigation = {"control": navigation["control"]}
+                    for name in ("displayBounds", "scrollBounds", "lastGesture"):
+                        rectangle = navigation.get(name)
+                        if (isinstance(rectangle, list) and len(rectangle) == 4
+                                and all(type(coordinate) is int and 0 <= coordinate <= 32768 for coordinate in rectangle)):
+                            safe_navigation[name] = rectangle
+                    for name in ("forwardAttempts", "backwardAttempts", "forwardProgress", "backwardProgress"):
+                        if type(navigation.get(name)) is int and 0 <= navigation[name] <= 6:
+                            safe_navigation[name] = navigation[name]
+                    if type(navigation.get("imeVisible")) is bool:
+                        safe_navigation["imeVisible"] = navigation["imeVisible"]
+                    safe_failure["navigation"] = safe_navigation
+                boot = failure.get("boot")
+                if isinstance(boot, dict):
+                    safe_boot = {name: boot[name] for name in ("userUnlocked", "packageStopped", "bootReceiverResolved",
+                        "servicePresent", "serviceForeground", "serviceStartRequested", "allFilesAllowed",
+                        "notificationsGranted", "localNetworkGranted", "dozeWhitelisted", "backgroundRestricted")
+                        if type(boot.get(name)) is bool}
+                    for name, minimum, maximum in (("latestDaemonExitReason", 0, 16), ("restAttempts", 1, 1024),
+                            ("restConnectionFailures", 0, 1024), ("restHttpResponses", 0, 1024), ("lastHttpStatus", 100, 599)):
+                        if type(boot.get(name)) is int and minimum <= boot[name] <= maximum:
+                            safe_boot[name] = boot[name]
+                    safe_failure["boot"] = safe_boot
                 public["failure"] = safe_failure
             value["apkProgress"] = public
     return value
@@ -585,13 +612,14 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
     if tls_startup:
         value["tls"] = {"status": "failed", "payloadManifestSha256": payload_identity, "capacityBefore": capacity}
     apk_case_names = frozenset()
-    apk_failure_stages, apk_failure_codes = frozenset(), frozenset()
+    apk_failure_stages, apk_failure_codes, apk_navigation_controls = frozenset(), frozenset(), frozenset()
     if apk_payload is not None:
         from .android_apk_candidate import apk_contract
         contract = apk_contract(apk_payload["context"])
         apk_case_names = frozenset(contract["required_apk_cases"](api))
         apk_failure_stages = contract.get("APK_LIFECYCLE_STAGES", frozenset())
         apk_failure_codes = contract.get("APK_LIFECYCLE_FAILURE_CODES", frozenset())
+        apk_navigation_controls = contract.get("APK_NAVIGATION_CONTROLS", frozenset())
         metadata = apk_payload["metadata"]
         value.update(scope="apk-lifecycle", applicationQualification="apk-lifecycle", apkSha256=metadata["apk"]["sha256"],
             apkManifestSha256=apk_payload["manifestSha256"], signerSha256=metadata["signerSha256"],
@@ -706,7 +734,8 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
     except BaseException as error:
         value.update(status="failed", failureType=type(error).__name__,
                      failureDetails=_guest_failure_details(directory, apk_case_names=apk_case_names,
-                         apk_failure_stages=apk_failure_stages, apk_failure_codes=apk_failure_codes))
+                         apk_failure_stages=apk_failure_stages, apk_failure_codes=apk_failure_codes,
+                         apk_navigation_controls=apk_navigation_controls))
         print(json.dumps({"failureDetails": value["failureDetails"]}, sort_keys=True))
         raise
     finally:
