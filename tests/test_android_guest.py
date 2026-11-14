@@ -325,6 +325,58 @@ def test_lifecycle_failure_details_are_independently_filtered(tmp_path, invalid)
     assert 'private' not in json.dumps(result)
 
 
+@pytest.mark.parametrize("phase", ["await-completed-delivery", "enqueue-owned-transfer"])
+def test_completion_failure_observations_are_independently_projected(tmp_path, phase):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
+    sample = {"sharedLookup": "missing", "transferPresence": "present", "state": "completing", "progress": 1.0,
+        "completedBytes": 262144, "sizeBytes": 262144, "partsObtained": 1, "partsTotal": 1,
+        "deliveryPathPresent": False, "deliveryErrorCategory": "atomic-no-replace-unsupported"}
+    untrusted = {**sample, "path": "private", "deliveryError": "private", "hash": "private", "apiKey": "private"}
+    completion = {"reason": "deadline-exhausted", "samples": [untrusted, untrusted], "raw": "private"}
+    failure = {"stage": "local-transfer", "code": "other", "transfer": {
+        "phase": phase, "code": phase + "-failed", "completion": completion}}
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1", "failure": failure}))
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset(),
+        apk_failure_stages=frozenset({"local-transfer"}), apk_failure_codes=frozenset({"other"}))
+    transfer = result["apkProgress"]["failure"]["transfer"]
+    if phase == "await-completed-delivery":
+        assert transfer["completion"] == {"reason": "deadline-exhausted", "samples": [sample, sample]}
+    else:
+        assert "completion" not in transfer
+    assert "private" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("change", [
+    {"reason": "private"}, {"reason": []}, {"samples": []}, {"samples": [None]},
+    {"samples": [{"sharedLookup": [], "transferPresence": "present"}]},
+    {"samples": [{"sharedLookup": "missing", "transferPresence": {}}]},
+    {"samples": [{"sharedLookup": "missing", "transferPresence": "present"}] * 3},
+])
+def test_completion_failure_rejects_unknown_or_unbounded_samples(change):
+    value = {"reason": "lookup-failed", "samples": [{"sharedLookup": "missing", "transferPresence": "absent"}]}
+    value.update(change)
+    assert subject._safe_transfer_completion(value) == {}
+
+
+@pytest.mark.parametrize("progress", [True, -1, 1.01, float("nan"), float("inf"), "private", {}, []])
+def test_completion_failure_excludes_invalid_numbers_and_arbitrary_categories(progress):
+    sample = {"sharedLookup": "metadata-mismatch", "transferPresence": "present", "state": [], "progress": progress,
+        "completedBytes": True, "sizeBytes": 2**64, "partsObtained": -1, "partsTotal": 2**32,
+        "deliveryPathPresent": "private", "deliveryErrorCategory": {"raw": "private"}}
+    assert subject._safe_transfer_completion({"reason": "lookup-failed", "samples": [sample]}) == {
+        "reason": "lookup-failed", "samples": [{"sharedLookup": "metadata-mismatch", "transferPresence": "present"}]}
+
+
+def test_completion_failure_preserves_zeroes_limits_and_omits_absent_transfer_fields():
+    sample = {"sharedLookup": "missing", "transferPresence": "present", "state": "downloading", "progress": 0,
+        "completedBytes": 0, "sizeBytes": 2**64 - 1, "partsObtained": 0, "partsTotal": 2**32 - 1,
+        "deliveryPathPresent": False, "deliveryErrorCategory": "none"}
+    absent = {**sample, "transferPresence": "absent"}
+    assert subject._safe_transfer_completion({"reason": "deadline-exhausted", "samples": [sample, absent]}) == {
+        "reason": "deadline-exhausted", "samples": [sample, {"sharedLookup": "missing", "transferPresence": "absent"}]}
+
+
 @pytest.mark.parametrize("invalid", [False, True])
 def test_new_failure_diagnostics_are_closed_and_never_publish_raw_values(tmp_path, invalid):
     (tmp_path / "guest").mkdir()

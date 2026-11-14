@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 from pathlib import Path
 import re
@@ -42,6 +43,40 @@ ADB_REASONS = frozenset({"unclassified-command-failure", "output-bound-exceeded"
 REST_CODES = frozenset({"BAD_REQUEST", "INVALID_ARGUMENT", "NOT_FOUND", "EMULE_ERROR", "INTERNAL_SERVER_ERROR", "UNAUTHORIZED", "FORBIDDEN", "DOWNLOAD_CONFLICT", "unrecognized"})
 REST_CONTEXTS = frozenset({"ed2k-not-configured", "ed2k-disabled", "ed2k-no-server", "vpn-guard-blocked", "client-udp-version", "kad-listener-initialization", "ed2k-listener-bind", "nat-initial-reconcile", "nat-initial-timeout", "local-bind-interface-missing", "server-not-found", "unrecognized"})
 FIXTURE_CODES = frozenset({"inventory-invalid", "inventory-limit", "nonce-invalid", "payload-authority-invalid", "protected-root", "unsafe-directory-type", "directory-redirected", "unknown-contents", "unsafe-entry-type", "entry-changed-before-delete", "entry-delete-failed", "directory-remove-failed"})
+
+
+def _safe_transfer_completion(value: object) -> dict:
+    """Independently project two closed observations, excluding paths and errors."""
+    if (not isinstance(value, dict) or not isinstance(value.get("reason"), str)
+            or value["reason"] not in {"deadline-exhausted", "lookup-failed"}
+            or not isinstance(value.get("samples"), list) or not 1 <= len(value["samples"]) <= 2):
+        return {}
+    samples = []
+    for sample in value["samples"]:
+        if (not isinstance(sample, dict)
+                or not isinstance(sample.get("sharedLookup"), str)
+                or sample["sharedLookup"] not in {"missing", "metadata-mismatch", "unavailable"}
+                or not isinstance(sample.get("transferPresence"), str)
+                or sample["transferPresence"] not in {"present", "absent", "unavailable", "ambiguous"}):
+            return {}
+        safe = {name: sample[name] for name in ("sharedLookup", "transferPresence")}
+        if sample["transferPresence"] == "present":
+            if isinstance(sample.get("state"), str) and sample["state"] in {"downloading", "paused", "queued", "checking", "completing", "completed", "error", "missingfiles"}:
+                safe["state"] = sample["state"]
+            progress = sample.get("progress")
+            if type(progress) in (int, float) and 0 <= progress <= 1 and math.isfinite(progress):
+                safe["progress"] = progress
+            for name, maximum in (("completedBytes", 2**64 - 1), ("sizeBytes", 2**64 - 1),
+                                  ("partsObtained", 2**32 - 1), ("partsTotal", 2**32 - 1)):
+                if type(sample.get(name)) is int and 0 <= sample[name] <= maximum:
+                    safe[name] = sample[name]
+            if type(sample.get("deliveryPathPresent")) is bool:
+                safe["deliveryPathPresent"] = sample["deliveryPathPresent"]
+            if isinstance(sample.get("deliveryErrorCategory"), str) and sample["deliveryErrorCategory"] in {"none", "atomic-no-replace-unsupported", "stage-create",
+                    "stage-open-payload", "stage-copy", "install", "verification", "other-present"}:
+                safe["deliveryErrorCategory"] = sample["deliveryErrorCategory"]
+        samples.append(safe)
+    return {"reason": value["reason"], "samples": samples}
 
 
 def author_apk_guest_inputs(layout) -> Path:
@@ -544,6 +579,10 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
                         safe_transfer["ownedFixture"] = {"code": fixture["code"]}
                         if type(fixture.get("filesRemoved")) is int and 0 <= fixture["filesRemoved"] <= 2:
                             safe_transfer["ownedFixture"]["filesRemoved"] = fixture["filesRemoved"]
+                    if transfer["phase"] == "await-completed-delivery":
+                        completion = _safe_transfer_completion(transfer.get("completion"))
+                        if completion:
+                            safe_transfer["completion"] = completion
                     safe_failure["transfer"] = safe_transfer
                 launch = failure.get("initialLaunch")
                 if isinstance(launch, dict):
