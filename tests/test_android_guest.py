@@ -337,7 +337,7 @@ def test_completion_failure_observations_are_independently_projected(tmp_path, p
     failure = {"stage": "local-transfer", "code": "other", "transfer": {
         "phase": phase, "code": phase + "-failed", "completion": completion}}
     (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1", "failure": failure}))
-    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset(),
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
         apk_failure_stages=frozenset({"local-transfer"}), apk_failure_codes=frozenset({"other"}))
     transfer = result["apkProgress"]["failure"]["transfer"]
     if phase == "await-completed-delivery":
