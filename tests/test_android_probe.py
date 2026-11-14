@@ -160,8 +160,10 @@ def test_wrong_guest_variant_fails_before_emulator_execution(emulator_environmen
 @pytest.mark.parametrize("fault", ["none", "wrong-revision", "wrong-api", "wrong-sha"])
 def test_published_guest_archive_and_installed_package_revisions_are_independent(
         emulator_environment, monkeypatch, image, api, revision, fault):
-    from emule_workspace.android_inputs import emulator_inputs, emulator_subset
-    source = emulator_inputs()
+    from emule_workspace.android_inputs import EMULATOR_CONFIG, emulator_subset
+    # The shared fixture mocks Path.read_text for installed receipts; read the
+    # reviewed source catalog separately so the fixture cannot mask it.
+    source = json.loads(EMULATOR_CONFIG.read_bytes())
     selected = emulator_subset(source, (image,))
     installed = json.loads(json.dumps(selected))
     if fault == "wrong-sha":
