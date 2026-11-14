@@ -596,6 +596,9 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         value.update(scope="apk-lifecycle", applicationQualification="apk-lifecycle", apkSha256=metadata["apk"]["sha256"],
             apkManifestSha256=apk_payload["manifestSha256"], signerSha256=metadata["signerSha256"],
             versionCode=metadata["versionCode"], buildIdentity=metadata["buildIdentity"])
+        if "diagnosticReplay" in apk_payload:
+            value.update(scope="apk-diagnostic-replay", applicationQualification="not-run", publicationEligible=False,
+                diagnosticReplay=apk_payload["diagnosticReplay"])
     try:
         if _guest_sources(layout) != source:
             raise RuntimeError("Android guest boot sources changed during tool preparation")
@@ -644,15 +647,24 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         if _guest_sources(layout) != source:
             raise RuntimeError("Android guest boot sources changed during qualification")
         if apk_payload is not None:
-            from .android_apk_candidate import apk_contract, validate_guest
+            from .android_apk_candidate import apk_contract, validate_guest, validate_runtime
             from .android_apk_qualification import admitted_apk
             from .release import _assert_emulebb_rust_package_provenance
             value.update(status="passed", guest=expected, kvm=True, apk=guest.get("apk"))
-            validate_guest(value, context=apk_payload["context"], identity=metadata["buildIdentity"],
-                apk_sha256=metadata["apk"]["sha256"], manifest_sha256=apk_payload["manifestSha256"], api=api,
-                contract=apk_contract(apk_payload["context"]))
+            if "diagnosticReplay" in apk_payload:
+                # WHY: new executor diagnostics may replay old verified bytes,
+                # but their different run/provider authority cannot qualify a
+                # release. Run every unchanged runtime gate without relabeling
+                # this deliberately ineligible receipt as publication proof.
+                validate_runtime(guest.get("apk"), api=api, identity=metadata["buildIdentity"],
+                    apk_sha256=metadata["apk"]["sha256"], expected_cert_sha256=apk_payload["context"].apk_signer_sha256,
+                    version_code=metadata["versionCode"], contract=apk_contract(apk_payload["context"]))
+            else:
+                validate_guest(value, context=apk_payload["context"], identity=metadata["buildIdentity"],
+                    apk_sha256=metadata["apk"]["sha256"], manifest_sha256=apk_payload["manifestSha256"], api=api,
+                    contract=apk_contract(apk_payload["context"]))
             admitted_apk(apk_payload["payload"], manifest_name=apk_payload["manifestName"],
-                manifest_sha256=apk_payload["manifestSha256"], context=apk_payload["context"])
+                manifest_sha256=apk_payload["manifestSha256"], context=apk_payload.get("producerContext", apk_payload["context"]))
             _assert_emulebb_rust_package_provenance(layout, layout.emulebb_rust_repo_root, apk_payload["provenance"])
         if tls_startup:
             from .release import _assert_emulebb_rust_package_provenance, _sha256

@@ -786,6 +786,28 @@ def qualify_rust_android_apk_ci(**values) -> None:
     _locked("qualify-rust-android-apk-ci", probe)(workspace_options=options, layout=layout)
 
 
+@main.command("diagnose-rust-android-apk-ci")
+@click.option("--producer-run-id", required=True)
+@click.option("--producer-source-sha", required=True)
+@click.option("--apk-manifest-sha256", required=True)
+@click.option("--image", required=True, type=click.Choice(["apk34", "apk35", "apk36", "apk37"]))
+@click.option("--expected-cert-sha256", required=True)
+@click.option("--diagnostic-build-ref", required=True)
+@click.option("--diagnostic-harness-ref", required=True)
+@click.option("--github-output", type=click.Path(path_type=Path, dir_okay=False))
+def diagnose_rust_android_apk_ci(**values) -> None:
+    """Replay admitted original bytes for diagnostics, never release qualification."""
+    from .android_apk_qualification import diagnose
+    options, layout = _apk_evidence_layout()
+    def probe(**kwargs):
+        report = diagnose(kwargs["layout"], producer_run_id=values["producer_run_id"],
+            producer_source_sha=values["producer_source_sha"], manifest_sha256=values["apk_manifest_sha256"],
+            image=values["image"], signer_sha256=values["expected_cert_sha256"],
+            build_ref=values["diagnostic_build_ref"], harness_ref=values["diagnostic_harness_ref"])
+        _apk_evidence_output(report, values["github_output"], "diagnostic_path")
+    _locked("diagnose-rust-android-apk-ci", probe)(workspace_options=options, layout=layout)
+
+
 @main.command("assemble-rust-android-apk-evidence-ci")
 @click.option("--evidence-dir", required=True, type=click.Path(path_type=Path, exists=True, file_okay=False))
 @click.option("--release-dir", required=True, type=click.Path(path_type=Path, file_okay=False))
