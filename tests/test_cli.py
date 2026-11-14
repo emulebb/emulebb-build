@@ -1108,7 +1108,7 @@ def test_rest_campaign_uses_selected_sources_and_existing_lock(tmp_path, monkeyp
         assert os.environ == before
 
 
-@pytest.mark.parametrize("action", ["prepare", "start", "observe", "stop", "status", "inspect-failed-prepare"])
+@pytest.mark.parametrize("action", ["prepare", "start", "observe", "stop", "status", "inspect-failed-prepare", "resume-failed-prepare"])
 def test_public_sharing_delegates_privately_with_bounded_lock(action, tmp_path, monkeypatch):
     from types import SimpleNamespace
 
@@ -1164,6 +1164,7 @@ def test_public_sharing_delegates_privately_with_bounded_lock(action, tmp_path, 
     ("prepare", ["--adb", "private-adb", "--serial", "private-endpoint"]),
     ("start", ["--campaign-receipt-sha256", "a" * 64]),
     ("inspect-failed-prepare", ["--adb", "private-adb", "--serial", "private-endpoint"]),
+    ("resume-failed-prepare", ["--adb", "private-adb", "--serial", "private-endpoint"]),
     ("status", ["--campaign-receipt-sha256", "a" * 64, "--serial", "private-endpoint"]),
     ("stop", ["--adb", "private-adb", "--serial", "private-endpoint", "--campaign-receipt-sha256", "a" * 64,
               "--recover-stale-monitor"]),

@@ -939,7 +939,7 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
 
 
 @main.command("android-public-sharing")
-@click.argument("action", type=click.Choice(["prepare", "start", "observe", "status", "stop", "inspect-failed-prepare"]))
+@click.argument("action", type=click.Choice(["prepare", "start", "observe", "status", "stop", "inspect-failed-prepare", "resume-failed-prepare"]))
 @click.option("--campaign-dir", required=True, type=click.Path(path_type=Path))
 @click.option("--adb", type=click.Path(path_type=Path))
 @click.option("--serial")
