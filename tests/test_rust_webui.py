@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
+import os
+import subprocess
 
 import pytest
 
 from emule_workspace import test_runs
+from emule_workspace import process
 from emule_workspace.layout import TestTargets as LayoutTestTargets, WorkspaceLayout
 
 
@@ -42,51 +46,41 @@ def make_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> WorkspaceLay
     )
 
 
-def test_rust_webui_runs_locked_tests_and_build_from_external_stage(
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_rust_webui_delegates_to_selected_persisted_owner_and_preserves_environment_and_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
 ) -> None:
     layout = make_layout(tmp_path, monkeypatch)
-    source = layout.emulebb_rust_repo_root / "webui"
-    source.mkdir()
-    (source / "package-lock.json").write_text("{}\n", encoding="utf-8")
-    (source / "package.json").write_text("{}\n", encoding="utf-8")
-    (source / "node_modules").mkdir()
-    (source / "node_modules" / "ignored.txt").write_text("ignored\n", encoding="utf-8")
-    npm = tmp_path / "npm.cmd"
-    npm.write_bytes(b"")
-    calls: list[tuple[list[object], str, Path, dict[str, object]]] = []
-
-    monkeypatch.setattr(test_runs, "find_tool", lambda _names: npm)
-
-    def fake_run_native(command, *, label, cwd, env=None, allow_failure=False):
-        calls.append((list(command), label, Path(cwd), dict(env or {})))
-
-    monkeypatch.setattr(test_runs, "run_native", fake_run_native)
-
-    test_runs.invoke_rust_webui_tests(layout)
-
-    staged = layout.output_build_root / "emulebb-rust" / "webui-test-source"
-    dist = layout.output_build_root / "emulebb-rust" / "webui-test-dist"
-    assert (staged / "package-lock.json").is_file()
-    assert not (staged / "node_modules").exists()
-    assert [call[1] for call in calls] == [
-        "Rust WebUI locked install",
-        "Rust WebUI unit tests",
-        "Rust WebUI Playwright tests",
-        "Rust WebUI typecheck",
-        "Rust WebUI production build",
-    ]
-    assert calls[0][0] == [npm, "ci", "--ignore-scripts"]
-    assert calls[-1][0] == [npm, "run", "build", "--", "--outDir", dist]
-    assert all(call[2] == staged for call in calls)
-    assert all(call[3]["NPM_CONFIG_CACHE"] == layout.output_cache_root / "npm" for call in calls)
-
-
-def test_rust_webui_requires_package_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    layout = make_layout(tmp_path, monkeypatch)
-    (layout.emulebb_rust_repo_root / "webui").mkdir()
-    monkeypatch.setattr(test_runs, "find_tool", lambda _names: tmp_path / "npm.cmd")
-
-    with pytest.raises(RuntimeError, match="package lock"):
+    script = layout.emulebb_rust_repo_root / "tools/test_webui.py"
+    script.parent.mkdir()
+    script.write_text("# Synthetic selected source owner\n", encoding="utf-8")
+    selected_python = tmp_path / "selected-python.exe"
+    monkeypatch.setattr(test_runs, "get_python_invocation", lambda: process.PythonInvocation(selected_python, ("-I",)))
+    monkeypatch.setenv("OPERATOR_SENTINEL", "preserved")
+    before = os.environ.copy()
+    calls = []
+    def execute(command, *, cwd, env, text, check):
+        calls.append(command)
+        assert command == [str(selected_python), "-I", "-B", str(script)]
+        assert cwd == str(layout.emulebb_rust_repo_root) and text is True and check is False
+        assert env["OPERATOR_SENTINEL"] == "preserved"
+        for name in ("EMULEBB_WORKSPACE_ROOT", "EMULEBB_WORKSPACE_OUTPUT_ROOT", "CARGO_TARGET_DIR"):
+            assert env[name] == before[name]
+        return subprocess.CompletedProcess(command, exit_code)
+    monkeypatch.setattr(process.subprocess, "run", execute)
+    if exit_code:
+        with pytest.raises(RuntimeError, match="Rust WebUI tests failed with exit code 7"):
+            test_runs.invoke_rust_webui_tests(layout)
+    else:
         test_runs.invoke_rust_webui_tests(layout)
+    assert len(calls) == 1 and os.environ == before
+
+
+def test_rust_webui_requires_selected_rust_owner_before_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    layout = make_layout(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="persisted Rust tools/test_webui.py"):
+        test_runs.invoke_rust_webui_tests(layout)
+    with pytest.raises(RuntimeError, match="emulebb-rust repository"):
+        test_runs.invoke_rust_webui_tests(replace(layout, emulebb_rust_repo_root=None))

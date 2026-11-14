@@ -1177,42 +1177,17 @@ def invoke_rust_unit_tests(
 
 
 def invoke_rust_webui_tests(layout: WorkspaceLayout) -> None:
-    """Run locked WebUI unit, stateful Playwright, type, and production-build gates."""
-
-    npm = find_tool(("npm.cmd", "npm.exe", "npm") if os.name == "nt" else ("npm",))
-    if npm is None:
-        raise RuntimeError("test rust-webui requires Node npm on PATH.")
+    """Delegate the locked WebUI/browser gates to their selected source owner."""
     rust_root = layout.emulebb_rust_repo_root
     if rust_root is None:
         raise RuntimeError("test rust-webui requires the emulebb-rust repository.")
-    source = rust_root / "webui"
-    if not (source / "package-lock.json").is_file():
-        raise RuntimeError(f"Rust WebUI package lock was not found: {source / 'package-lock.json'}")
-
-    parent = layout.output_build_root / "emulebb-rust"
-    staged = parent / "webui-test-source"
-    dist = parent / "webui-test-dist"
-    if staged.is_dir():
-        shutil.rmtree(staged)
-    if dist.is_dir():
-        shutil.rmtree(dist)
-    parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
-        source,
-        staged,
-        ignore=shutil.ignore_patterns("node_modules", "dist", "test-results", "playwright-report", "coverage"),
-    )
-    env = _workspace_env(layout)
-    env["NPM_CONFIG_CACHE"] = layout.output_cache_root / "npm"
-    commands = (
-        ([npm, "ci", "--ignore-scripts"], "Rust WebUI locked install"),
-        ([npm, "run", "test:unit"], "Rust WebUI unit tests"),
-        ([npm, "run", "test:e2e"], "Rust WebUI Playwright tests"),
-        ([npm, "run", "typecheck"], "Rust WebUI typecheck"),
-        ([npm, "run", "build", "--", "--outDir", dist], "Rust WebUI production build"),
-    )
-    for command, label in commands:
-        run_native(command, label=label, cwd=staged, env=env)
+    script = rust_root / "tools/test_webui.py"
+    if not script.is_file():
+        raise RuntimeError("test rust-webui requires the persisted Rust tools/test_webui.py owner.")
+    # WHY: this source-owned helper also controls browser installation, caches,
+    # staging and screenshots. A second npm sequence drifts from its CI gates.
+    run_native(get_python_invocation().command(["-B", script]), label="Rust WebUI tests",
+               cwd=rust_root, env=_workspace_env(layout))
 
 
 def invoke_fake_kad_trust_soak(
