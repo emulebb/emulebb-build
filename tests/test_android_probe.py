@@ -62,7 +62,7 @@ def test_failed_version_probe_retains_diagnostic(environment, monkeypatch, exit_
     assert output in str(failure.value)
 
 
-def test_apk_probe_executes_api34_compilers_and_packaging_tools_offline(environment, monkeypatch):
+def test_apk_probe_executes_api31_compilers_and_packaging_tools_offline(environment, monkeypatch):
     commands = []
     def execute(command, **kwargs):
         commands.append(command)
@@ -77,7 +77,7 @@ def test_apk_probe_executes_api34_compilers_and_packaging_tools_offline(environm
     result = probe.probe(apk=True)
     assert result["schema"] == "emulebb.android-apk-toolchain-probe/1"
     assert {Path(command[0]).name for command in commands} >= {
-        "aarch64-linux-android34-clang", "x86_64-linux-android34-clang", "aapt2", "apksigner", "zipalign"}
+        "aarch64-linux-android31-clang", "x86_64-linux-android31-clang", "aapt2", "apksigner", "zipalign"}
     alignment = [command for command in commands if Path(command[0]).name == "zipalign"]
     assert alignment[0][1:5] == ["-f", "-P", "16", "4"]
     assert alignment[1][1:5] == ["-c", "-P", "16", "4"]

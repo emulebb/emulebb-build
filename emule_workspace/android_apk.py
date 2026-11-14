@@ -20,7 +20,7 @@ from .android_validation import TARGETS, audit_android_elf, compiler_environment
 from .linux_containers import LinuxDocker, _builder_user, run_owned_container
 
 APPLICATION_ID = "org.emulebb.android"
-MIN_SDK = 34
+MIN_SDK = 31
 TARGET_SDK = 37
 SIGNING_ENV = ("EMULEBB_ANDROID_KEYSTORE", "EMULEBB_ANDROID_KEY_ALIAS",
                "EMULEBB_ANDROID_KEYSTORE_PASSWORD", "EMULEBB_ANDROID_KEY_PASSWORD")

@@ -30,7 +30,7 @@ def test_guest_tool_selection_uses_shared_adb_pin_and_excludes_compilers():
     assert selected["assets"]["platform-tools"] == inputs.tool_inputs()["assets"]["platform-tools"]
 
 
-@pytest.mark.parametrize("image,version,tag", [("apk34", "34-r14", "google_apis"), ("apk35", "35-r9", "google_apis"),
+@pytest.mark.parametrize("image,version,tag", [("apk31", "31-r14", "google_apis"), ("apk32", "32-r8", "google_apis"), ("apk33", "33-r17", "google_apis"), ("apk34", "34-r14", "google_apis"), ("apk35", "35-r9", "google_apis"),
                                               ("apk36", "36-r7", "google_apis"), ("apk37", "37.2-r7", "google_apis_ps16k")])
 def test_additive_apk_guests_use_pinned_supported_apis_and_correct_image_tags(image, version, tag):
     from emule_workspace.android_install import emulator_layout
@@ -55,6 +55,7 @@ def test_current_native_and_apk37_share_one_pin_without_ambiguous_duplicate_inst
     ("system-image-min", {"url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-28_r04.zip"}),
     ("system-image-current", {"url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-37.2_r07.zip"}),
     ("system-image-current", {"version": "37.2-r8"}),
+    ("system-image-apk31", {"version": "32-r8", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-32_r08.zip"}),
 ])
 def test_emulator_input_versions_and_archive_variants_cannot_drift(tmp_path, role, changes):
     value = copy.deepcopy(inputs.emulator_inputs())

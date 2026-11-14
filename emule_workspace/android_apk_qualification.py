@@ -14,7 +14,7 @@ import zipfile
 from . import android_package, release
 from .android_apk import public_names
 from .android_apk_candidate import APIS, apk_contract, validate_guest
-from .android_inputs import tool_inputs
+from .android_inputs import APK_IMAGES, tool_inputs
 from .image_security import _material_commits
 from .release_candidate import ApkSourceContext, CandidateContext, _checked_checkout, _fields, _hosted, _read, _same
 
@@ -172,7 +172,7 @@ def diagnose(layout, *, producer_run_id: str, producer_source_sha: str, manifest
             or re.fullmatch(r"[0-9a-f]{40}", producer_source_sha) is None
             or re.fullmatch(r"[0-9a-f]{64}", manifest_sha256) is None
             or re.fullmatch(r"[0-9a-f]{64}", signer_sha256) is None
-            or image not in {"apk34", "apk35", "apk36", "apk37"}):
+            or image not in APK_IMAGES):
         raise ValueError("Diagnostic replay requires exact producer identities, signer and one APK API")
     current = release._emulebb_rust_artifact_origin()
     repository = "emulebb/emulebb-rust"
@@ -260,8 +260,8 @@ def qualify(layout, *, image: str, payload: Path, manifest_name: str, manifest_s
             source_sha: str, signer_sha256: str, version_code: int, version: str,
             peer_artifacts: Path, peer_build_ref: str, build_ref: str, harness_ref: str, soak_seconds: int = 0) -> Path:
     from .android_toolchain import probe_emulator_guest
-    if image not in {"apk34", "apk35", "apk36", "apk37"}:
-        raise ValueError("Select one of the four supported APK guest APIs")
+    if image not in APK_IMAGES:
+        raise ValueError("Select one of the seven supported APK guest APIs")
     context = qualification_context(layout, version=version, source_sha=source_sha, signer_sha256=signer_sha256,
         version_code=version_code, build_ref=build_ref, harness_ref=harness_ref)
     metadata = admitted_apk(payload, manifest_name=manifest_name, manifest_sha256=manifest_sha256, context=context)
@@ -282,11 +282,11 @@ def assemble(layout, *, payload: Path, manifest_name: str, manifest_sha256: str,
     metadata = admitted_apk(payload, manifest_name=manifest_name, manifest_sha256=manifest_sha256, context=context)
     contract = apk_contract(context)
     paths = sorted(evidence_dir.rglob("validation.json"))
-    if len(paths) != 4 or any(path.is_symlink() or not path.resolve().is_relative_to(evidence_dir.resolve()) for path in paths):
-        raise RuntimeError("APK assembly requires exactly four owned guest receipt files")
+    if len(paths) != len(APIS) or any(path.is_symlink() or not path.resolve().is_relative_to(evidence_dir.resolve()) for path in paths):
+        raise RuntimeError("APK assembly requires exactly seven owned guest receipt files")
     proofs = [_read(path) for path in paths]
     if {proof.get("guest", {}).get("sdk") for proof in proofs} != APIS:
-        raise RuntimeError("APK assembly requires Android APIs 34, 35, 36 and 37 separately")
+        raise RuntimeError("APK assembly requires Android APIs 31 through 37 separately")
     for proof in proofs:
         validate_guest(proof, context=context, identity=metadata["buildIdentity"], apk_sha256=metadata["apk"]["sha256"],
             manifest_sha256=manifest_sha256, api=proof["guest"]["sdk"], contract=contract)

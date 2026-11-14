@@ -16,7 +16,7 @@ from .release import _sha256
 from .release_candidate import (HASH, CandidateContext, _checked_checkout, _checked_reader, _fields,
                                 _hosted, _object, _positive, _read, _same)
 
-APIS = frozenset({34, 35, 36, 37})
+APIS = frozenset({31, 32, 33, 34, 35, 36, 37})
 
 
 def apk_contract(context: CandidateContext) -> dict:
@@ -38,7 +38,7 @@ def apk_contract(context: CandidateContext) -> dict:
             or not isinstance(contract.get("FILE_LINK_BROWSER_REQUIRED_CHECKS"), frozenset)
             or type(contract.get("MIN_SCREEN_OFF_DWELL_SECONDS")) is not int or contract["MIN_SCREEN_OFF_DWELL_SECONDS"] < 60
             or type(contract.get("MIN_SCREEN_OFF_SAMPLES")) is not int or contract["MIN_SCREEN_OFF_SAMPLES"] < 3):
-        raise RuntimeError("Selected APK Harness lacks the complete Android 14–17 qualification contract")
+        raise RuntimeError("Selected APK Harness lacks the complete Android 12–17 qualification contract")
     _checked_checkout(root, context.apk_sources.harness_sha, "APK Harness")
     return contract
 
@@ -155,7 +155,7 @@ def _sbom(sbom: dict, metadata: dict, context: CandidateContext, apk_hash: str) 
 
 
 def verify_apk(root: Path, context: CandidateContext) -> dict:
-    """Require all four real emulator proofs in addition to native candidate gates."""
+    """Require all seven real emulator proofs in addition to native candidate gates."""
     context.checked()
     _checked_reader(context)
     contract = apk_contract(context)
@@ -229,11 +229,11 @@ def verify_apk(root: Path, context: CandidateContext) -> dict:
     _same(qualification.get("source"), {"build": {"commit": context.apk_sources.build_sha},
         "harness": {"commit": context.apk_sources.harness_sha}}, "APK qualification sources")
     proofs = qualification.get("proofs")
-    if not isinstance(proofs, list) or len(proofs) != 4 or any(not isinstance(item, dict) for item in proofs):
-        raise RuntimeError("APK requires separate Android 14, 15, 16 and 17 guest proofs")
+    if not isinstance(proofs, list) or len(proofs) != len(APIS) or any(not isinstance(item, dict) for item in proofs):
+        raise RuntimeError("APK requires separate Android API 31–37 guest proofs")
     actual_apis = [_object(item.get("guest"), "APK guest facts").get("sdk") for item in proofs]
     if any(type(api) is not int for api in actual_apis) or set(actual_apis) != APIS:
-        raise RuntimeError("APK requires separate Android 14, 15, 16 and 17 guest proofs")
+        raise RuntimeError("APK requires separate Android API 31–37 guest proofs")
     for proof in proofs:
         validate_guest(proof, context=context, identity=identity, apk_sha256=apk_hash,
                        manifest_sha256=manifest_hash, api=proof["guest"]["sdk"], contract=contract)

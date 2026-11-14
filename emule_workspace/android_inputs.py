@@ -10,8 +10,9 @@ CONFIG = Path(__file__).parent / "release_assets/android/toolchain.json"
 ROLES = frozenset({"command-line-tools", "ndk", "build-tools", "platform", "platform-tools", "gradle", "jdk", "android-cli"})
 EMULATOR_CONFIG = CONFIG.with_name("emulator-inputs.json")
 EMULATOR_ROLES = frozenset({"emulator", "system-image-min", "system-image-current",
+                           "system-image-apk31", "system-image-apk32", "system-image-apk33",
                            "system-image-apk34", "system-image-apk35", "system-image-apk36"})
-APK_IMAGES = ("apk34", "apk35", "apk36", "apk37")
+APK_IMAGES = ("apk31", "apk32", "apk33", "apk34", "apk35", "apk36", "apk37")
 
 
 def tool_inputs(config: Path = CONFIG) -> dict:
@@ -74,6 +75,8 @@ def _read_inputs(config: Path, schema: str, roles: frozenset[str]) -> dict:
             version = re.fullmatch(r"(?P<api>[0-9]+(?:\.[0-9]+)?)-r(?P<revision>[0-9]+)", item["version"])
             if version is None:
                 raise RuntimeError("Android system images require an API and exact revision")
+            if role.startswith("system-image-apk") and version["api"] != role.removeprefix("system-image-apk"):
+                raise RuntimeError("Android APK image role must match its exact API")
             variant = "ps16k-" if role == "system-image-current" else ""
             expected = f"x86_64-{variant}{version['api']}_r{int(version['revision']):02}.zip"
             if filename != expected:

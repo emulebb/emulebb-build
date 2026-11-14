@@ -37,7 +37,7 @@ def test_tools_probe_rejects_floating_or_prerelease_plugin_pins(tmp_path, versio
 def test_apk_api_floor_does_not_change_cli_compilation():
     for abi in ("arm64-v8a", "x86_64"):
         assert any("android28-clang" in value for value in compiler_environment(abi).values())
-        assert any("android34-clang" in value for value in compiler_environment(abi, min_api=34).values())
+        assert any("android31-clang" in value for value in compiler_environment(abi, min_api=31).values())
     with pytest.raises(ValueError):
         compiler_environment("arm64-v8a", min_api=1)
 
@@ -52,7 +52,7 @@ def test_public_apk_names_cannot_escape_output():
 @pytest.mark.parametrize("change", [None, "name", "versionName", "versionCode", "minSdkVersion", "native-code"])
 def test_packaged_manifest_is_verified_against_release(change):
     text = ("package: name='org.emulebb.android' versionName='0.1.0' versionCode='1'\n"
-            "minSdkVersion:'34'\ntargetSdkVersion:'37'\nnative-code: 'arm64-v8a' 'x86_64'\n")
+            "minSdkVersion:'31'\ntargetSdkVersion:'37'\nnative-code: 'arm64-v8a' 'x86_64'\n")
     if change is None:
         apk.audit_badging(text, version="0.1.0", version_code=1)
     else:
@@ -66,7 +66,7 @@ def test_pinned_aapt2_badging_uses_explicit_min_sdk_version_field():
     text = ("package: name='org.emulebb.android' versionCode='1' "
         f"versionName='{version}' platformBuildVersionName='17' platformBuildVersionCode='37' "
         "compileSdkVersion='37' compileSdkVersionCodename='17'\n"
-        "minSdkVersion:'34'\ntargetSdkVersion:'37'\n"
+        "minSdkVersion:'31'\ntargetSdkVersion:'37'\n"
         "uses-permission: name='android.permission.FOREGROUND_SERVICE_SPECIAL_USE'\n"
         "application-label:'eMuleBB'\napplication: label='eMuleBB' icon=''\n"
         "launchable-activity: name='org.emulebb.android.MainActivity'  label='' icon=''\n"
@@ -75,7 +75,7 @@ def test_pinned_aapt2_badging_uses_explicit_min_sdk_version_field():
     with pytest.raises(RuntimeError, match="SDK bounds"):
         apk.audit_badging(text.replace("minSdkVersion", "sdkVersion"), version=version, version_code=1)
     with pytest.raises(RuntimeError, match="SDK bounds"):
-        apk.audit_badging(text + "minSdkVersion:'34'\n", version=version, version_code=1)
+        apk.audit_badging(text + "minSdkVersion:'31'\n", version=version, version_code=1)
 
 
 def test_missing_release_signing_fails_before_build(monkeypatch):

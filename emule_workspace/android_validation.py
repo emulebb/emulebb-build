@@ -78,7 +78,7 @@ def _runtime_dependencies(docker, base: list[str], image: str, output: Path,
 
 def compiler_environment(abi: str, *, min_api: int = MIN_API) -> dict[str, str]:
     """Use the NDK's API-specific compiler drivers for Rust and native C/C++."""
-    if abi not in TARGETS or min_api not in {MIN_API, 34}:
+    if abi not in TARGETS or min_api not in {MIN_API, 31}:
         raise ValueError("Android validation supports arm64-v8a and x86_64")
     target, _machine = TARGETS[abi]
     version = tool_inputs()["assets"]["ndk"]["version"]

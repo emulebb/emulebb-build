@@ -14,6 +14,7 @@ from typing import Any, TypeVar
 
 import click
 
+from .android_inputs import APK_IMAGES
 from .build_tests import invoke_build_tests
 from .artifact_audit import audit_workspace_artifacts, print_artifact_audit
 from .build import build_apps as invoke_build_apps
@@ -568,7 +569,7 @@ def prepare_rust_android_emulator(*, images: tuple[str, ...], wsl_distro: str,
 
 @main.command("probe-rust-android-guest")
 @_common_options
-@click.option("--image", type=click.Choice(["min", "current", "apk34", "apk35", "apk36", "apk37"]), required=True)
+@click.option("--image", type=click.Choice(["min", "current", *APK_IMAGES]), required=True)
 @click.option("--tls-startup", is_flag=True, help="Also execute the six fixed source-bound Android TLS cases.")
 @click.option("--wsl-distro", default="Ubuntu", show_default=True)
 def probe_rust_android_guest(*, image: str, tls_startup: bool, wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
@@ -583,7 +584,7 @@ def probe_rust_android_guest(*, image: str, tls_startup: bool, wsl_distro: str, 
 
 
 @main.command("probe-rust-android-guest-ci")
-@click.option("--image", type=click.Choice(["min", "current", "apk34", "apk35", "apk36", "apk37"]), required=True)
+@click.option("--image", type=click.Choice(["min", "current", *APK_IMAGES]), required=True)
 @click.option("--tls-startup", is_flag=True, help="Also execute the six fixed source-bound Android TLS cases.")
 def probe_rust_android_guest_ci(*, image: str, tls_startup: bool) -> None:
     """Use the same guest boot owner on minimal hosted build/harness checkouts."""
@@ -713,17 +714,18 @@ def prepare_rust_android_apk_gradle(*, workspace_options, layout) -> None:
 
 
 @main.command("author-rust-android-apk-guest-inputs")
+@click.option("--image", "images", multiple=True, type=click.Choice(["apk31", "apk32", "apk33", "apk34", "apk35", "apk36"]))
 @_common_options
-def author_rust_android_apk_guest_inputs(*, workspace_options, layout) -> None:
-    """Download official API34–36 archives and retain their proposed SHA-256 pins."""
+def author_rust_android_apk_guest_inputs(*, images, workspace_options, layout) -> None:
+    """Download selected official guest archives and retain proposed SHA-256 pins."""
     from .android_toolchain import author_apk_guest_inputs
     def author(**kwargs):
-        print(author_apk_guest_inputs(kwargs["layout"]))
+        print(author_apk_guest_inputs(kwargs["layout"], images=images))
     _locked("author-rust-android-apk-guest-inputs", author)(workspace_options=workspace_options, layout=layout)
 
 
 @main.command("prepare-rust-android-apk-emulator")
-@click.option("--image", required=True, type=click.Choice(["apk34", "apk35", "apk36", "apk37"]))
+@click.option("--image", required=True, type=click.Choice(APK_IMAGES))
 @_common_options
 def prepare_rust_android_apk_emulator(*, image: str, workspace_options, layout) -> None:
     """Prepare pinned emulator/browser tools without booting or qualifying an APK."""
@@ -770,7 +772,7 @@ def _apk_evidence_output(path, destination, name):
 
 
 @main.command("qualify-rust-android-apk-ci")
-@click.option("--image", required=True, type=click.Choice(["apk34", "apk35", "apk36", "apk37"]))
+@click.option("--image", required=True, type=click.Choice(APK_IMAGES))
 @click.option("--peer-artifacts", required=True, type=click.Path(path_type=Path, exists=True, file_okay=False))
 @click.option("--peer-build-ref", required=True)
 @click.option("--soak-seconds", default=0, show_default=True, type=click.IntRange(0, 7 * 86400))
@@ -790,7 +792,7 @@ def qualify_rust_android_apk_ci(**values) -> None:
 @click.option("--producer-run-id", required=True)
 @click.option("--producer-source-sha", required=True)
 @click.option("--apk-manifest-sha256", required=True)
-@click.option("--image", required=True, type=click.Choice(["apk34", "apk35", "apk36", "apk37"]))
+@click.option("--image", required=True, type=click.Choice(APK_IMAGES))
 @click.option("--expected-cert-sha256", required=True)
 @click.option("--diagnostic-build-ref", required=True)
 @click.option("--diagnostic-harness-ref", required=True)

@@ -1,6 +1,9 @@
 {
   "source": "https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml",
   "assets": {
+    "system-image-apk31": {"version": "31-r14", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-31_r14.zip", "sha1": "9aedd3e85cad7a479146f6858f4a94840c2a3f29", "size": 1470822277},
+    "system-image-apk32": {"version": "32-r8", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-32_r08.zip", "sha1": "1b52794699c6889a2fd155bf235b67a592eb8f1d", "size": 1538792859},
+    "system-image-apk33": {"version": "33-r17", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-33_r17.zip", "sha1": "2b96f5bd5c79bfe1cc645e70b3e630b5755d9711", "size": 1707857511},
     "system-image-apk34": {"version": "34-r14", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-34_r14.zip", "sha1": "e0f6c9a0691aa27bd597d0deb1bcfdc943ac8ca7", "size": 1563721130},
     "system-image-apk35": {"version": "35-r9", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-35_r09.zip", "sha1": "0103e6dab21290c4b9d16550a3ce99476f884eef", "size": 1738815903},
     "system-image-apk36": {"version": "36-r7", "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-36_r07.zip", "sha1": "c6bf44bdcd885bb902b4ba752d111a073ad7a817", "size": 1895447397}

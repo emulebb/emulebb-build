@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from .python_runtime import download_verified, sha256
 
-from .android_inputs import ROLES, emulator_inputs, emulator_subset, tool_inputs
+from .android_inputs import APK_IMAGES, ROLES, emulator_inputs, emulator_subset, tool_inputs
 
 APK_GUEST_AUTHORING = Path(__file__).parent / "release_assets/android/apk-guest-authoring.json"
 
@@ -79,7 +79,7 @@ def _safe_transfer_completion(value: object) -> dict:
     return {"reason": value["reason"], "samples": samples}
 
 
-def author_apk_guest_inputs(layout) -> Path:
+def author_apk_guest_inputs(layout, *, images: tuple[str, ...] = ()) -> Path:
     """Bootstrap SHA-256 pins from immutable official archives and catalog SHA-1s.
 
     Only this explicit authoring command uses Google's published SHA-1 checksum;
@@ -91,10 +91,14 @@ def author_apk_guest_inputs(layout) -> Path:
     if layout.output_root.resolve() != output:
         raise RuntimeError("Android guest authoring requires the inherited output root")
     declaration = json.loads(APK_GUEST_AUTHORING.read_text(encoding="utf-8"))
+    if len(set(images)) != len(images) or any("system-image-" + image not in declaration["assets"] for image in images):
+        raise ValueError("Select unique authorable APK guest images")
     author = {"emulebbBuild": {"commit": git_output(Path(__file__).resolve().parents[1], "rev-parse", "HEAD").strip()},
               "declarationSha256": sha256(APK_GUEST_AUTHORING), "catalog": declaration["source"]}
     records = {}
     for role, item in declaration["assets"].items():
+        if images and role not in {"system-image-" + image for image in images}:
+            continue
         folder = output / "cache/android-emulator-authoring" / item["sha1"]
         if not folder.resolve().is_relative_to(output):
             raise RuntimeError("Android guest authoring cache must remain under output")
@@ -618,6 +622,12 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
                             safe_navigation[name] = navigation[name]
                     if type(navigation.get("imeVisible")) is bool:
                         safe_navigation["imeVisible"] = navigation["imeVisible"]
+                    for name, allowed in (("focusedControl", {"bind_addr", "api_key", "other-owned", "none", "ambiguous", "unavailable"}),
+                                          ("imeInputShown", {"shown", "hidden", "ambiguous", "oversize", "unavailable"})):
+                        if isinstance(navigation.get(name), str) and navigation[name] in allowed:
+                            safe_navigation[name] = navigation[name]
+                    if type(navigation.get("scrollable")) is bool:
+                        safe_navigation["scrollable"] = navigation["scrollable"]
                     safe_failure["navigation"] = safe_navigation
                 post_ui = failure.get("postFailureUi")
                 if isinstance(post_ui, dict):
@@ -653,8 +663,8 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
     from .linux_containers import LinuxDocker, _builder_user, run_owned_container
     from .release import _emulebb_rust_artifact_origin
 
-    apk_role = image in {"apk34", "apk35", "apk36", "apk37"}
-    if (image not in {"min", "current", "apk34", "apk35", "apk36", "apk37"}
+    apk_role = image in APK_IMAGES
+    if (image not in {"min", "current", *APK_IMAGES}
             or tls_startup and (apk_payload is not None or apk_role)
             or apk_payload is not None and not apk_role):
         raise ValueError("Select one native or APK guest qualification mode")

@@ -1,4 +1,4 @@
-"""Qualification composition retains exact APK, native-peer and four-guest authorities."""
+"""Qualification composition retains exact APK, native-peer and seven-guest authorities."""
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,7 +32,7 @@ def test_peer_exports_only_canonically_verified_same_source_native_bytes_and_tar
 
 
 @pytest.mark.parametrize("missing", [False, True])
-def test_aggregation_requires_all_four_actual_source_bound_api_receipts(apk_evidence, monkeypatch, missing):
+def test_aggregation_requires_all_seven_actual_source_bound_api_receipts(apk_evidence, monkeypatch, missing):
     root, context, metadata, proof, _save = apk_evidence
     monkeypatch.setattr(qualification, "qualification_context", lambda *args, **kwargs: context)
     monkeypatch.setattr(qualification, "apk_contract", lambda context: candidate_apk.apk_contract(context))
@@ -49,12 +49,12 @@ def test_aggregation_requires_all_four_actual_source_bound_api_receipts(apk_evid
         release_dir=root, source_sha=context.source["emulebbRust"], signer_sha256=context.apk_signer_sha256,
         version_code=2, version=context.version, build_ref=context.apk_sources.build_sha, harness_ref=context.apk_sources.harness_sha)
     if missing:
-        with pytest.raises(RuntimeError, match="exactly four"):
+        with pytest.raises(RuntimeError, match="exactly seven"):
             qualification.assemble(SimpleNamespace(output_root=root.parent), **parameters)
         assert not path.exists()
     else:
         assert qualification.assemble(SimpleNamespace(output_root=root.parent), **parameters) == path
-        assert candidate_apk.verify_apk(root, context)["androidApis"] == [34, 35, 36, 37]
+        assert candidate_apk.verify_apk(root, context)["androidApis"] == [31, 32, 33, 34, 35, 36, 37]
 
 
 def test_hosted_qualifier_cli_passes_explicit_authorities_through_lock_and_reports_verified_output(tmp_path, monkeypatch):

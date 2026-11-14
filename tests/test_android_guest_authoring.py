@@ -41,3 +41,14 @@ def test_authoring_checksum_failure_never_publishes_a_pin_or_cached_archive(inpu
         android.author_apk_guest_inputs(layout)
     assert not list(layout.output_root.rglob("*.part"))
     assert not (layout.output_root / "cache/android-emulator-inputs").exists()
+
+
+def test_authoring_selects_only_explicit_unique_catalog_images(inputs):
+    layout, _payload, _item, calls = inputs
+    report = android.author_apk_guest_inputs(layout, images=("apk34",))
+    assert set(json.loads(report.read_text())["assets"]) == {"system-image-apk34"}
+    assert len(calls) == 1
+    for images in (("apk34", "apk34"), ("apk31",)):
+        with pytest.raises(ValueError, match="unique authorable"):
+            android.author_apk_guest_inputs(layout, images=images)
+    assert len(calls) == 1

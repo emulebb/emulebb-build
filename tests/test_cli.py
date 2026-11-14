@@ -182,7 +182,7 @@ def test_physical_android_fresh_profile_conflicts_fail_before_lock(physical_apk_
     assert "phone.example.invalid" not in result.output
 
 
-@pytest.mark.parametrize("selected_image", ["current", "apk34", "apk35", "apk36", "apk37"])
+@pytest.mark.parametrize("selected_image", ["current", "apk31", "apk32", "apk33", "apk34", "apk35", "apk36", "apk37"])
 def test_ci_android_guest_uses_shared_owner_under_lock(tmp_path, monkeypatch, selected_image):
     import os
     from emule_workspace import android_toolchain, release

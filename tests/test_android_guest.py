@@ -35,7 +35,7 @@ def test_kvm_group_must_be_numeric(monkeypatch, group):
                                      "tls-bool", "tls-pre-source", "tls-post-source", "tls-manifest",
                                      "tls-startup-missing", "tls-startup-source", "tls-startup-auth", "tls-startup-shutdown", "tls-old-schema"])
 @pytest.mark.parametrize("image,api,page", [("min", 28, 4096), ("current", 37, 16384),
-    ("apk34", 34, 4096), ("apk35", 35, 4096), ("apk36", 36, 4096), ("apk37", 37, 16384)])
+    ("apk31", 31, 4096), ("apk32", 32, 4096), ("apk33", 33, 4096), ("apk34", 34, 4096), ("apk35", 35, 4096), ("apk36", 36, 4096), ("apk37", 37, 16384)])
 def test_shared_boot_owner_enforces_identity_isolation_and_source_freeze(tmp_path, monkeypatch, capsys, outcome, image, api, page):
     from emule_workspace import release
 
@@ -267,7 +267,8 @@ def test_navigation_facts_are_closed_bounded_and_not_raw_ui(tmp_path, invalid):
     navigation = {"control": "start_service", "displayBounds": [0, 0, 1080, 1920],
         "scrollBounds": [0, 100, 1080, 1800], "lastGesture": [500, 1500, 500, 300],
         "forwardAttempts": 6, "backwardAttempts": 0, "forwardProgress": 5, "backwardProgress": 0,
-        "imeVisible": True, "rawUi": "synthetic-private-key-and-ui"}
+        "imeVisible": True, "focusedControl": "api_key", "imeInputShown": "oversize",
+        "scrollable": True, "rawUi": "synthetic-private-key-and-ui"}
     boot = {"userUnlocked": True, "packageStopped": False, "bootReceiverResolved": True,
         "servicePresent": True, "serviceForeground": False, "serviceStartRequested": True,
         "allFilesAllowed": True, "notificationsGranted": False, "localNetworkGranted": True,
@@ -277,7 +278,8 @@ def test_navigation_facts_are_closed_bounded_and_not_raw_ui(tmp_path, invalid):
     if invalid:
         navigation.update(displayBounds=[True, 0, 1080, 1920], scrollBounds=[0, 0, 1],
             lastGesture=[0, -1, 1, 32769], forwardAttempts=7, backwardAttempts=-1,
-            forwardProgress=True, backwardProgress="synthetic-private", imeVisible=1)
+            forwardProgress=True, backwardProgress="synthetic-private", imeVisible=1,
+            focusedControl="synthetic-private", imeInputShown="synthetic-private", scrollable=1)
         boot.update({name: "synthetic-private" for name, value in boot.items() if type(value) is bool})
         boot.update(latestDaemonExitReason=17, restAttempts=0, restConnectionFailures=True,
             restHttpResponses=1025, lastHttpStatus=600)

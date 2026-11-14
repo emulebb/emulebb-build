@@ -73,7 +73,7 @@ def evidence(tmp_path, monkeypatch):
          "artifacts": [{"path": "annotations.jar", "sha256": "b" * 64, "sizeBytes": 100}]}]}
     identity = {"sourceRevision": SOURCE["emulebbRust"], "version": VERSION, "channel": "nightly"}
     metadata = {"schema": "emulebb.android.apk-package/1", "status": "passed", "debug": False,
-        "applicationId": apk.APPLICATION_ID, "minSdk": 34, "targetSdk": 37, "versionCode": 2,
+        "applicationId": apk.APPLICATION_ID, "minSdk": 31, "targetSdk": 37, "versionCode": 2,
         "sourceDirty": False, "experimental": True, "source": {key: {"commit": value} for key, value in context.apk_materials.items()},
         "origin": "github-actions", "workflow": WORKFLOW, "signerSha256": context.apk_signer_sha256,
         "buildIdentity": identity, "runtimeExecution": "not-run", "toolInputs": apk.tool_inputs(), "abis": list(apk.TARGETS),
@@ -120,10 +120,10 @@ def evidence(tmp_path, monkeypatch):
     return root, context, metadata, qualification, save
 
 
-def test_apk_binds_four_guest_proofs_to_distinct_producer_and_native_authorities(evidence):
+def test_apk_binds_seven_guest_proofs_to_distinct_producer_and_native_authorities(evidence):
     root, context, _metadata, _proof, _save = evidence
     result = apk.verify_apk(root, context)
-    assert result["androidApis"] == [34, 35, 36, 37] and result["signerSha256"] == "c" * 64
+    assert result["androidApis"] == [31, 32, 33, 34, 35, 36, 37] and result["signerSha256"] == "c" * 64
     assert context.source["emulebbBuild"] != context.apk_materials["emulebbBuild"]
     assert set(candidate.public_names(context)) - candidate.public_names(replace(context,
         apk_sources=None, apk_signer_sha256=None, apk_harness_root=None, apk_version_code=None)) == set(public_names(VERSION).values())

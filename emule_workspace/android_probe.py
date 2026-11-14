@@ -43,7 +43,7 @@ def probe(*, apk: bool = False) -> dict:
     }
     ndk = root / "sdk/ndk" / inputs["assets"]["ndk"]["version"] / "toolchains/llvm/prebuilt/linux-x86_64/bin"
     for target in ("aarch64-linux-android", "x86_64-linux-android"):
-        commands[target] = ([str(ndk / (target + ("34" if apk else "28") + "-clang")), "--version"], "clang version")
+        commands[target] = ([str(ndk / (target + ("31" if apk else "28") + "-clang")), "--version"], "clang version")
     if apk:
         build_tools = root / "sdk/build-tools" / inputs["assets"]["build-tools"]["version"]
         source = Path.home() / "alignment-input.zip"
