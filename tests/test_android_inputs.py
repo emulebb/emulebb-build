@@ -86,3 +86,18 @@ def test_invalid_inputs_fail_before_fetch(tmp_path, mutation):
     config.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(RuntimeError):
         inputs.tool_inputs(config)
+
+
+@pytest.mark.parametrize("change", [None, "", "0", "01", "latest", 12])
+def test_every_guest_requires_an_explicit_valid_package_revision(tmp_path, change):
+    value = copy.deepcopy(inputs.emulator_inputs())
+    for role in ("system-image-min", "system-image-apk31", "system-image-apk32", "system-image-current"):
+        altered = copy.deepcopy(value)
+        if change is None:
+            altered["assets"][role].pop("packageRevision")
+        else:
+            altered["assets"][role]["packageRevision"] = change
+        config = tmp_path / "emulator.json"
+        config.write_text(json.dumps(altered))
+        with pytest.raises(RuntimeError, match="Invalid reviewed Android input"):
+            inputs.emulator_inputs(config)

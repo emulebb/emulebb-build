@@ -101,6 +101,7 @@ jobs:
           path: |
             ${{ runner.temp }}/emulebb-android-out/reports/android-emulator/*/build.log
             ${{ runner.temp }}/emulebb-android-out/reports/android-emulator/*/toolchain-probe.json
+            ${{ runner.temp }}/emulebb-android-out/reports/android-emulator/*/toolchain-probe.log
             ${{ runner.temp }}/emulebb-android-out/reports/android-apk-emulator/*/build.log
             ${{ runner.temp }}/emulebb-android-out/reports/android-apk-emulator/*/toolchain-probe.json
             ${{ runner.temp }}/emulebb-android-out/reports/android-emulator-boot/*/validation.json

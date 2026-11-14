@@ -17,6 +17,7 @@ import tempfile
 from urllib.parse import urlsplit
 import urllib.request
 from uuid import uuid4
+import zipfile
 
 from .python_runtime import download_verified, sha256
 
@@ -79,6 +80,31 @@ def _safe_transfer_completion(value: object) -> dict:
     return {"reason": value["reason"], "samples": samples}
 
 
+def _guest_package_revision(archive: Path, *, api: str) -> str:
+    """Read bounded package metadata from an already checksum-verified archive."""
+    try:
+        with zipfile.ZipFile(archive) as guest:
+            entries = [entry for entry in guest.infolist() if entry.filename == "x86_64/source.properties"]
+            if len(entries) != 1 or entries[0].file_size > 65536:
+                raise RuntimeError("Android guest requires one bounded source.properties")
+            lines = guest.read(entries[0]).decode("utf-8").splitlines()
+    except (OSError, UnicodeError, zipfile.BadZipFile) as error:
+        raise RuntimeError("Android guest archive metadata is invalid") from error
+    values = {}
+    for line in lines:
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if key in {"Pkg.Revision", "AndroidVersion.ApiLevel"}:
+            if key in values:
+                raise RuntimeError("Android guest package metadata is ambiguous")
+            values[key] = value
+    revision = values.get("Pkg.Revision", "")
+    if re.fullmatch(r"[1-9][0-9]*", revision) is None or values.get("AndroidVersion.ApiLevel") != api:
+        raise RuntimeError("Android guest package revision or API metadata is invalid")
+    return revision
+
+
 def author_apk_guest_inputs(layout, *, images: tuple[str, ...] = ()) -> Path:
     """Bootstrap SHA-256 pins from immutable official archives and catalog SHA-1s.
 
@@ -136,7 +162,15 @@ def author_apk_guest_inputs(layout, *, images: tuple[str, ...] = ()) -> Path:
                     target.close()
             if size != item["size"] or sha1.hexdigest() != item["sha1"]:
                 raise RuntimeError("Android authoring archive differs from its official catalog checksum")
-            record = {"version": item["version"], "url": item["url"], "sha256": archive_digest.hexdigest(), "kind": "zip"}
+            # WHY: official publication revisions need not match the verified
+            # archive's installed Pkg.Revision (notably API 31 and 32).
+            archive = temporary if temporary is not None else source
+            api = item["version"].split("-r", 1)[0]
+            if role != "system-image-apk" + api.split(".", 1)[0]:
+                raise RuntimeError("Android authored guest role differs from its API")
+            package_revision = _guest_package_revision(archive, api=api)
+            record = {"version": item["version"], "url": item["url"], "sha256": archive_digest.hexdigest(),
+                      "kind": "zip", "packageRevision": package_revision}
             cache = output / "cache/android-emulator-inputs" / record["sha256"] / urlsplit(item["url"]).path.rsplit("/", 1)[-1]
             if cache.is_symlink() or not cache.resolve().is_relative_to(output):
                 raise RuntimeError("Android authored archive requires an owned cache path")
