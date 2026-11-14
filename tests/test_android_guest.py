@@ -299,6 +299,32 @@ def test_navigation_facts_are_closed_bounded_and_not_raw_ui(tmp_path, invalid):
         apk_navigation_controls=frozenset({"start_service"}))["apkProgress"]["failure"]
 
 
+@pytest.mark.parametrize('invalid', [False, True])
+def test_lifecycle_failure_details_are_independently_filtered(tmp_path, invalid):
+    (tmp_path / 'guest').mkdir()
+    (tmp_path / 'guest/report.json').write_text(json.dumps({'schema': 'emulebb.android.emulator-boot/1', 'phase': 'apk-lifecycle'}))
+    failure = {'stage': 'local-transfer', 'code': 'other',
+        'networkWait': {'state': 'waiting', 'phase': 'Starting', 'text': 'private'},
+        'transfer': {'phase': 'await-completed-delivery', 'code': 'await-completed-delivery-failed',
+            'adb': {'operation': 'push', 'reason': 'no-space', 'exitCategory': 'nonzero', 'raw': 'private'},
+            'rest': {'httpStatus': 409, 'apiCode': 'DOWNLOAD_CONFLICT', 'coreContext': 'unrecognized', 'raw': 'private'},
+            'ownedFixture': {'code': 'inventory-invalid', 'filesRemoved': 1, 'raw': 'private'}}}
+    if invalid:
+        failure['networkWait'] = {'state': 'private', 'phase': 'private'}
+        failure['transfer']['phase'] = 'private'
+    (tmp_path / 'guest/apk-lifecycle.json').write_text(json.dumps({'schema': 'emulebb.android.apk-lifecycle/1', 'failure': failure}))
+    result = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({'install'}),
+        apk_failure_stages=frozenset({'local-transfer'}), apk_failure_codes=frozenset({'other'}))
+    safe = result['apkProgress']['failure']
+    if invalid:
+        assert 'networkWait' not in safe and 'transfer' not in safe
+    else:
+        assert safe['networkWait'] == {'state': 'waiting', 'phase': 'Starting'}
+        assert safe['transfer']['rest']['httpStatus'] == 409 and safe['transfer']['adb']['exitCategory'] == 'nonzero'
+        assert safe['transfer']['ownedFixture'] == {'code': 'inventory-invalid', 'filesRemoved': 1}
+    assert 'private' not in json.dumps(result)
+
+
 @pytest.mark.parametrize("invalid", [False, True])
 def test_new_failure_diagnostics_are_closed_and_never_publish_raw_values(tmp_path, invalid):
     (tmp_path / "guest").mkdir()

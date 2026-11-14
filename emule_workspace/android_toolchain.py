@@ -23,6 +23,26 @@ from .android_inputs import ROLES, emulator_inputs, emulator_subset, tool_inputs
 
 APK_GUEST_AUTHORING = Path(__file__).parent / "release_assets/android/apk-guest-authoring.json"
 
+# Independent closed receipt allowlists; never trust harness-provided text.
+TRANSFER_FAILURE_PHASES = frozenset({
+    "admit-original-settings", "admit-prior-downloads-and-roots", "admit-network-binding", "fixture-directory-create",
+    "fixture-occupant-push", "persist-fixture-settings", "restart-fixture-destination", "verify-fixture-destination",
+    "peer-profile-seed", "peer-home-create", "peer-profile-push", "peer-binary-push-and-hash", "peer-process-spawn",
+    "peer-process-admission", "peer-rest-forward", "peer-source-bound-readiness", "peer-ready", "peer-graceful-shutdown",
+    "peer-shared-fixture-push", "peer-shared-file-hash", "directed-local-listener-start", "enqueue-owned-transfer",
+    "await-completed-delivery", "verify-delivered-path-and-size", "verify-delivered-bytes", "verify-collision-preserved",
+    "restart-completed-delivery", "verify-completed-delivery-metadata", "verify-completed-download-evidence",
+    "verify-completed-delivery-bytes", "cleanup-remove-owned-transfer", "cleanup-restore-original-settings", "cleanup-remove-owned-fixture",
+} | {role + "-listener-" + step for role in ("app", "peer") for step in (
+    "server-inventory", "allocate-owned-loopback-endpoint", "server-create", "created-configuration-admission",
+    "directed-connect", "connect-acknowledgement", "ready", "owned-server-disable-precondition", "owned-server-disable",
+    "owned-disabled-row-verification", "preexisting-server-configuration-preservation")})
+ADB_OPERATIONS = frozenset({"shell-mkdir", "shell-chmod", "shell-sha256", "shell-cat", "shell-script", "shell-input", "shell-dumpsys", "binary-read", "push", "forward", "install", "device-command"})
+ADB_REASONS = frozenset({"unclassified-command-failure", "output-bound-exceeded", "command-timeout", "permission-denied", "operation-not-permitted", "missing-file", "already-exists", "no-space", "connection-reset", "unclassified-os-error", "unsupported-option", "device-offline", "device-not-found", "transport-closed"})
+REST_CODES = frozenset({"BAD_REQUEST", "INVALID_ARGUMENT", "NOT_FOUND", "EMULE_ERROR", "INTERNAL_SERVER_ERROR", "UNAUTHORIZED", "FORBIDDEN", "DOWNLOAD_CONFLICT", "unrecognized"})
+REST_CONTEXTS = frozenset({"ed2k-not-configured", "ed2k-disabled", "ed2k-no-server", "vpn-guard-blocked", "client-udp-version", "kad-listener-initialization", "ed2k-listener-bind", "nat-initial-reconcile", "nat-initial-timeout", "local-bind-interface-missing", "server-not-found", "unrecognized"})
+FIXTURE_CODES = frozenset({"inventory-invalid", "inventory-limit", "nonce-invalid", "payload-authority-invalid", "protected-root", "unsafe-directory-type", "directory-redirected", "unknown-contents", "unsafe-entry-type", "entry-changed-before-delete", "entry-delete-failed", "directory-remove-failed"})
+
 
 def author_apk_guest_inputs(layout) -> Path:
     """Bootstrap SHA-256 pins from immutable official archives and catalog SHA-1s.
@@ -479,6 +499,52 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
                     and failure["stage"] in apk_failure_stages and isinstance(failure.get("code"), str)
                     and failure["code"] in apk_failure_codes):
                 safe_failure = {key: failure[key] for key in ("stage", "code")}
+                network = failure.get("networkWait")
+                if isinstance(network, dict):
+                    safe_network = {}
+                    if isinstance(network.get("state"), str) and network["state"] in {"waiting", "not-waiting", "unavailable"}:
+                        safe_network["state"] = network["state"]
+                    if isinstance(network.get("phase"), str) and network["phase"] in {"Stopped", "Starting", "Running", "Stopping", "Failed"}:
+                        safe_network["phase"] = network["phase"]
+                    if safe_network:
+                        safe_failure["networkWait"] = safe_network
+                if (failure["stage"] == "screen-off-doze" and isinstance(failure.get("substage"), str)
+                        and failure["substage"] in {"home", "home-check", "home-authentication", "sleep", "unplug", "force-idle", "check-idle", "check-power", "sample-authentication"}):
+                    safe_failure["substage"] = failure["substage"]
+                def safe_adb(value):
+                    if not isinstance(value, dict):
+                        return {}
+                    allowed = {"operation": ADB_OPERATIONS, "reason": ADB_REASONS,
+                               "exitCategory": {"success", "nonzero", "signal", "unavailable"}}
+                    return {name: value[name] for name, choices in allowed.items()
+                            if isinstance(value.get(name), str) and value[name] in choices}
+                adb = safe_adb(failure.get("adb"))
+                if adb:
+                    safe_failure["adb"] = adb
+                transfer = failure.get("transfer")
+                if (failure["stage"] == "local-transfer" and isinstance(transfer, dict)
+                        and isinstance(transfer.get("phase"), str) and transfer["phase"] in TRANSFER_FAILURE_PHASES
+                        and transfer.get("code") == transfer["phase"] + "-failed"):
+                    safe_transfer = {"phase": transfer["phase"], "code": transfer["code"]}
+                    adb = safe_adb(transfer.get("adb"))
+                    if adb:
+                        safe_transfer["adb"] = adb
+                    rest = transfer.get("rest")
+                    if isinstance(rest, dict):
+                        safe_rest = {}
+                        if type(rest.get("httpStatus")) is int and 100 <= rest["httpStatus"] <= 599:
+                            safe_rest["httpStatus"] = rest["httpStatus"]
+                        for name, allowed in (("apiCode", REST_CODES), ("coreContext", REST_CONTEXTS)):
+                            if isinstance(rest.get(name), str) and rest[name] in allowed:
+                                safe_rest[name] = rest[name]
+                        if safe_rest:
+                            safe_transfer["rest"] = safe_rest
+                    fixture = transfer.get("ownedFixture")
+                    if isinstance(fixture, dict) and isinstance(fixture.get("code"), str) and fixture["code"] in FIXTURE_CODES:
+                        safe_transfer["ownedFixture"] = {"code": fixture["code"]}
+                        if type(fixture.get("filesRemoved")) is int and 0 <= fixture["filesRemoved"] <= 2:
+                            safe_transfer["ownedFixture"]["filesRemoved"] = fixture["filesRemoved"]
+                    safe_failure["transfer"] = safe_transfer
                 launch = failure.get("initialLaunch")
                 if isinstance(launch, dict):
                     allowed = {"result": {"ok", "timeout", "error", "unavailable"},
