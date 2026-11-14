@@ -938,6 +938,74 @@ def probe_rust_android_apk_device(*, adb: Path, serial: str, server_port: int, a
     _locked("probe-rust-android-apk-device", probe)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("android-public-sharing")
+@click.argument("action", type=click.Choice(["prepare", "start", "observe", "status", "stop"]))
+@click.option("--campaign-dir", required=True, type=click.Path(path_type=Path))
+@click.option("--adb", type=click.Path(path_type=Path))
+@click.option("--serial")
+@click.option("--server-port", default=5037, type=click.IntRange(1, 65535))
+@click.option("--apk-payload", type=click.Path(path_type=Path))
+@click.option("--apk-manifest-name")
+@click.option("--apk-manifest-sha256")
+@click.option("--apk-source-sha")
+@click.option("--expected-cert-sha256")
+@click.option("--installation-receipt", type=click.Path(path_type=Path))
+@click.option("--installation-receipt-sha256")
+@click.option("--source-dir", type=click.Path(path_type=Path))
+@click.option("--expected-file-count", type=click.IntRange(min=1))
+@click.option("--expected-total-bytes", type=click.IntRange(min=1))
+@click.option("--route", type=click.Choice(["direct-wifi"]))
+@click.option("--duration-seconds", type=click.IntRange(1, 86400))
+@click.option("--interval-seconds", type=click.IntRange(5, 300))
+@click.option("--upload-limit-kibps", type=click.IntRange(1, 10240))
+@click.option("--history-max-bytes", type=click.IntRange(65536, 67108864))
+@click.option("--minimum-free-bytes", type=click.IntRange(67108864, 1099511627776))
+@click.option("--campaign-receipt-sha256")
+@click.option("--recover-stale-monitor", is_flag=True)
+@_common_options
+def android_public_sharing(*, action: str, workspace_options, layout, **values) -> None:
+    """Delegate an owned public-sharing campaign to the selected harness."""
+    prepare_fields = ("apk_payload", "apk_manifest_name", "apk_manifest_sha256", "apk_source_sha",
+        "expected_cert_sha256", "installation_receipt", "installation_receipt_sha256", "source_dir",
+        "expected_file_count", "expected_total_bytes", "route")
+    limit_fields = ("duration_seconds", "interval_seconds", "upload_limit_kibps", "history_max_bytes", "minimum_free_bytes")
+    if action != "status" and (not values["adb"] or not values["serial"]):
+        raise click.UsageError("This action requires --adb and --serial")
+    if action == "prepare":
+        if any(values[name] is None or values[name] == "" for name in prepare_fields):
+            raise click.UsageError("prepare requires all APK, installation, source and route inputs")
+        if values["campaign_receipt_sha256"] or values["recover_stale_monitor"]:
+            raise click.UsageError("prepare does not accept campaign receipt or recovery options")
+    else:
+        if not values["campaign_receipt_sha256"]:
+            raise click.UsageError("This action requires --campaign-receipt-sha256")
+        if any(values[name] is not None for name in (*prepare_fields, *limit_fields)):
+            raise click.UsageError("APK, source and limit inputs are only valid for prepare")
+        if values["recover_stale_monitor"] and action not in ("start", "observe"):
+            raise click.UsageError("--recover-stale-monitor is only valid for start or observe")
+    if action == "status" and (values["adb"] is not None or values["serial"] is not None):
+        raise click.UsageError("status does not accept device inputs")
+
+    def invoke(**kwargs):
+        arguments = [kwargs["layout"].tests_repo_root / "scripts/android-public-sharing.py", action]
+        for name, value in values.items():
+            if name == "recover_stale_monitor":
+                if value:
+                    arguments.append("--recover-stale-monitor")
+            elif value is not None and (name != "server_port" or action != "status"):
+                arguments.extend(("--" + name.replace("_", "-"), str(value)))
+        # The endpoint and campaign paths are private; never print or retain argv.
+        try:
+            run_native(get_python_invocation().command(arguments), label="Android public sharing",
+                       cwd=kwargs["layout"].tests_repo_root)
+        except Exception as exc:
+            raise click.ClickException("Android public sharing operation failed") from exc
+    if action == "status":
+        invoke(workspace_options=workspace_options, layout=layout)
+    else:
+        _locked("android-public-sharing", invoke)(workspace_options=workspace_options, layout=layout)
+
+
 @main.command("prove-rust-android-profile-compatibility")
 @click.option("--from-source-sha", required=True)
 @click.option("--to-source-sha", required=True)

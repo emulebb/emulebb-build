@@ -1106,3 +1106,91 @@ def test_rest_campaign_uses_selected_sources_and_existing_lock(tmp_path, monkeyp
             assert result.exit_code != 0 and "Workspace busy" in result.output
             assert events == ["acquire"]
         assert os.environ == before
+
+
+@pytest.mark.parametrize("action", ["prepare", "start", "observe", "stop", "status"])
+def test_public_sharing_delegates_privately_with_bounded_lock(action, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    harness = tmp_path / "selected-harness"
+    layout = SimpleNamespace(tests_repo_root=harness)
+    options = SimpleNamespace(workspace_root=tmp_path, workspace_name="workspace", output_root=tmp_path / "out")
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: layout)
+    events = []
+    def locked(name, operation):
+        def invoke(**kwargs):
+            events.append(("lock", name))
+            return operation(**kwargs)
+        return invoke
+    monkeypatch.setattr(cli, "_locked", locked)
+    def execute(command, *, label, cwd):
+        assert command[1:3] == [str(harness / "scripts/android-public-sharing.py"), action]
+        assert command[command.index("--campaign-dir") + 1] == "private-campaign"
+        assert cwd == harness and label == "Android public sharing"
+        assert ("--adb" in command) == (action != "status")
+        if action != "status":
+            assert command[command.index("--serial") + 1] == "private-endpoint"
+        if action == "prepare":
+            assert command[command.index("--source-dir") + 1] == "private-source"
+            assert command[command.index("--expected-file-count") + 1] == "221"
+            assert command[command.index("--duration-seconds") + 1] == "120"
+        else:
+            assert command[command.index("--campaign-receipt-sha256") + 1] == "a" * 64
+        assert ("--recover-stale-monitor" in command) == (action in ("start", "observe"))
+        events.append(("execute", action))
+    monkeypatch.setattr(cli, "run_native", execute)
+    args = ["android-public-sharing", action, "--campaign-dir", "private-campaign"]
+    if action != "status":
+        args += ["--adb", "private-adb", "--serial", "private-endpoint"]
+    if action == "prepare":
+        args += ["--apk-payload", "private-apk", "--apk-manifest-name", "manifest.json",
+                 "--apk-manifest-sha256", "b" * 64, "--apk-source-sha", "c" * 40,
+                 "--expected-cert-sha256", "d" * 64, "--installation-receipt", "private-receipt",
+                 "--installation-receipt-sha256", "e" * 64, "--source-dir", "private-source",
+                 "--expected-file-count", "221", "--expected-total-bytes", "1301166929",
+                 "--route", "direct-wifi", "--duration-seconds", "120"]
+    else:
+        args += ["--campaign-receipt-sha256", "a" * 64]
+        if action in ("start", "observe"):
+            args += ["--recover-stale-monitor"]
+    result = CliRunner().invoke(cli.main, args)
+    assert result.exit_code == 0, result.output
+    assert events == ([] if action == "status" else [("lock", "android-public-sharing")]) + [("execute", action)]
+    assert "private-" not in result.output
+
+
+@pytest.mark.parametrize("action,extra", [
+    ("prepare", ["--adb", "private-adb", "--serial", "private-endpoint"]),
+    ("start", ["--campaign-receipt-sha256", "a" * 64]),
+    ("status", ["--campaign-receipt-sha256", "a" * 64, "--serial", "private-endpoint"]),
+    ("stop", ["--adb", "private-adb", "--serial", "private-endpoint", "--campaign-receipt-sha256", "a" * 64,
+              "--recover-stale-monitor"]),
+])
+def test_public_sharing_rejects_incomplete_or_inapplicable_inputs_without_execution(action, extra, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    options = SimpleNamespace(workspace_root=tmp_path, workspace_name="workspace", output_root=tmp_path / "out")
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: SimpleNamespace(tests_repo_root=tmp_path))
+    monkeypatch.setattr(cli, "run_native", lambda *args, **kwargs: pytest.fail("unexpected execution"))
+    monkeypatch.setattr(cli, "_locked", lambda *args, **kwargs: pytest.fail("unexpected lock"))
+    result = CliRunner().invoke(cli.main, ["android-public-sharing", action, "--campaign-dir", "private-campaign", *extra])
+    assert result.exit_code != 0
+    assert "private-" not in result.output
+
+
+def test_public_sharing_status_hides_subprocess_errors(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    options = SimpleNamespace(workspace_root=tmp_path, workspace_name="workspace", output_root=tmp_path / "out")
+    monkeypatch.setattr(cli, "resolve_workspace_options", lambda **kwargs: options)
+    monkeypatch.setattr(cli, "load_layout", lambda *args, **kwargs: SimpleNamespace(tests_repo_root=tmp_path))
+    def fail(*args, **kwargs):
+        raise OSError("private-endpoint private-campaign")
+    monkeypatch.setattr(cli, "run_native", fail)
+    result = CliRunner().invoke(cli.main, ["android-public-sharing", "status", "--campaign-dir", "private-campaign",
+                                           "--campaign-receipt-sha256", "a" * 64])
+    assert result.exit_code != 0
+    assert "Android public sharing operation failed" in result.output
+    assert "private-" not in result.output
