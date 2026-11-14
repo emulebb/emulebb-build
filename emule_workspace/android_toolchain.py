@@ -341,7 +341,8 @@ def _kvm_group(docker) -> str:
 def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = frozenset(),
                            apk_failure_stages: frozenset[str] = frozenset(),
                            apk_failure_codes: frozenset[str] = frozenset(),
-                           apk_navigation_controls: frozenset[str] = frozenset()) -> dict:
+                           apk_navigation_controls: frozenset[str] = frozenset(),
+                           apk_post_failure_error_categories: frozenset[str] = frozenset()) -> dict:
     """Allowlist guest phases and OS facts; never publish private log text."""
     path = directory / "guest/report.json"
     try:
@@ -513,6 +514,19 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
                         if type(boot.get(name)) is int and minimum <= boot[name] <= maximum:
                             safe_boot[name] = boot[name]
                     safe_failure["boot"] = safe_boot
+                post_ui = failure.get("postFailureUi")
+                if isinstance(post_ui, dict):
+                    safe_ui = {}
+                    if isinstance(post_ui.get("servicePhase"), str) and post_ui["servicePhase"] in {
+                            "Stopped", "Starting", "Running", "Stopping", "Failed"}:
+                        safe_ui["servicePhase"] = post_ui["servicePhase"]
+                    if type(post_ui.get("resumeOnBoot")) is bool:
+                        safe_ui["resumeOnBoot"] = post_ui["resumeOnBoot"]
+                    if (isinstance(post_ui.get("errorCategory"), str)
+                            and post_ui["errorCategory"] in apk_post_failure_error_categories):
+                        safe_ui["errorCategory"] = post_ui["errorCategory"]
+                    if safe_ui:
+                        safe_failure["postFailureUi"] = safe_ui
                 public["failure"] = safe_failure
             value["apkProgress"] = public
     return value
@@ -613,6 +627,7 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         value["tls"] = {"status": "failed", "payloadManifestSha256": payload_identity, "capacityBefore": capacity}
     apk_case_names = frozenset()
     apk_failure_stages, apk_failure_codes, apk_navigation_controls = frozenset(), frozenset(), frozenset()
+    apk_post_failure_error_categories = frozenset()
     if apk_payload is not None:
         from .android_apk_candidate import apk_contract
         contract = apk_contract(apk_payload["context"])
@@ -620,6 +635,7 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         apk_failure_stages = contract.get("APK_LIFECYCLE_STAGES", frozenset())
         apk_failure_codes = contract.get("APK_LIFECYCLE_FAILURE_CODES", frozenset())
         apk_navigation_controls = contract.get("APK_NAVIGATION_CONTROLS", frozenset())
+        apk_post_failure_error_categories = contract.get("APK_POST_FAILURE_ERROR_CATEGORIES", frozenset())
         metadata = apk_payload["metadata"]
         value.update(scope="apk-lifecycle", applicationQualification="apk-lifecycle", apkSha256=metadata["apk"]["sha256"],
             apkManifestSha256=apk_payload["manifestSha256"], signerSha256=metadata["signerSha256"],
@@ -735,7 +751,8 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
         value.update(status="failed", failureType=type(error).__name__,
                      failureDetails=_guest_failure_details(directory, apk_case_names=apk_case_names,
                          apk_failure_stages=apk_failure_stages, apk_failure_codes=apk_failure_codes,
-                         apk_navigation_controls=apk_navigation_controls))
+                         apk_navigation_controls=apk_navigation_controls,
+                         apk_post_failure_error_categories=apk_post_failure_error_categories))
         print(json.dumps({"failureDetails": value["failureDetails"]}, sort_keys=True))
         raise
     finally:

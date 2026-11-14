@@ -299,6 +299,28 @@ def test_navigation_and_pre_cleanup_boot_facts_are_closed_bounded_and_not_raw_ui
         apk_navigation_controls=frozenset({"start_service"}))["apkProgress"]["failure"]
 
 
+@pytest.mark.parametrize("invalid", [False, True])
+def test_post_failure_ui_cannot_rewrite_automatic_boot_failure_or_expose_raw_error(tmp_path, invalid):
+    (tmp_path / "guest").mkdir()
+    (tmp_path / "guest/report.json").write_text(json.dumps({"schema": "emulebb.android.emulator-boot/1", "phase": "apk-lifecycle"}))
+    post_ui = {"servicePhase": "Running", "resumeOnBoot": False, "errorCategory": "boot-start-blocked",
+        "error": "synthetic-private-error-and-key", "text": "synthetic-private-error-and-key"}
+    if invalid:
+        post_ui.update(servicePhase=["synthetic-private"], resumeOnBoot=1, errorCategory="synthetic-private")
+    (tmp_path / "guest/apk-lifecycle.json").write_text(json.dumps({"schema": "emulebb.android.apk-lifecycle/1",
+        "status": "failed", "runtimeExecution": "executed", "failure": {
+            "stage": "automatic-boot", "code": "boot-resume-timeout", "boot": {"servicePresent": False},
+            "postFailureUi": post_ui}}))
+    value = subject._guest_failure_details(tmp_path, apk_case_names=frozenset({"install"}),
+        apk_failure_stages=frozenset({"automatic-boot"}), apk_failure_codes=frozenset({"boot-resume-timeout"}),
+        apk_post_failure_error_categories=frozenset({"boot-start-blocked", "unknown"}))
+    expected_failure = {"stage": "automatic-boot", "code": "boot-resume-timeout", "boot": {"servicePresent": False}}
+    if not invalid:
+        expected_failure["postFailureUi"] = {"servicePhase": "Running", "resumeOnBoot": False, "errorCategory": "boot-start-blocked"}
+    assert value == {"phase": "apk-lifecycle", "apkProgress": {"status": "failed", "runtimeExecution": "executed", "failure": expected_failure}}
+    assert "synthetic-private" not in json.dumps(value)
+
+
 @pytest.mark.parametrize("payload", ["not JSON", "[]", '{"schema":"other"}', " " * 65537],
                          ids=["malformed", "array", "schema", "oversize"])
 def test_missing_or_invalid_failure_receipt_cannot_claim_a_boot_phase(tmp_path, payload):
