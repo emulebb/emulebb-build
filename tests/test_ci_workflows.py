@@ -84,7 +84,7 @@ def test_android_tls_runtime_is_additional_pinned_source_bound_guest_proof():
     inputs = events["workflow_dispatch"]["inputs"]
     assert set(inputs) == {"rust_ref"}
     assert inputs["rust_ref"]["type"] == "string" and inputs["rust_ref"]["required"] is True
-    baseline = "250c555b76650ad69fc546444a69f4b245b16d6e"
+    baseline = "23e685b87bb76db21489c9b1cc725dd0da4241c1"
     assert "default" not in inputs["rust_ref"]
     assert f"rust_sha='{baseline}'" in select["run"]
     assert select["env"] == {
@@ -160,7 +160,7 @@ def test_android_tls_automatic_selector_ignores_manual_data(tmp_path, event):
     result = _run_tls_script(select["run"], tmp_path, SOURCE_EVENT=event,
                              REQUESTED_RUST_SHA="$(touch injected)", GITHUB_OUTPUT=output.as_posix(), mock_remote="untrusted")
     assert result.returncode == 0, result.stderr
-    assert output.read_text() == "rust_sha=250c555b76650ad69fc546444a69f4b245b16d6e\n"
+    assert output.read_text() == "rust_sha=23e685b87bb76db21489c9b1cc725dd0da4241c1\n"
     assert not (tmp_path / "injected").exists()
     assert not (tmp_path / "git-called").exists()
 
