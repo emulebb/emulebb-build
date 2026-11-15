@@ -459,6 +459,27 @@ def test_tls_failure_diagnostics_allow_only_fixed_owner_codes_and_stages(tmp_pat
     assert "synthetic-private" not in json.dumps(value) and "failureMessage" not in json.dumps(value)
 
 
+@pytest.mark.parametrize("message, expected_reason", [
+    ("Android generated bootstrap must use the current snake_case bootstrap contract", "bootstrap-contract"),
+    ("Android generated bootstrap must use the current loopback snake_case contract", None),
+    ("Android generated bootstrap must use the current snake_case bootstrap contract: synthetic-private-token", None),
+])
+def test_bootstrap_contract_failure_requires_exact_current_owner_message(tmp_path, message, expected_reason):
+    directory = tmp_path / "guest"
+    directory.mkdir()
+    (directory / "report.json").write_text(json.dumps({
+        "schema": "emulebb.android.emulator-boot/1", "phase": "tls-execution",
+        "error": "synthetic-private-token", "tlsProgress": {
+            "failureStage": "bootstrap-check", "failureMessage": message},
+    }))
+    value = subject._guest_failure_details(tmp_path)
+    expected = {"phase": "tls-execution", "tlsProgress": {"failureStage": "bootstrap-check"}}
+    if expected_reason is not None:
+        expected["reason"] = expected_reason
+    assert value == expected
+    assert "synthetic-private" not in json.dumps(value) and "failureMessage" not in json.dumps(value)
+
+
 @pytest.mark.parametrize("invalid", [False, True])
 def test_native_startup_failure_context_is_enum_and_bool_only(tmp_path, invalid):
     directory = tmp_path / "guest"

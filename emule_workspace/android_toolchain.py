@@ -474,7 +474,7 @@ def _guest_failure_details(directory: Path, *, apk_case_names: frozenset[str] = 
         "Android daemon has no verifiable kernel process identity": "daemon-kernel-identity",
         "Android daemon PID was reused before graceful shutdown": "daemon-pid-reused",
         "Android generated bootstrap is not owner-only": "bootstrap-permissions",
-        "Android generated bootstrap must use the current loopback snake_case contract": "bootstrap-contract",
+        "Android generated bootstrap must use the current snake_case bootstrap contract": "bootstrap-contract",
         "Android generated bootstrap must provide a valid private API key": "bootstrap-key-contract",
         "Android generated bootstrap is not valid TOML": "bootstrap-toml",
         "Android production daemon did not exit gracefully after SIGTERM": "daemon-ungraceful-exit",
