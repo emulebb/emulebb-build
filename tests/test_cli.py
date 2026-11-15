@@ -1046,6 +1046,40 @@ def test_rest_campaign_help_uses_the_fixed_persisted_runner():
     assert "--executable" not in result.output
 
 
+@pytest.mark.parametrize("action", ["describe", "prepare", "run"])
+def test_shared_library_campaign_selects_workstream_under_existing_lock(tmp_path, monkeypatch, action):
+    from types import SimpleNamespace
+    from emule_workspace import workstreams
+
+    locked = cli._locked
+    root, output, _, selected, _ = _workstream_cli_fixture(tmp_path, monkeypatch)
+    selected.emule_workspace_root = root
+    monkeypatch.setattr(cli, "_locked", locked)
+    monkeypatch.setattr(workstreams, "resolve_workstream", lambda *args, **kwargs: {"id": "alpha"})
+    for acquired in (True, False):
+        events = []
+        lock = SimpleNamespace(acquire=lambda: events.append("acquire") or acquired,
+                               release=lambda: events.append("release"), delegation_token=None,
+                               active_owner_text=lambda: "fixture owner")
+        monkeypatch.setattr(cli, "WorkspaceLock", lambda **kwargs: lock)
+        monkeypatch.setattr(cli, "invoke_rust_shared_library_io",
+                            lambda layout, **kwargs: events.append((layout, kwargs)))
+        result = CliRunner().invoke(cli.main, ["test", "rust-shared-library-io", action, "--workstream", "alpha"])
+        if acquired:
+            assert result.exit_code == 0, result.output
+            assert events == ["acquire", (selected, {"action": action, "allow_non_ssd": False,
+                                                    "timeout_seconds": 7200.0, "poll_seconds": 2.0}), "release"]
+        else:
+            assert result.exit_code != 0 and "Workspace busy" in result.output
+            assert events == ["acquire"]
+
+
+@pytest.mark.parametrize("action", ["media-run", "cleanup"])
+def test_shared_library_campaign_excludes_operator_or_destructive_actions(action):
+    result = CliRunner().invoke(cli.main, ["test", "rust-shared-library-io", action])
+    assert result.exit_code != 0 and "Invalid value" in result.output
+
+
 def test_package_campaign_uses_selected_sources_and_existing_lock(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from emule_workspace import workstreams

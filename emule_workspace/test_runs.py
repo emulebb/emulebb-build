@@ -1042,6 +1042,60 @@ def invoke_builder_unit_tests(layout: WorkspaceLayout, *, paths: tuple[str, ...]
         print(f"Builder unit {value['status']}; evidence: {report}", flush=True)
 
 
+def invoke_rust_shared_library_io(layout: WorkspaceLayout, *, action: str,
+                                  allow_non_ssd: bool = False,
+                                  timeout_seconds: float = 7200.0,
+                                  poll_seconds: float = 2.0) -> None:
+    """Invoke only the existing synthetic-library campaign with selected sources."""
+    from uuid import uuid4
+    from .local_checks import _source_snapshot
+    from .workstreams import _safe_path, resolve_workstream
+
+    if action not in {"describe", "prepare", "run"}:
+        raise ValueError("Shared-library action must be describe, prepare or run")
+    if timeout_seconds <= 0 or poll_seconds <= 0:
+        raise ValueError("Shared-library timeouts must be positive")
+    if action == "describe" and allow_non_ssd:
+        raise ValueError("describe does not override fixture storage admission")
+    if layout.emulebb_rust_repo_root is None:
+        raise RuntimeError("Shared-library campaign requires selected Rust sources")
+    root, output = layout.emule_workspace_root.resolve(), layout.output_root.resolve()
+    sources = {"emulebb-build": layout.build_repo_root, "emulebb-rust": layout.emulebb_rust_repo_root,
+               "emulebb-build-tests": layout.tests_repo_root, "emulebb-tooling": layout.tooling_repo_root}
+    sources = {name: _safe_path(root, path) for name, path in sources.items()}
+    rust, harness = sources["emulebb-rust"], sources["emulebb-build-tests"]
+    registration = resolve_workstream(root, output, repo=rust)
+    script = _safe_path(harness, harness / "scripts/rust-shared-library-io.py")
+    if not script.is_file():
+        raise RuntimeError("Selected shared-library campaign script is missing")
+    before = _source_snapshot(sources, clean=True)
+    arguments = ["-B", script, "--rust-repo", rust]
+    if registration is not None:
+        arguments.append("--registered-stage")
+    arguments.append(action)
+    if allow_non_ssd:
+        arguments.append("--allow-non-ssd")
+    if action == "run":
+        arguments.extend(["--timeout-seconds", str(timeout_seconds), "--poll-seconds", str(poll_seconds)])
+    receipt = {"schema": "emulebb.shared-library-campaign-source/1", "action": action,
+               "sources": before, "status": "failed"}
+    try:
+        run_native(get_python_invocation().command(arguments), label="Rust shared-library I/O",
+                   cwd=harness, env=_workspace_env(layout))
+        if _source_snapshot(sources, clean=True) != before:
+            raise RuntimeError("Selected shared-library sources changed during campaign")
+        receipt["status"] = "passed"
+    finally:
+        if action != "describe":
+            reports = output / "reports"
+            if registration is not None:
+                reports = reports / "workstreams" / registration["id"]
+            report = _safe_path(output, reports / "shared-library-io-admission" / uuid4().hex)
+            report.mkdir(parents=True)
+            (report / "sources.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+            print(f"Shared-library source evidence: {report}", flush=True)
+
+
 def invoke_rust_rest_openapi(layout: WorkspaceLayout) -> None:
     """Run the persisted REST campaign against selected sources under the CLI lock."""
     from .workstreams import _safe_path, resolve_workstream

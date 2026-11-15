@@ -74,6 +74,7 @@ from .test_runs import (
     invoke_fake_kad_trust_soak,
     invoke_rust_network_proof,
     invoke_rust_rest_openapi,
+    invoke_rust_shared_library_io,
     invoke_rust_release_package,
     invoke_rust_unit_tests,
     invoke_rust_webui_tests,
@@ -2074,6 +2075,21 @@ def test_public_presence(*, repository: str, workspace_options: WorkspaceOptions
 
     _locked("test public-presence", lambda **kwargs: validate_public_presence(
         kwargs["layout"], repository=repository,
+    ))(workspace_options=workspace_options, layout=layout)
+
+
+@test.command("rust-shared-library-io")
+@click.argument("action", type=click.Choice(["describe", "prepare", "run"]))
+@click.option("--allow-non-ssd", is_flag=True, help="Explicitly admit a non-SSD synthetic fixture target.")
+@click.option("--timeout-seconds", type=click.FloatRange(min=0, min_open=True), default=7200.0)
+@click.option("--poll-seconds", type=click.FloatRange(min=0, min_open=True), default=2.0)
+@_common_options
+def test_rust_shared_library_io(*, action, allow_non_ssd, timeout_seconds, poll_seconds,
+                                workspace_options, layout) -> None:
+    """Describe, prepare or run the existing owned synthetic 100k library campaign."""
+    _locked("test rust-shared-library-io", lambda **kwargs: invoke_rust_shared_library_io(
+        kwargs["layout"], action=action, allow_non_ssd=allow_non_ssd,
+        timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
     ))(workspace_options=workspace_options, layout=layout)
 
 
