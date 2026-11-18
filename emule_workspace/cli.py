@@ -2083,13 +2083,15 @@ def test_public_presence(*, repository: str, workspace_options: WorkspaceOptions
 @click.option("--allow-non-ssd", is_flag=True, help="Explicitly admit a non-SSD synthetic fixture target.")
 @click.option("--timeout-seconds", type=click.FloatRange(min=0, min_open=True), default=7200.0)
 @click.option("--poll-seconds", type=click.FloatRange(min=0, min_open=True), default=2.0)
+@click.option("--watcher-replay-from", help="Owned verified baseline run ID; excludes initial hashing qualification.")
 @_common_options
-def test_rust_shared_library_io(*, action, allow_non_ssd, timeout_seconds, poll_seconds,
+def test_rust_shared_library_io(*, action, allow_non_ssd, timeout_seconds, poll_seconds, watcher_replay_from,
                                 workspace_options, layout) -> None:
     """Describe, prepare or run the existing owned synthetic 100k library campaign."""
     _locked("test rust-shared-library-io", lambda **kwargs: invoke_rust_shared_library_io(
         kwargs["layout"], action=action, allow_non_ssd=allow_non_ssd,
         timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+        watcher_replay_from=watcher_replay_from,
     ))(workspace_options=workspace_options, layout=layout)
 
 

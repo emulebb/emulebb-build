@@ -1046,8 +1046,8 @@ def test_rest_campaign_help_uses_the_fixed_persisted_runner():
     assert "--executable" not in result.output
 
 
-@pytest.mark.parametrize("action", ["describe", "prepare", "run"])
-def test_shared_library_campaign_selects_workstream_under_existing_lock(tmp_path, monkeypatch, action):
+@pytest.mark.parametrize("action,replay", [("describe", None), ("prepare", None), ("run", None), ("run", "verified-run")])
+def test_shared_library_campaign_selects_workstream_under_existing_lock(tmp_path, monkeypatch, action, replay):
     from types import SimpleNamespace
     from emule_workspace import workstreams
 
@@ -1064,11 +1064,15 @@ def test_shared_library_campaign_selects_workstream_under_existing_lock(tmp_path
         monkeypatch.setattr(cli, "WorkspaceLock", lambda **kwargs: lock)
         monkeypatch.setattr(cli, "invoke_rust_shared_library_io",
                             lambda layout, **kwargs: events.append((layout, kwargs)))
-        result = CliRunner().invoke(cli.main, ["test", "rust-shared-library-io", action, "--workstream", "alpha"])
+        arguments = ["test", "rust-shared-library-io", action, "--workstream", "alpha"]
+        if replay is not None:
+            arguments += ["--watcher-replay-from", replay]
+        result = CliRunner().invoke(cli.main, arguments)
         if acquired:
             assert result.exit_code == 0, result.output
             assert events == ["acquire", (selected, {"action": action, "allow_non_ssd": False,
-                                                    "timeout_seconds": 7200.0, "poll_seconds": 2.0}), "release"]
+                                                    "timeout_seconds": 7200.0, "poll_seconds": 2.0,
+                                                    "watcher_replay_from": replay}), "release"]
         else:
             assert result.exit_code != 0 and "Workspace busy" in result.output
             assert events == ["acquire"]

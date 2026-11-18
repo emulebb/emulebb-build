@@ -1045,7 +1045,8 @@ def invoke_builder_unit_tests(layout: WorkspaceLayout, *, paths: tuple[str, ...]
 def invoke_rust_shared_library_io(layout: WorkspaceLayout, *, action: str,
                                   allow_non_ssd: bool = False,
                                   timeout_seconds: float = 7200.0,
-                                  poll_seconds: float = 2.0) -> None:
+                                  poll_seconds: float = 2.0,
+                                  watcher_replay_from: str | None = None) -> None:
     """Invoke only the existing synthetic-library campaign with selected sources."""
     from uuid import uuid4
     from .local_checks import _source_snapshot
@@ -1057,6 +1058,8 @@ def invoke_rust_shared_library_io(layout: WorkspaceLayout, *, action: str,
         raise ValueError("Shared-library timeouts must be positive")
     if action == "describe" and allow_non_ssd:
         raise ValueError("describe does not override fixture storage admission")
+    if watcher_replay_from is not None and action != "run":
+        raise ValueError("watcher replay requires the run action")
     if layout.emulebb_rust_repo_root is None:
         raise RuntimeError("Shared-library campaign requires selected Rust sources")
     root, output = layout.emule_workspace_root.resolve(), layout.output_root.resolve()
@@ -1077,6 +1080,8 @@ def invoke_rust_shared_library_io(layout: WorkspaceLayout, *, action: str,
         arguments.append("--allow-non-ssd")
     if action == "run":
         arguments.extend(["--timeout-seconds", str(timeout_seconds), "--poll-seconds", str(poll_seconds)])
+        if watcher_replay_from is not None:
+            arguments.extend(["--watcher-replay-from", watcher_replay_from])
     receipt = {"schema": "emulebb.shared-library-campaign-source/1", "action": action,
                "sources": before, "status": "failed"}
     try:

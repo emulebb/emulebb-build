@@ -77,8 +77,8 @@ def test_rest_adapter_propagates_campaign_failure(tmp_path, monkeypatch):
         test_runs.invoke_rust_rest_openapi(layout)
 
 
-@pytest.mark.parametrize("action", ["describe", "prepare", "run"])
-def test_shared_library_adapter_uses_selected_script_and_bounded_source_payload(tmp_path, monkeypatch, action):
+@pytest.mark.parametrize("action,replay", [("describe", None), ("prepare", None), ("run", None), ("run", "verified-run")])
+def test_shared_library_adapter_uses_selected_script_and_bounded_source_payload(tmp_path, monkeypatch, action, replay):
     from emule_workspace import local_checks
 
     layout, _, _ = selected_layout(tmp_path)
@@ -99,11 +99,13 @@ def test_shared_library_adapter_uses_selected_script_and_bounded_source_payload(
     monkeypatch.setattr(test_runs, "get_python_invocation", lambda: PythonInvocation(Path("selected-python")))
     calls = []
     monkeypatch.setattr(test_runs, "run_native", lambda command, **kwargs: calls.append((command, kwargs)))
-    test_runs.invoke_rust_shared_library_io(layout, action=action)
+    test_runs.invoke_rust_shared_library_io(layout, action=action, watcher_replay_from=replay)
     expected = ["selected-python", "-B", str(script), "--rust-repo", str(layout.emulebb_rust_repo_root),
                 "--registered-stage", action]
     if action == "run":
         expected += ["--timeout-seconds", "7200.0", "--poll-seconds", "2.0"]
+        if replay is not None:
+            expected += ["--watcher-replay-from", replay]
     assert calls == [(expected, {"label": "Rust shared-library I/O", "cwd": layout.tests_repo_root,
                                 "env": {"fixture-lock": "held"}})]
     assert len(sources) == 2
