@@ -92,6 +92,19 @@ def test_private_environment_never_falls_back_to_global_python(installation):
         runtime.selected_python()
 
 
+def test_dependency_updates_do_not_replace_another_checkout_environment(installation):
+    _, builder, output = installation
+    original = runtime.environment_root(output)
+    lock = builder / "uv.lock"
+    original_lock = lock.read_bytes()
+    lock.write_text("changed dependency lock")
+    updated = runtime.environment_root(output)
+    assert updated != original
+    assert updated.parent == original.parent
+    lock.write_bytes(original_lock)
+    assert runtime.environment_root(output) == original
+
+
 def test_only_an_environment_with_the_current_dependency_lock_is_selected(installation):
     _, builder, output = installation
     environment = runtime.environment_root(output)
