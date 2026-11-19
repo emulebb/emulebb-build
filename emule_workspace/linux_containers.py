@@ -90,12 +90,13 @@ def linux_test_plan(scope: str, *, cross: bool, rust_root: Path | None = None) -
     return plan
 
 
-def linux_quality_plan(rust_root: Path, target: str) -> list[tuple[str, list[str]]]:
+def linux_quality_plan(rust_root: Path, target: str, *, diagnostics_only: bool = False) -> list[tuple[str, list[str]]]:
     """Compile target-specific lint and diagnostics from the candidate CI gate."""
     definitions = runpy.run_path(str(rust_root / "tools/rust_quality_gate.py"))
     plan = []
-    for label, factory, subcommand in (("clippy", "clippy_step", "clippy"),
-                                        ("packet-diagnostics", "diagnostics_step", "check")):
+    steps = (("clippy-diagnostics", "clippy_step", "clippy"),) if diagnostics_only else (
+        ("clippy", "clippy_step", "clippy"), ("packet-diagnostics", "diagnostics_step", "check"))
+    for label, factory, subcommand in steps:
         _description, command = definitions[factory]()
         if command[:2] != ["cargo", subcommand] or "--locked" not in command:
             raise RuntimeError(f"Canonical {factory} must remain a locked Cargo {subcommand} command")
@@ -104,6 +105,10 @@ def linux_quality_plan(rust_root: Path, target: str) -> list[tuple[str, list[str
         # separator. Passing it after -- would change the compiler invocation.
         index = arguments.index("--") if "--" in arguments else len(arguments)
         arguments[index:index] = ["--target", target]
+        if diagnostics_only:
+            # WHY: collect dependent crates in one non-gating pass; strict
+            # package checks retain their canonical -D warnings invocation.
+            arguments.extend(["--cap-lints", "warn"])
         plan.append((label, arguments))
     return plan
 
@@ -577,6 +582,14 @@ def _prove_profile_test_scratch(docker, test_cargo: list[str], target: str, targ
     return report
 
 
+def collect_linux_quality_diagnostics(layout, *, libc: str, architecture: str) -> Path:
+    """@brief Collect workspace lints without producing or qualifying a package."""
+    with LinuxDocker() as docker:
+        return _build_linux_artifacts(layout, docker, libc=libc, architecture=architecture,
+                                      webui_dist=None, release_version=None, test_scope="full",
+                                      quality_diagnostics_only=True)
+
+
 def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: Path | None = None,
                           release_version: str | None = None, smoke: bool = False, test_scope: str = "portable",
                           use_ci_image_mirrors: bool = False) -> Path:
@@ -783,6 +796,7 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
 def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architecture: str,
                            webui_dist: Path | None, release_version: str | None, test_scope: str,
                            use_ci_image_mirrors: bool = False,
+                           quality_diagnostics_only: bool = False,
                            profile_scratch_proof: tuple[Path, dict] | None = None) -> Path:
     from . import release
     from .workstreams import _safe_path
@@ -810,7 +824,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     hosted_environment = _hosted_linux_environment(architecture, engine_arch)
     base, build_arch, cross = build_configuration(libc, architecture, engine_arch, use_ci_image_mirrors=use_ci_image_mirrors)
     test_plan = linux_test_plan(test_scope, cross=cross, rust_root=rust)
-    quality_plan = linux_quality_plan(rust, target) if test_scope == "full" else []
+    quality_plan = linux_quality_plan(rust, target, diagnostics_only=quality_diagnostics_only) if test_scope == "full" else []
     user = _builder_user(docker)
     uid, gid = user.split(":")
     if profile_scratch_proof is not None and uid == "0":
@@ -892,6 +906,16 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     for label, arguments in quality_plan:
         print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
         run_owned_container(docker, [*cargo, *arguments], log_root / f"{label}.log", timeout=3600)
+    if quality_diagnostics_only:
+        path = log_root / "diagnostic-collection.json"
+        path.write_text(json.dumps({
+            "schema": "emulebb.linux-quality-diagnostics.v1", "status": "collected",
+            "qualityGatePassed": False, "packageProduced": False,
+            "sourceRevision": source_revision, "target": target,
+            "plan": quality_plan, "log": str(log_root / "clippy-diagnostics.log"),
+        }, indent=2) + "\n", encoding="utf-8")
+        print(f"Linux quality diagnostics collected; strict gate remains required: {path}", flush=True)
+        return path
     command = ["run", *cargo, "build", "--locked", "--release",
                "--target", target, "-p", "emulebb-daemon", "--bin", "emulebb-rust"]
     log = log_root / "build.log"

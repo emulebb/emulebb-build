@@ -2095,6 +2095,20 @@ def test_rust_shared_library_io(*, action, allow_non_ssd, timeout_seconds, poll_
     ))(workspace_options=workspace_options, layout=layout)
 
 
+@test.command("rust-linux-quality-diagnostics")
+@_common_options
+@click.option("--libc", type=click.Choice(["gnu", "musl"]), required=True)
+@click.option("--architecture", type=click.Choice(["amd64", "arm64"]), required=True)
+def test_rust_linux_quality_diagnostics(*, libc: str, architecture: str,
+                                       workspace_options: WorkspaceOptions, layout) -> None:
+    """Collect Linux Clippy diagnostics; this does not pass the package gate."""
+    from .linux_containers import collect_linux_quality_diagnostics
+
+    _locked("collect Linux quality diagnostics", lambda **kwargs: collect_linux_quality_diagnostics(
+        kwargs["layout"], libc=libc, architecture=architecture,
+    ))(workspace_options=workspace_options, layout=layout)
+
+
 @test.command("rust-rest-openapi")
 @_common_options
 def test_rust_rest_openapi(*, workspace_options: WorkspaceOptions, layout) -> None:
