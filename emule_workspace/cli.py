@@ -2535,13 +2535,15 @@ def linux_containers(*, wsl_distro: str, setup_arm64: bool, resource_budget: boo
 @test.command("rust-library-container")
 @_common_options
 @click.option("--archive", type=click.Path(path_type=Path), required=True)
+@click.option("--library-files", type=click.Choice(["50000", "100000"]), default="100000", show_default=True)
 @click.option("--wsl-distro", default="Ubuntu", show_default=True)
-def test_rust_library_container(*, archive: Path, wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
-    """Run the full 100k library/history campaign within 512 MiB and one CPU."""
+def test_rust_library_container(*, archive: Path, library_files: str, wsl_distro: str,
+                               workspace_options: WorkspaceOptions, layout) -> None:
+    """Qualify 50k files/512 MiB or 100k files/1 GiB, each with 100k retained jobs."""
     from .linux_containers import run_library_resource_campaign
 
     _locked("test Rust library container", lambda **kwargs: run_library_resource_campaign(
-        kwargs["layout"], archive=archive, wsl_distro=wsl_distro))(
+        kwargs["layout"], archive=archive, library_files=int(library_files), wsl_distro=wsl_distro))(
             workspace_options=workspace_options, layout=layout)
 
 

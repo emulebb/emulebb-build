@@ -847,8 +847,13 @@ def _library_runtime(docker, reports: Path, *, heap_profile: bool = False):
     return runtime, identity
 
 
-def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "Ubuntu") -> Path:
-    """Run the existing 100k physical-library/history campaign in a measured native budget."""
+def run_library_resource_campaign(layout, *, archive: Path, library_files: int = 100_000,
+                                  wsl_distro: str = "Ubuntu") -> Path:
+    """Run an approved physical-library/history tier in its measured native budget."""
+    if library_files not in (50_000, 100_000):
+        raise ValueError("library capacity must be 50000 or 100000 files")
+    memory_bytes = (512 if library_files == 50_000 else 1024) * 1024 * 1024
+    capacity = {"libraryFiles": library_files, "memoryBytes": memory_bytes, "retainedJobs": 100_000}
     output, archive, sources, revisions, version, archive_sha = _library_inputs(layout, archive)
     run_id = uuid4().hex
     reports = output / "reports/linux-containers/library" / run_id
@@ -858,6 +863,7 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
     volume = f"emulebb-library-{run_id}"
     labels = {"emulebb.scope": "shared-library-io", "emulebb.run": run_id}
     report = {"schema": LIBRARY_CONTAINER_SCHEMA, "status": "running", "runId": run_id,
+              "capacityTarget": capacity,
               "sourceRevisions": revisions, "archiveSha256": archive_sha,
               "volume": {"name": volume, "labels": labels, "retained": False},
               "container": {}, "initializationContainer": {}, "inputCheckContainer": {}, "workloadQualified": False}
@@ -875,7 +881,7 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
                 "--mount", f"type=bind,source={docker.path(rust)},target=/workspace/repos/emulebb-rust,readonly",
                 "--mount", f"type=bind,source={docker.path(layout.tooling_repo_root)},target=/workspace/repos/emulebb-tooling,readonly",
             ]
-            # Validate real runtime imports before allocating the 10 GiB fixture volume.
+            # Validate real runtime imports before allocating the tier's fixture volume.
             run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", "65534:65534",
                 "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "none", *source_mounts,
                 "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--workdir", "/workspace/repos/emulebb-build-tests",
@@ -909,7 +915,7 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
             mounts.extend(source_mounts)
             command = ["--rm", "--platform", "linux/amd64", "--user", "65534:65534", "--cap-drop", "ALL",
                        "--security-opt", "no-new-privileges", "--network", "none", "--cgroupns", "private",
-                       "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", *mounts,
+                       "--memory", str(memory_bytes), "--memory-swap", str(memory_bytes), "--cpus", "1", *mounts,
                        "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
                        "--env", f"TMPDIR={native}/tmp", "--env", "GIT_CONFIG_COUNT=2",
                        "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-rust",
@@ -918,7 +924,8 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
                        "scripts/rust-shared-library-io.py", "--rust-repo", "/workspace/repos/emulebb-rust",
                        "container-run", "--archive", "/output/" + archive.relative_to(output).as_posix(),
                        "--source-sha", revisions["rust"], "--version", version,
-                       "--native-root", native, "--report-root", report_root]
+                       "--native-root", native, "--report-root", report_root,
+                       "--library-files", str(library_files)]
             run_owned_container(docker, command, reports / "campaign.log", timeout=4 * 60 * 60,
                                 ownership=report["container"])
             result = json.loads((reports / "container-result.json").read_text(encoding="utf-8"))
@@ -932,6 +939,10 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
             campaign = json.loads(campaign_host.read_text(encoding="utf-8"))
             scope = campaign.get("qualificationScope", {})
             if (campaign.get("schema") != "emulebb.rust-shared-library-io.v8"
+                    or campaign.get("capacityTarget") != capacity
+                    or result.get("capacityTarget") != capacity
+                    or campaign.get("fixture", {}).get("fileCount") != library_files
+                    or campaign.get("retainedDownloadFixture", {}).get("downloadJobs") != 100_000
                     or campaign.get("status") != "passed" or campaign.get("acceptance", {}).get("ok") is not True
                     or any(scope.get(key) is not True for key in
                            ("fullCampaign", "physicalLibrary", "initialPayloadHashing", "containerLimitsEnforced"))

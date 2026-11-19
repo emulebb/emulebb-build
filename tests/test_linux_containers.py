@@ -1153,9 +1153,12 @@ def library_container_inputs(tmp_path, monkeypatch):
     return layout, archive, digest
 
 
-@pytest.mark.parametrize("fault", ["none", "kernel", "cleanup", "partial-campaign", "source-drift"])
-def test_library_campaign_requires_full_workload_budget_cleanup_and_frozen_source(library_container_inputs, monkeypatch, fault):
+@pytest.mark.parametrize("library_files", [50_000, 100_000])
+@pytest.mark.parametrize("fault", ["none", "kernel", "cleanup", "partial-campaign", "source-drift", "wrong-tier", "wrong-files", "wrong-jobs"])
+def test_library_campaign_requires_full_workload_budget_cleanup_and_frozen_source(library_container_inputs, monkeypatch, fault, library_files):
     layout, archive, digest = library_container_inputs
+    memory_bytes = (512 if library_files == 50_000 else 1024) * 1024 * 1024
+    capacity = {"libraryFiles": library_files, "memoryBytes": memory_bytes, "retainedJobs": 100_000}
     commands = []
     revisions = 0
     def git(repo, *arguments):
@@ -1187,26 +1190,30 @@ def test_library_campaign_requires_full_workload_budget_cleanup_and_frozen_sourc
         host = layout.output_root / root.removeprefix("/output/")
         campaign = host / "campaign/full.json"
         campaign.write_text(json.dumps({"schema": "emulebb.rust-shared-library-io.v8", "status": "passed",
+            "capacityTarget": capacity if fault != "wrong-tier" else {**capacity, "memoryBytes": memory_bytes * 2},
+            "fixture": {"fileCount": library_files if fault != "wrong-files" else library_files // 2},
+            "retainedDownloadFixture": {"downloadJobs": 100_000 if fault != "wrong-jobs" else 1000},
             "acceptance": {"ok": True}, "qualificationScope": {"fullCampaign": fault != "partial-campaign",
                 "physicalLibrary": True, "initialPayloadHashing": True, "containerLimitsEnforced": True,
                 "downloadHistory": "metadata-only"}}))
-        (host / "container-result.json").write_text(json.dumps({"status": "passed", "sourceSha": "a" * 40,
+        (host / "container-result.json").write_text(json.dumps({"status": "passed", "capacityTarget": capacity, "sourceSha": "a" * 40,
             "archiveSha256": digest, "acceptance": {"ok": True}, "campaignReport": root + "/campaign/full.json",
             "qualificationScope": {"containerLimitsEnforced": fault != "kernel"}}))
         return ""
     monkeypatch.setattr(linux_containers, "run_owned_container", owned)
     if fault == "none":
-        receipt = linux_containers.run_library_resource_campaign(layout, archive=archive)
+        receipt = linux_containers.run_library_resource_campaign(layout, archive=archive, library_files=library_files)
     else:
         with pytest.raises(RuntimeError, match="not proved|changed during"):
-            linux_containers.run_library_resource_campaign(layout, archive=archive)
+            linux_containers.run_library_resource_campaign(layout, archive=archive, library_files=library_files)
         receipt = next((layout.output_root / "reports/linux-containers/library").glob("*/report.json"))
     result = json.loads(receipt.read_text())
     assert result["workloadQualified"] is (fault == "none")
     assert result["volume"]["retained"] is True
     assert result["status"] == ("passed" if fault == "none" else "failed")
     arguments = next(args for args in commands if "container-run" in args)
-    for option, value in (("--memory", "536870912"), ("--memory-swap", "536870912"),
+    for option, value in (("--memory", str(memory_bytes)), ("--memory-swap", str(memory_bytes)),
+                          ("--library-files", str(library_files)),
                           ("--cpus", "1"), ("--user", "65534:65534"), ("--network", "none"), ("--cgroupns", "private")):
         assert arguments[arguments.index(option) + 1] == value
     assert "--tmpfs" not in arguments
