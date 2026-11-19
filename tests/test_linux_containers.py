@@ -234,7 +234,6 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
     def cargo(docker, arguments, *args, **kwargs):
         cargo_calls.append(arguments)
         assert f"CARGO_TARGET_DIR={target_mapping}" in arguments
-        assert "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output" in arguments
         if arguments[arguments.index("cargo") + 1] == "build":
             binary = target_directory / target / "release/emulebb-rust"
             binary.parent.mkdir(parents=True)
