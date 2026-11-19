@@ -871,11 +871,17 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
             native = report_root + "/native"
             mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
                       "--mount", f"type=volume,source={volume},target={native}"]
-            # Only this fresh labelled volume and this report directory are writable.
+            # WHY: WSL can expand nested shell variables before Docker receives
+            # them. The persisted initializer uses Python argv and filesystem APIs.
+            initialization = "\n".join((
+                "import os, sys", "native, reports = sys.argv[1:]",
+                "os.mkdir(native + '/tmp')",
+                "os.chown(native, 65534, 65534)", "os.chown(native + '/tmp', 65534, 65534)",
+                "os.chmod(reports, 0o777)", "os.chmod(reports + '/campaign', 0o777)",
+            ))
             run_owned_container(docker, ["--rm", "--network", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN",
-                "--cap-add", "FOWNER", *mounts, runtime, "sh", "-ec",
-                'mkdir -p "$1/tmp"; chown 65534:65534 "$1" "$1/tmp"; chmod 0777 "$2" "$2/campaign"',
-                "initialize", native, report_root], reports / "initialize.log", timeout=60,
+                "--cap-add", "FOWNER", *mounts, runtime, "python3", "-B", "-c", initialization,
+                native, report_root], reports / "initialize.log", timeout=60,
                 ownership=report["initializationContainer"])
             mounts.extend(["--mount", f"type=bind,source={docker.path(harness)},target=/workspace/repos/emulebb-build-tests,readonly",
                            "--mount", f"type=bind,source={docker.path(rust)},target=/workspace/repos/emulebb-rust,readonly",

@@ -1180,7 +1180,7 @@ def test_library_campaign_requires_full_workload_budget_cleanup_and_frozen_sourc
     monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_args: Docker())
     def owned(_docker, arguments, _log, **kwargs):
         commands.append(arguments)
-        initialization = "initialize" in arguments
+        initialization = "container-run" not in arguments
         kwargs["ownership"].update(absent=initialization or fault != "cleanup")
         if initialization: return ""
         root = arguments[arguments.index("--report-root") + 1]
