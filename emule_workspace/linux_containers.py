@@ -816,7 +816,7 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
     if not archive.is_relative_to(output) or not archive.is_file():
         raise RuntimeError("Library campaign archive must be below the operator output root")
     sources = {"rust": layout.emulebb_rust_repo_root, "harness": layout.tests_repo_root,
-               "tooling": layout.tooling_repo_root}
+               "tooling": layout.tooling_repo_root, "builder": layout.build_repo_root}
     revisions = {}
     for name, source in sources.items():
         if git_output(source, "status", "--porcelain").strip():

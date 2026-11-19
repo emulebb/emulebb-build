@@ -1134,11 +1134,11 @@ def library_container_inputs(tmp_path, monkeypatch):
     import hashlib
     output = tmp_path / "output"
     output.mkdir()
-    roots = [tmp_path / name for name in ("rust", "harness", "tooling")]
+    roots = [tmp_path / name for name in ("rust", "harness", "tooling", "builder")]
     for root in roots:
         root.mkdir()
     layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=roots[0],
-                             tests_repo_root=roots[1], tooling_repo_root=roots[2])
+                             tests_repo_root=roots[1], tooling_repo_root=roots[2], build_repo_root=roots[3])
     archive = output / "emulebb-rust-v0.1.0-beta.2-linux-amd64-gnu.tar.zst"
     archive.write_bytes(b"synthetic archive")
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
