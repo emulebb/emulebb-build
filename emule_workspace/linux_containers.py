@@ -108,6 +108,7 @@ def linux_quality_plan(rust_root: Path, target: str, *, diagnostics_only: bool =
         if diagnostics_only:
             # WHY: collect dependent crates in one non-gating pass; strict
             # package checks retain their canonical -D warnings invocation.
+            arguments[arguments.index("--"):arguments.index("--")] = ["--message-format", "json"]
             arguments.extend(["--cap-lints", "warn"])
         plan.append((label, arguments))
     return plan
@@ -911,6 +912,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         path.write_text(json.dumps({
             "schema": "emulebb.linux-quality-diagnostics.v1", "status": "collected",
             "qualityGatePassed": False, "packageProduced": False,
+            "diagnosticFormat": "cargo-json",
             "sourceRevision": source_revision, "target": target,
             "plan": quality_plan, "log": str(log_root / "clippy-diagnostics.log"),
         }, indent=2) + "\n", encoding="utf-8")

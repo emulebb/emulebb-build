@@ -548,7 +548,10 @@ def diagnostics_step():
         ("packet-diagnostics", ["check", "--bin", "candidate-diagnostics", "--features", "packet-diagnostics", "--locked", "--target", target]),
     ]
     collected = linux_quality_plan(tmp_path, target, diagnostics_only=True)
-    assert collected == [("clippy-diagnostics", [*plan[0][1], "--cap-lints", "warn"])]
+    diagnostic_arguments = list(plan[0][1])
+    separator = diagnostic_arguments.index("--")
+    diagnostic_arguments[separator:separator] = ["--message-format", "json"]
+    assert collected == [("clippy-diagnostics", [*diagnostic_arguments, "--cap-lints", "warn"])]
     assert linux_quality_plan(tmp_path, target) == plan
     definition.write_text(definition.read_text().replace(', "--locked"', ""))
     with pytest.raises(RuntimeError, match="locked Cargo clippy"):
