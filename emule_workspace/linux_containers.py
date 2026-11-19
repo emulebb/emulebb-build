@@ -27,6 +27,7 @@ ALPINE_IMAGE = UPSTREAM_ALPINE
 RUST_IMAGES = dict(UPSTREAM_RUST)
 MUSL_CROSS_IMAGE = "ghcr.io/rust-cross/rust-musl-cross:aarch64-musl@sha256:02e790506c5f15a533bc05b3af8719b16a8a2314480f6f0fdc0166432035d9b4"
 RUNTIME_IMAGES = dict(UPSTREAM_RUNTIME)
+RUNTIME_OPENAPI_ENV = "EMULEBB_REST_OPENAPI_CONTRACT_PATH=/workspace/repos/emulebb-tooling/docs/products/emulebb-rust/api/REST-API-OPENAPI.yaml"
 _WSL_STOP_TIMEOUT = 10
 
 
@@ -736,8 +737,10 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
     version = archive.name[len(prefix):-len(suffix)]
     source_sha = git_output(layout.emulebb_rust_repo_root, "rev-parse", "HEAD").strip()
     if (git_output(layout.emulebb_rust_repo_root, "status", "--porcelain").strip()
-            or git_output(layout.tests_repo_root, "status", "--porcelain").strip()):
-        raise RuntimeError("Runtime validation requires clean Rust and harness sources")
+            or git_output(layout.tests_repo_root, "status", "--porcelain").strip()
+            or git_output(layout.tooling_repo_root, "status", "--porcelain").strip()):
+        raise RuntimeError("Runtime validation requires clean Rust, harness and contract sources")
+    tooling_revision = git_output(layout.tooling_repo_root, "rev-parse", "HEAD").strip()
     if manifest.get("sourceDirty") is not False or manifest.get("source", {}).get("emulebbRust", {}).get("commit") != source_sha:
         raise RuntimeError("Runtime archive must match the clean current Rust revision")
     if _emulebb_rust_artifact_origin()["origin"] == "github-actions":
@@ -756,7 +759,8 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
                    "--file", docker.path(context) + "/Dockerfile.runtime", "--tag", runtime, docker.path(context))
         mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
                   "--mount", f"type=bind,source={docker.path(layout.emulebb_rust_repo_root)},target=/workspace/repos/emulebb-rust,readonly",
-                  "--mount", f"type=bind,source={docker.path(harness_source)},target=/workspace/repos/emulebb-build-tests,readonly"]
+                  "--mount", f"type=bind,source={docker.path(harness_source)},target=/workspace/repos/emulebb-build-tests,readonly",
+                  "--mount", f"type=bind,source={docker.path(layout.tooling_repo_root)},target=/workspace/repos/emulebb-tooling,readonly"]
         relative = reports.relative_to(output).as_posix()
         docker.run("run", "--rm", "--platform", f"linux/{architecture}", *mounts, runtime,
                    "chmod", "0777", f"/output/{relative}", f"/output/{relative}/tmp")
@@ -772,6 +776,7 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
                    "--tmpfs", scratch_mount,
                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "bridge", *mounts,
                    "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                   "--env", RUNTIME_OPENAPI_ENV,
                    # WHY: Git must inspect this exact read-only source mount even
                    # when a root host runs the smoke as the unprivileged UID.
                    "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory",
@@ -783,6 +788,9 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
                    "--linux-libc", libc, "--expected-source-sha", source_sha,
                    "--rust-repo", "/workspace/repos/emulebb-rust", "--report-path", f"/output/{relative}/package-smoke.json"]
         run_owned_container(docker, command, reports / "runtime.log", timeout=600)
+        if (git_output(layout.tooling_repo_root, "rev-parse", "HEAD").strip() != tooling_revision
+                or git_output(layout.tooling_repo_root, "status", "--porcelain").strip()):
+            raise RuntimeError("Selected OpenAPI contract changed during runtime validation")
         if harness_source != layout.tests_repo_root.resolve() and (
                 git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip()
                 != git_output(harness_source, "rev-parse", "HEAD").strip()
@@ -793,6 +801,7 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
             "execution": "native" if host_arch == architecture else "qemu",
             "sourceSha": source_sha, "archiveSha256": manifest["sha256"],
             "harnessSha": git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip(),
+            "toolingSha": tooling_revision,
         }, indent=2) + "\n", encoding="utf-8")
     print(f"Non-root Linux {architecture}/{libc} lifecycle passed: {reports / 'package-smoke.json'}")
     return reports / "package-smoke.json"
@@ -918,6 +927,7 @@ def run_library_resource_campaign(layout, *, archive: Path, library_files: int =
                        "--security-opt", "no-new-privileges", "--network", "none", "--cgroupns", "private",
                        "--memory", str(memory_bytes), "--memory-swap", str(memory_bytes), "--cpus", "1", *mounts,
                        "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                       "--env", RUNTIME_OPENAPI_ENV,
                        "--env", f"TMPDIR={native}/tmp", "--env", "GIT_CONFIG_COUNT=2",
                        "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-rust",
                        "--env", "GIT_CONFIG_KEY_1=safe.directory", "--env", "GIT_CONFIG_VALUE_1=/workspace/repos/emulebb-build-tests",
@@ -1026,6 +1036,7 @@ def run_library_heap_profile(layout, *, archive: Path, receipt: Path, wsl_distro
                 "--security-opt", "no-new-privileges", "--network", "none", "--cgroupns", "private",
                 "--memory", "1073741824", "--memory-swap", "1073741824", "--cpus", "1", *mounts,
                 "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                "--env", RUNTIME_OPENAPI_ENV,
                 "--env", f"TMPDIR={native}/tmp", "--env", "GIT_CONFIG_COUNT=2",
                 "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-rust",
                 "--env", "GIT_CONFIG_KEY_1=safe.directory", "--env", "GIT_CONFIG_VALUE_1=/workspace/repos/emulebb-build-tests",

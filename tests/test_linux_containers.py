@@ -327,7 +327,8 @@ def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypat
     manifest = {"origin": "github-actions", "workflow": workflow, "sourceDirty": False,
                 "source": {"emulebbRust": {"commit": "a" * 40}}, "sha256": "b" * 64}
     archive.with_name(archive.name + ".manifest.json").write_text(json.dumps(manifest))
-    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=tmp_path / "rust", tests_repo_root=tmp_path / "tests")
+    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=tmp_path / "rust",
+                             tests_repo_root=tmp_path / "tests", tooling_repo_root=tmp_path / "tooling")
     monkeypatch.setattr(linux_containers, "git_output", lambda repo, *args: "a" * 40 if args == ("rev-parse", "HEAD") else "")
     monkeypatch.setattr(linux_containers.platform, "system", lambda: "Linux")
     monkeypatch.setattr(linux_containers.platform, "machine", lambda: "x86_64")
@@ -358,6 +359,8 @@ def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypat
     assert "BASE_IMAGE=" + expected in next(args for args in calls if args[0] == "build")
     command = launches[0]
     image_index = command.index("local/emulebb-rust-runtime:musl-amd64")
+    assert command.index(linux_containers.RUNTIME_OPENAPI_ENV) < image_index
+    assert f"type=bind,source={layout.tooling_repo_root.as_posix()},target=/workspace/repos/emulebb-tooling,readonly" in command
     assert command[command.index("--user") + 1] == ("65534:65534" if host_uid == "0" else "1000:1000")
     for setting in ("GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory",
                     "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-build-tests"):
