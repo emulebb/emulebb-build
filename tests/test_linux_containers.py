@@ -1172,7 +1172,11 @@ def test_library_campaign_requires_full_workload_budget_cleanup_and_frozen_sourc
         def path(self, value): return value.as_posix()
         def run(self, *args, **kwargs):
             commands.append(args)
-            return SimpleNamespace(stdout="amd64" if args[0] == "version" else "", stderr="")
+            if args[:2] == ("volume", "inspect"):
+                value = json.dumps([{"Name": args[2], "Driver": "local", "Options": None,
+                    "Labels": {"emulebb.scope": "shared-library-io", "emulebb.run": args[2].removeprefix("emulebb-library-")}}])
+            else: value = "amd64" if args[0] == "version" else ""
+            return SimpleNamespace(stdout=value, stderr="")
     monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_args: Docker())
     def owned(_docker, arguments, _log, **kwargs):
         commands.append(arguments)
@@ -1218,7 +1222,7 @@ def test_library_campaign_rejects_changed_archive_before_container_allocation(li
         linux_containers.run_library_resource_campaign(layout, archive=archive)
 
 
-@pytest.mark.parametrize("fault", ["none", "foreign-label", "attached"])
+@pytest.mark.parametrize("fault", ["none", "foreign-label", "remote-options", "attached"])
 def test_native_campaign_cleanup_requires_receipt_labels_and_unused_volume(tmp_path, monkeypatch, fault):
     run_id = "a" * 32
     output = tmp_path / "output"
@@ -1236,7 +1240,8 @@ def test_native_campaign_cleanup_requires_receipt_labels_and_unused_volume(tmp_p
             calls.append(args)
             if args[:2] == ("volume", "inspect"):
                 actual = labels if fault != "foreign-label" else {}
-                value = json.dumps([{"Name": volume, "Labels": actual}])
+                value = json.dumps([{"Name": volume, "Labels": actual, "Driver": "local",
+                    "Options": {"type": "nfs"} if fault == "remote-options" else None}])
             elif args[0] == "ps": value = "owned-active" if fault == "attached" else ""
             else: value = ""
             return SimpleNamespace(stdout=value)
@@ -1244,7 +1249,24 @@ def test_native_campaign_cleanup_requires_receipt_labels_and_unused_volume(tmp_p
     if fault == "none":
         linux_containers.remove_library_campaign_volume(SimpleNamespace(output_root=output), receipt=receipt)
     else:
-        with pytest.raises(RuntimeError, match="labels differ|still attached"):
+        with pytest.raises(RuntimeError, match="authority differ|still attached"):
             linux_containers.remove_library_campaign_volume(SimpleNamespace(output_root=output), receipt=receipt)
     assert any(args[:2] == ("volume", "rm") for args in calls) is (fault == "none")
     assert json.loads(receipt.read_text())["volume"]["retained"] is (fault != "none")
+
+
+def test_library_volume_authority_is_checked_before_initialization(library_container_inputs, monkeypatch):
+    layout, archive, _digest = library_container_inputs
+    class Docker:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def path(self, value): return value.as_posix()
+        def run(self, *args, **kwargs):
+            return SimpleNamespace(stdout="amd64" if args[0] == "version" else "", stderr="")
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_args: Docker())
+    def reject(*args):
+        raise RuntimeError("foreign volume authority")
+    monkeypatch.setattr(linux_containers, "_inspect_library_volume", reject)
+    monkeypatch.setattr(linux_containers, "run_owned_container", lambda *a, **k: pytest.fail("must verify before initialization"))
+    with pytest.raises(RuntimeError, match="foreign volume authority"):
+        linux_containers.run_library_resource_campaign(layout, archive=archive)

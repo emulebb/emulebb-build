@@ -800,6 +800,15 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
 LIBRARY_CONTAINER_SCHEMA = "emulebb.rust-container-library-io.v1"
 
 
+def _inspect_library_volume(docker, volume: str, labels: dict[str, str]) -> None:
+    """Prove the labelled allocation uses Docker's local filesystem without remote mount options."""
+    values = json.loads(docker.run("volume", "inspect", volume, capture=True, timeout=30).stdout)
+    if (not isinstance(values, list) or len(values) != 1 or values[0].get("Name") != volume
+            or values[0].get("Driver") != "local" or values[0].get("Options") not in (None, {})
+            or any((values[0].get("Labels") or {}).get(key) != value for key, value in labels.items())):
+        raise RuntimeError("Native volume labels or local filesystem authority differ from the campaign receipt")
+
+
 def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "Ubuntu") -> Path:
     """Run the existing 100k physical-library/history campaign in a measured native budget."""
     output = layout.output_root.resolve()
@@ -852,9 +861,10 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
             report["volume"]["retained"] = True
             report["volume"]["created"] = False
             receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-            docker.run("volume", "create", *[argument for key, value in labels.items()
+            docker.run("volume", "create", "--driver", "local", *[argument for key, value in labels.items()
                        for argument in ("--label", f"{key}={value}")], volume, capture=True, timeout=30)
             report["volume"]["created"] = True
+            _inspect_library_volume(docker, volume, labels)
             receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             relative = reports.relative_to(output).as_posix()
             report_root = f"/output/{relative}"
@@ -936,10 +946,7 @@ def remove_library_campaign_volume(layout, *, receipt: Path, wsl_distro: str = "
     if report["volume"].get("name") != volume or report["volume"].get("labels") != expected:
         raise RuntimeError("Campaign volume receipt identity differs")
     with LinuxDocker(wsl_distro) as docker:
-        values = json.loads(docker.run("volume", "inspect", volume, capture=True, timeout=30).stdout)
-        if (len(values) != 1 or values[0].get("Name") != volume
-                or any(values[0].get("Labels", {}).get(key) != value for key, value in expected.items())):
-            raise RuntimeError("Native volume labels differ from the campaign receipt")
+        _inspect_library_volume(docker, volume, expected)
         attached = docker.run("ps", "--all", "--filter", f"volume={volume}", "--format", "{{.ID}}",
                               capture=True, timeout=30).stdout.strip()
         if attached:
