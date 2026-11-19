@@ -86,6 +86,7 @@ def linux_test_plan(scope: str, *, cross: bool, rust_root: Path | None = None) -
         ) for argument in ("-p", package)]]),
         ("tracker-tests", ["--lib", "-p", "emulebb-kad-net", "tracker::tests"]),
         ("durability-tests", ["--lib", "-p", "emulebb-ed2k", "fs_durability::tests"]),
+        ("container-profile-tests", ["--lib", "-p", "emulebb-daemon", "container_profile::tests"]),
     ])
     return plan
 
@@ -1203,7 +1204,8 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         print(f"Linux quality diagnostics collected; strict gate remains required: {path}", flush=True)
         return path
     command = ["run", *cargo, "build", "--locked", "--release",
-               "--target", target, "-p", "emulebb-daemon", "--bin", "emulebb-rust"]
+               "--target", target, "-p", "emulebb-daemon", "--bin", "emulebb-rust",
+               "--bin", "emulebb-profile-init"]
     log = log_root / "build.log"
     print(f"Building Linux {architecture}/{libc}; log: {log}", flush=True)
     run_owned_container(docker, command[1:], log, timeout=7200)
@@ -1216,6 +1218,12 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                        *user_options, *environment, builder, "readelf", "-h", "-l", "-d", f"{target_root}/{target}/release/emulebb-rust", capture=True).stdout
     (log_root / "elf.txt").write_text(audit, encoding="utf-8")
     validate_elf_audit(audit, libc=libc, architecture=architecture)
+    initializer = binary.with_name("emulebb-profile-init")
+    initializer_audit = docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}",
+                                   *mounts, *user_options, *environment, builder, "readelf", "-h", "-l", "-d",
+                                   f"{target_root}/{target}/release/emulebb-profile-init", capture=True).stdout
+    (log_root / "initializer-elf.txt").write_text(initializer_audit, encoding="utf-8")
+    validate_elf_audit(initializer_audit, libc=libc, architecture=architecture)
     tools = docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}",
                        *user_options, *mounts, *environment, builder, "sh", "-ec", "rustc --version; cc --version; "
                        "if command -v apk >/dev/null; then apk info -v; else dpkg-query -W; fi", capture=True).stdout
@@ -1227,6 +1235,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         shutil.rmtree(stage)
     stage.mkdir(parents=True, exist_ok=True)
     shutil.copy2(binary, stage / "emulebb-rust")
+    shutil.copy2(initializer, stage / "emulebb-profile-init")
     if webui_dist is None:
         webui_dist = root / "webui-built"
         subprocess.run([sys.executable, "-B", str(rust / "tools/build_webui.py"), "--stage-dir", str(webui_dist)], check=True)
@@ -1257,7 +1266,8 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                                          asset_name=archive.name, version=version, arch=f"{architecture}-{libc}")
     relative = root.relative_to(output).as_posix()
     docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}", *mounts,
-               *user_options, builder, "chmod", "755", f"/output/{relative}/staging/emulebb-rust/emulebb-rust")
+               *user_options, builder, "chmod", "755", f"/output/{relative}/staging/emulebb-rust/emulebb-rust",
+               f"/output/{relative}/staging/emulebb-rust/emulebb-profile-init")
     # Replace through the host owner: an earlier root-run Docker build may have
     # left an archive that the operator UID cannot truncate through DrvFS.
     if archive.is_symlink() or not archive.resolve().is_relative_to(output):
@@ -1273,6 +1283,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                 "asset": archive.name, "sha256": release._sha256(archive), "sbom": sbom.name,
                 "sbomSha256": release._sha256(sbom), "target": target, "libc": libc,
                 "builderBase": base, "buildUser": user, "elfAudit": audit,
+                "initializerElfAudit": initializer_audit,
                 "channel": channel,
                 "buildExecution": "cross" if cross else "native", "libraryTestExecution": "qemu" if cross else "native",
                 "testCompilation": "workspace" if test_scope == "full" else "selected-libraries",
@@ -1333,7 +1344,8 @@ def _package_gnu_deb(layout, docker, *, root: Path, stage: Path, version: str, a
         f"find {q(native)} -type f -exec chmod 0644 {{}} +",
         "chmod 0755 " + " ".join(q(native + path) for path in
             ("/usr/bin/emulebb-rust", "/usr/bin/emulebb-rust-launch",
-             "/usr/lib/emulebb-rust/emulebb-rust", "/usr/lib/emulebb-rust/launch")),
+             "/usr/lib/emulebb-rust/emulebb-rust", "/usr/lib/emulebb-rust/emulebb-profile-init",
+             "/usr/lib/emulebb-rust/launch")),
         "desktop-file-validate " + q(native + "/usr/share/applications/io.github.emulebb.emulebb-rust.desktop"),
         "appstreamcli validate-tree --no-net " + q(native),
         f"dpkg-deb --build --root-owner-group {q(native)} {q(destination)}",

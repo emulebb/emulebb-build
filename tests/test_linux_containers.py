@@ -239,6 +239,7 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
             binary = target_directory / target / "release/emulebb-rust"
             binary.parent.mkdir(parents=True)
             binary.write_bytes(b"ELF fixture")
+            binary.with_name("emulebb-profile-init").write_bytes(b"initializer ELF fixture")
     def sbom(**kwargs):
         (kwargs["package_root"] / "SBOM.spdx.json").write_text('{"spdxVersion":"SPDX-2.3"}')
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
@@ -507,7 +508,7 @@ def test_vpn_leak_step():
     cross = linux_test_plan("full", cross=True, rust_root=tmp_path)
     assert cross[0] == ("workspace-tests-build", ["--workspace", "--no-run"])
     assert cross[1][1][-3:] == ["--no-run", "--", "--test-threads=1"]
-    assert [label for label, _ in cross[2:]] == ["native-library-tests", "tracker-tests", "durability-tests"]
+    assert [label for label, _ in cross[2:]] == ["native-library-tests", "tracker-tests", "durability-tests", "container-profile-tests"]
     assert cross[3][1] == ["--lib", "-p", "emulebb-kad-net", "tracker::tests"]
     assert linux_test_plan("portable", cross=False) == cross[2:]
     portable = cross[2][1]
@@ -730,6 +731,7 @@ def test_gnu_deb_uses_verified_linux_payload_and_private_native_modes(tmp_path, 
     (stage / "webui").mkdir(parents=True)
     (stage / "licenses").mkdir()
     (stage / "emulebb-rust").write_bytes(b"verified Linux ELF payload")
+    (stage / "emulebb-profile-init").write_bytes(b"verified Linux initializer")
     (stage / "webui/index.html").write_text("bundled SPA")
     (stage / "licenses/native-LICENSE").write_text("native notice")
     rust = tmp_path / "rust"
@@ -762,6 +764,7 @@ def test_gnu_deb_uses_verified_linux_payload_and_private_native_modes(tmp_path, 
                              mounts=[], manifest={"sourceDirty": False, "target": "aarch64-unknown-linux-gnu"},
                              log_root=root)
     assert (root / "deb/usr/lib/emulebb-rust/emulebb-rust").read_bytes() == (stage / "emulebb-rust").read_bytes()
+    assert (root / "deb/usr/lib/emulebb-rust/emulebb-profile-init").read_bytes() == (stage / "emulebb-profile-init").read_bytes()
     assert set(path.name for path in (root / "deb").iterdir()) == {"usr", "DEBIAN"}
     control = (root / "deb/DEBIAN/control").read_text()
     assert "Architecture: arm64" in control and "Depends: libc6 (>= 2.36)" in control

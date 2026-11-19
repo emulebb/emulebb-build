@@ -567,6 +567,8 @@ def _build_emulebb_rust_client(
     ]
     if diagnostics:
         cargo_arguments.extend(["--features", "packet-diagnostics"])
+    if target_os == "linux":
+        cargo_arguments.extend(["--bin", "emulebb-profile-init"])
     source_target_root = session.layout.output_rust_target_root
     if use_wsl:
         source_target_root = session.layout.output_rust_target_root.parent / "target-wsl"
@@ -809,6 +811,10 @@ def remove_rust_target_runtime_artifacts(layout: WorkspaceLayout) -> None:
         "emulebb-rust-diagnostics.exe",
         "emulebb-rust-diagnostics.pdb",
         "emulebb_rust_diagnostics.pdb",
+        "emulebb-profile-init",
+        "emulebb-profile-init.exe",
+        "emulebb-profile-init.pdb",
+        "emulebb_profile_init.pdb",
     )
     cargo_roots = (
         layout.output_rust_target_root,
@@ -874,6 +880,11 @@ def stage_emulebb_rust_runtime(
     for stale_artifact in STALE_EMULEBB_RUST_UI_ARTIFACTS:
         _remove_rust_runtime_artifact(bin_root / stale_artifact)
     _copy_rust_runtime_artifact(exe, bin_root / exe_name)
+    if target_os == "linux":
+        initializer = source_root / "emulebb-profile-init"
+        if not initializer.is_file():
+            raise RuntimeError(f"Built container profile initializer was not found: {initializer}")
+        _copy_rust_runtime_artifact(initializer, bin_root / initializer.name)
     if target_os == "windows":
         staged_pdb_source = None
         for pdb_source_name in rust_pdb_source_names(pdb_name):

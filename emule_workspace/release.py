@@ -692,6 +692,9 @@ def _stage_emulebb_rust_linux_tree(
     metainfo_root.mkdir(parents=True)
     bin_root.mkdir(parents=True)
     shutil.copy2(executable, lib_root / "emulebb-rust")
+    initializer = lib_root / "emulebb-profile-init"
+    shutil.copy2(executable.with_name("emulebb-profile-init"), initializer)
+    initializer.chmod(0o755)
     shutil.copytree(webui, lib_root / "webui")
     _stage_emulebb_rust_bootstrap(rust_root, lib_root)
     shutil.copy2(rust_root / "LICENSE", doc_root)

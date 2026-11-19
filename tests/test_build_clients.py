@@ -414,6 +414,7 @@ def test_stage_emulebb_rust_linux_runtime_uses_extensionless_binary(tmp_path: Pa
     built = layout.output_rust_target_root / "x86_64-unknown-linux-gnu" / "release"
     built.mkdir(parents=True)
     (built / "emulebb-rust").write_bytes(b"linux")
+    (built / "emulebb-profile-init").write_bytes(b"initializer")
 
     build.stage_emulebb_rust_runtime(
         layout,
@@ -422,6 +423,7 @@ def test_stage_emulebb_rust_linux_runtime_uses_extensionless_binary(tmp_path: Pa
     )
 
     assert (build.staged_emulebb_rust_root(layout) / "bin" / "emulebb-rust").read_bytes() == b"linux"
+    assert (build.staged_emulebb_rust_root(layout) / "bin" / "emulebb-profile-init").read_bytes() == b"initializer"
 
 
 def test_build_emulebb_rust_linux_client_uses_native_wsl_cargo(
@@ -444,6 +446,7 @@ def test_build_emulebb_rust_linux_client_uses_native_wsl_cargo(
             built = layout.output_rust_target_root.parent / "target-wsl" / "x86_64-unknown-linux-gnu" / "release"
             built.mkdir(parents=True)
             (built / "emulebb-rust").write_bytes(b"linux")
+            (built / "emulebb-profile-init").write_bytes(b"initializer")
         else:
             webui_dist = layout.output_build_root / "emulebb-rust" / "webui-dist"
             webui_dist.mkdir(parents=True, exist_ok=True)
@@ -466,7 +469,7 @@ def test_build_emulebb_rust_linux_client_uses_native_wsl_cargo(
     assert "cargo.exe" not in command
     assert "export CARGO_TARGET_DIR=/mnt/c/target-wsl" in command[-1]
     assert command[-1].endswith(
-        "exec cargo build --locked -p emulebb-daemon --bin emulebb-rust --release --target x86_64-unknown-linux-gnu"
+        "exec cargo build --locked -p emulebb-daemon --bin emulebb-rust --release --target x86_64-unknown-linux-gnu --bin emulebb-profile-init"
     )
     assert (build.staged_emulebb_rust_root(layout) / "bin" / "emulebb-rust").read_bytes() == b"linux"
 
