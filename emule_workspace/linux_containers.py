@@ -861,7 +861,8 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         "--mount", f"type=bind,source={docker.path(cache)},target=/usr/local/cargo/registry",
     ]
     target_root = "/output/" + target_directory.relative_to(output).as_posix()
-    environment = [*hosted_environment, "--env", f"CARGO_TARGET_DIR={target_root}", "--env", "MINIUPNP_ROOT=/native/miniupnp",
+    environment = [*hosted_environment, "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                   "--env", f"CARGO_TARGET_DIR={target_root}", "--env", "MINIUPNP_ROOT=/native/miniupnp",
                    "--env", "PCPNATPMP_ROOT=/native/pcpnatpmp", "--env", "CARGO_BUILD_JOBS=4",
                    "--env", "HOME=/output/" + home.relative_to(output).as_posix()]
     source_revision = provenance["source"]["emulebbRust"]["commit"]
