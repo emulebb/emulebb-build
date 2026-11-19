@@ -1214,6 +1214,62 @@ def test_library_campaign_requires_full_workload_budget_cleanup_and_frozen_sourc
     assert sum("readonly" in value for value in arguments) == 3
 
 
+@pytest.mark.parametrize("fault", ["none", "cleanup", "claims-qualification", "attached"])
+def test_heap_replay_preserves_source_authority_and_never_qualifies(library_container_inputs, monkeypatch, fault):
+    layout, archive, digest = library_container_inputs
+    run_id = "c" * 32
+    source_root = layout.output_root / "reports/linux-containers/library" / run_id
+    source_root.mkdir(parents=True)
+    source = source_root / "report.json"
+    labels = {"emulebb.scope": "shared-library-io", "emulebb.run": run_id}
+    source.write_text(json.dumps({"schema": linux_containers.LIBRARY_CONTAINER_SCHEMA,
+        "runId": run_id, "status": "failed", "container": {"absent": True},
+        "volume": {"name": f"emulebb-library-{run_id}", "labels": labels, "retained": True},
+        "sourceRevisions": {"rust": "a" * 40}, "archiveSha256": digest}))
+    before = source.read_bytes()
+    commands = []
+    class Docker:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def path(self, value): return value.as_posix()
+        def run(self, *args, **kwargs):
+            commands.append(args)
+            if args[0] == "version": value = "amd64"
+            elif args[:2] == ("volume", "inspect"):
+                value = json.dumps([{"Name": f"emulebb-library-{run_id}", "Driver": "local", "Options": {}, "Labels": labels}])
+            elif args[0] == "ps": value = "still-attached" if fault == "attached" else ""
+            else: value = ""
+            return SimpleNamespace(stdout=value, stderr="")
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_: Docker())
+    def owned(_docker, arguments, log, **kwargs):
+        commands.append(arguments)
+        kwargs["ownership"].update(absent=fault != "cleanup")
+        if "container-heap-profile" not in arguments: return
+        root = arguments[arguments.index("--report-root") + 1]
+        host = layout.output_root / root.removeprefix("/output/")
+        (host / "heap-result.json").write_text(json.dumps({
+            "schema": "emulebb.rust-library-heap.v1", "status": "diagnosticComplete",
+            "workloadQualified": fault == "claims-qualification", "sourceSha": "a" * 40,
+            "archiveSha256": digest, "traces": [{"bytes": 100}], "acceptance": {"ok": False},
+            "qualificationScope": {"containerLimitsEnforced": False}, "kernelResourceBudget": {"ok": True}}))
+    monkeypatch.setattr(linux_containers, "run_owned_container", owned)
+    if fault == "none":
+        report = linux_containers.run_library_heap_profile(layout, archive=archive, receipt=source)
+    else:
+        with pytest.raises(RuntimeError, match="not proved|still attached"):
+            linux_containers.run_library_heap_profile(layout, archive=archive, receipt=source)
+        report = next((layout.output_root / "reports/linux-containers/library-heap").glob("*/report.json"))
+    result = json.loads(report.read_text())
+    assert result["workloadQualified"] is False
+    assert result["status"] == ("diagnosticComplete" if fault == "none" else "failed")
+    assert source.read_bytes() == before
+    if fault != "attached":
+        arguments = next(command for command in commands if "container-heap-profile" in command)
+        assert arguments[arguments.index("--memory") + 1] == "1073741824"
+        assert arguments[arguments.index("--memory-swap") + 1] == "1073741824"
+    assert not any(command[:2] in (("volume", "create"), ("volume", "rm")) for command in commands)
+
+
 def test_library_campaign_rejects_changed_archive_before_container_allocation(library_container_inputs, monkeypatch):
     layout, archive, _digest = library_container_inputs
     archive.write_bytes(b"substituted archive")

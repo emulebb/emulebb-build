@@ -2545,6 +2545,20 @@ def test_rust_library_container(*, archive: Path, wsl_distro: str, workspace_opt
             workspace_options=workspace_options, layout=layout)
 
 
+@test.command("rust-library-heap-profile")
+@_common_options
+@click.option("--archive", type=click.Path(path_type=Path), required=True)
+@click.option("--receipt", type=click.Path(path_type=Path), required=True)
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def test_rust_library_heap_profile(*, archive: Path, receipt: Path, wsl_distro: str,
+                                   workspace_options: WorkspaceOptions, layout) -> None:
+    """Profile a copied retained library at 1 GiB; never qualify the workload."""
+    from .linux_containers import run_library_heap_profile
+    _locked("test Rust library heap profile", lambda **kwargs: run_library_heap_profile(
+        kwargs["layout"], archive=archive, receipt=receipt, wsl_distro=wsl_distro))(
+            workspace_options=workspace_options, layout=layout)
+
+
 @main.command("cleanup-rust-library-container")
 @_common_options
 @click.option("--receipt", type=click.Path(path_type=Path), required=True)

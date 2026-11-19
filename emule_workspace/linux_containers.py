@@ -809,8 +809,8 @@ def _inspect_library_volume(docker, volume: str, labels: dict[str, str]) -> None
         raise RuntimeError("Native volume labels or local filesystem authority differ from the campaign receipt")
 
 
-def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "Ubuntu") -> Path:
-    """Run the existing 100k physical-library/history campaign in a measured native budget."""
+def _library_inputs(layout, archive: Path):
+    """Admit the current clean archive and all participating source identities."""
     output = layout.output_root.resolve()
     archive = archive.resolve()
     if not archive.is_relative_to(output) or not archive.is_file():
@@ -832,6 +832,24 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
             or manifest.get("sha256") != archive_sha or manifest.get("sourceDirty") is not False
             or manifest.get("source", {}).get("emulebbRust", {}).get("commit") != revisions["rust"]):
         raise RuntimeError("Library campaign requires the exact current clean GNU/AMD64 archive")
+    return output, archive, sources, revisions, version, archive_sha
+
+
+def _library_runtime(docker, reports: Path, *, heap_profile: bool = False):
+    context = Path(__file__).parent / "release_assets/rust_linux"
+    runtime = "local/emulebb-rust-runtime:gnu-amd64" + ("-heaptrack" if heap_profile else "")
+    extra = ["--build-arg", "HEAP_PROFILE=1"] if heap_profile else []
+    image = docker.run("build", "--platform", "linux/amd64", "--build-arg", f"BASE_IMAGE={RUNTIME_IMAGES['gnu']}",
+                       *extra, "--file", docker.path(context) + "/Dockerfile.runtime", "--tag", runtime,
+                       docker.path(context), capture=True, timeout=600)
+    (reports / "image.log").write_text((image.stdout or "") + (image.stderr or ""), encoding="utf-8")
+    identity = docker.run("image", "inspect", runtime, "--format", "{{.Id}}", capture=True, timeout=30).stdout.strip()
+    return runtime, identity
+
+
+def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "Ubuntu") -> Path:
+    """Run the existing 100k physical-library/history campaign in a measured native budget."""
+    output, archive, sources, revisions, version, archive_sha = _library_inputs(layout, archive)
     run_id = uuid4().hex
     reports = output / "reports/linux-containers/library" / run_id
     reports.mkdir(parents=True)
@@ -850,14 +868,8 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
         with LinuxDocker(wsl_distro) as docker:
             if docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip() != "amd64":
                 raise RuntimeError("Library resource qualification requires native GNU/AMD64 Docker")
-            context = Path(__file__).parent / "release_assets/rust_linux"
-            runtime = "local/emulebb-rust-runtime:gnu-amd64"
-            image = docker.run("build", "--platform", "linux/amd64", "--build-arg", f"BASE_IMAGE={RUNTIME_IMAGES['gnu']}",
-                               "--file", docker.path(context) + "/Dockerfile.runtime", "--tag", runtime,
-                               docker.path(context), capture=True, timeout=600)
-            (reports / "image.log").write_text((image.stdout or "") + (image.stderr or ""), encoding="utf-8")
-            report.update(runtimeBase=RUNTIME_IMAGES["gnu"], runtimeImageId=docker.run(
-                "image", "inspect", runtime, "--format", "{{.Id}}", capture=True, timeout=30).stdout.strip())
+            runtime, image_id = _library_runtime(docker, reports)
+            report.update(runtimeBase=RUNTIME_IMAGES["gnu"], runtimeImageId=image_id)
             source_mounts = [
                 "--mount", f"type=bind,source={docker.path(harness)},target=/workspace/repos/emulebb-build-tests,readonly",
                 "--mount", f"type=bind,source={docker.path(rust)},target=/workspace/repos/emulebb-rust,readonly",
@@ -944,11 +956,11 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
     return receipt
 
 
-def remove_library_campaign_volume(layout, *, receipt: Path, wsl_distro: str = "Ubuntu") -> None:
-    """Remove only a receipt-matched, unused labelled native volume under the workspace lock."""
+def _library_volume_receipt(output: Path, receipt: Path):
+    """Read the existing labelled volume authority without changing its receipt."""
     receipt = receipt.resolve()
-    boundary = layout.output_root.resolve() / "reports/linux-containers/library"
-    if not receipt.is_relative_to(boundary) or receipt.name != "report.json":
+    boundary = output.resolve() / "reports/linux-containers/library"
+    if receipt.parent.parent != boundary or receipt.name != "report.json":
         raise RuntimeError("Campaign volume cleanup requires its managed receipt")
     report = json.loads(receipt.read_text(encoding="utf-8"))
     run_id = report.get("runId")
@@ -960,6 +972,84 @@ def remove_library_campaign_volume(layout, *, receipt: Path, wsl_distro: str = "
     expected = {"emulebb.scope": "shared-library-io", "emulebb.run": run_id}
     if report["volume"].get("name") != volume or report["volume"].get("labels") != expected:
         raise RuntimeError("Campaign volume receipt identity differs")
+    return receipt, report, volume, expected
+
+
+def run_library_heap_profile(layout, *, archive: Path, receipt: Path, wsl_distro: str = "Ubuntu") -> Path:
+    """Collect allocation stacks from a copied retained profile; never qualify workload."""
+    output, archive, sources, revisions, version, archive_sha = _library_inputs(layout, archive)
+    receipt, source, volume, labels = _library_volume_receipt(output, receipt)
+    if (source["status"] not in {"passed", "failed"} or source.get("container", {}).get("absent") is not True
+            or source.get("sourceRevisions", {}).get("rust") != revisions["rust"]
+            or source.get("archiveSha256") != archive_sha):
+        raise RuntimeError("Heap replay requires the exact retained inactive source/archive")
+    reports = output / "reports/linux-containers/library-heap" / uuid4().hex
+    (reports / "campaign").mkdir(parents=True)
+    report = {"schema": "emulebb.rust-library-heap.v1", "status": "running", "workloadQualified": False,
+        "sourceReceipt": str(receipt), "sourceVolume": {"name": volume, "labels": labels},
+        "sourceRevisions": revisions, "archiveSha256": archive_sha, "container": {}, "initializationContainer": {}}
+    try:
+        harness = _runtime_source_snapshot(layout, reports)
+        rust = _runtime_source_snapshot(layout, reports, source=layout.emulebb_rust_repo_root, name="rust")
+        with LinuxDocker(wsl_distro) as docker:
+            if docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip() != "amd64":
+                raise RuntimeError("Heap replay requires native GNU/AMD64 Docker")
+            _inspect_library_volume(docker, volume, labels)
+            if docker.run("ps", "--all", "--filter", f"volume={volume}", "--format", "{{.ID}}", capture=True, timeout=30).stdout.strip():
+                raise RuntimeError("Heap replay source volume is still attached")
+            runtime, image_id = _library_runtime(docker, reports, heap_profile=True)
+            report.update(runtimeBase=RUNTIME_IMAGES["gnu"], runtimeImageId=image_id)
+            report_root = "/output/" + reports.relative_to(output).as_posix()
+            native = "/output/" + receipt.parent.relative_to(output).as_posix() + "/native"
+            mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
+                "--mount", f"type=volume,source={volume},target={native}",
+                "--mount", f"type=bind,source={docker.path(harness)},target=/workspace/repos/emulebb-build-tests,readonly",
+                "--mount", f"type=bind,source={docker.path(rust)},target=/workspace/repos/emulebb-rust,readonly",
+                "--mount", f"type=bind,source={docker.path(layout.tooling_repo_root)},target=/workspace/repos/emulebb-tooling,readonly"]
+            initialization = "import os,sys; os.chmod(sys.argv[1],0o777); os.chmod(sys.argv[1]+'/campaign',0o777)"
+            run_owned_container(docker, ["--rm", "--network", "none", "--cap-drop", "ALL", "--cap-add", "FOWNER",
+                *mounts, runtime, "python3", "-B", "-c", initialization, report_root], reports / "initialize.log",
+                timeout=60, ownership=report["initializationContainer"])
+            command = ["--rm", "--platform", "linux/amd64", "--user", "65534:65534", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges", "--network", "none", "--cgroupns", "private",
+                "--memory", "1073741824", "--memory-swap", "1073741824", "--cpus", "1", *mounts,
+                "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                "--env", f"TMPDIR={native}/tmp", "--env", "GIT_CONFIG_COUNT=2",
+                "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-rust",
+                "--env", "GIT_CONFIG_KEY_1=safe.directory", "--env", "GIT_CONFIG_VALUE_1=/workspace/repos/emulebb-build-tests",
+                "--workdir", "/workspace/repos/emulebb-build-tests", runtime, "python3", "-B", "scripts/rust-shared-library-io.py",
+                "--rust-repo", "/workspace/repos/emulebb-rust", "container-heap-profile",
+                "--archive", "/output/" + archive.relative_to(output).as_posix(), "--source-sha", revisions["rust"],
+                "--version", version, "--source-receipt", "/output/" + receipt.relative_to(output).as_posix(),
+                "--report-root", report_root]
+            run_owned_container(docker, command, reports / "campaign.log", timeout=4 * 60 * 60, ownership=report["container"])
+            result = json.loads((reports / "heap-result.json").read_text(encoding="utf-8"))
+            report["diagnostic"] = result
+            if (result.get("schema") != report["schema"] or result.get("status") != "diagnosticComplete"
+                    or result.get("workloadQualified") is not False or not result.get("traces")
+                    or result.get("acceptance", {}).get("ok") is not False
+                    or result.get("qualificationScope", {}).get("containerLimitsEnforced") is not False
+                    or result.get("kernelResourceBudget", {}).get("ok") is not True
+                    or result.get("sourceSha") != revisions["rust"] or result.get("archiveSha256") != archive_sha
+                    or report["container"].get("absent") is not True):
+                raise RuntimeError("Heap trace collection or owned cleanup was not proved")
+        for name, path in sources.items():
+            if (git_output(path, "rev-parse", "HEAD").strip() != revisions[name]
+                    or git_output(path, "status", "--porcelain").strip()):
+                raise RuntimeError(f"Heap replay {name} source changed during execution")
+        report["status"] = "diagnosticComplete"
+    except BaseException as error:
+        report.update(status="failed", error=type(error).__name__)
+        raise
+    finally:
+        (reports / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"Heap diagnostic collected; workload not qualified: {reports / 'report.json'}")
+    return reports / "report.json"
+
+
+def remove_library_campaign_volume(layout, *, receipt: Path, wsl_distro: str = "Ubuntu") -> None:
+    """Remove only a receipt-matched, unused labelled native volume under the workspace lock."""
+    receipt, report, volume, expected = _library_volume_receipt(layout.output_root, receipt)
     with LinuxDocker(wsl_distro) as docker:
         _inspect_library_volume(docker, volume, expected)
         attached = docker.run("ps", "--all", "--filter", f"volume={volume}", "--format", "{{.ID}}",
