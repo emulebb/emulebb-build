@@ -16,6 +16,57 @@ from emule_workspace.linux_containers import linux_test_plan, linux_quality_plan
 from emule_workspace import linux_containers
 
 
+@pytest.mark.parametrize("proof_ok,cleanup_ok", [(True, True), (False, True), (True, False)])
+def test_budget_probe_requires_kernel_proof_and_owned_cleanup(tmp_path, monkeypatch, proof_ok, cleanup_ok):
+    source = tmp_path / "workspace/repos/emulebb-build-tests"
+    source.mkdir(parents=True)
+    layout = SimpleNamespace(tests_repo_root=source, output_root=tmp_path / "output")
+    monkeypatch.setattr(linux_containers, "git_output", lambda _repo, *args: "" if args[0] == "status" else "a" * 40)
+    monkeypatch.setattr(linux_containers, "_runtime_harness_source", lambda *_args: source)
+    commands = []
+    def run(*args, **_kwargs):
+        commands.append(args)
+        return SimpleNamespace(stdout="amd64" if args[0] == "version" else "", stderr="")
+    docker = SimpleNamespace(run=run, path=lambda value: value.as_posix())
+    def owned(_docker, arguments, _log, **kwargs):
+        commands.append(arguments)
+        kwargs["ownership"].update(name="synthetic-budget-probe", absent=cleanup_ok)
+        return json.dumps({"status": "passed", "qualificationScope": {"containerLimitsEnforced": proof_ok},
+                           "kernelResourceBudget": {"ok": proof_ok}})
+    monkeypatch.setattr(linux_containers, "run_owned_container", owned)
+    if proof_ok and cleanup_ok:
+        path = linux_containers.verify_resource_budget(layout, docker)
+    else:
+        with pytest.raises(RuntimeError, match="not proved"):
+            linux_containers.verify_resource_budget(layout, docker)
+        path = next((layout.output_root / "reports/linux-containers/budget").glob("*/report.json"))
+    value = json.loads(path.read_text())
+    assert value["status"] == ("passed" if proof_ok and cleanup_ok else "failed")
+    assert value["workloadQualified"] is False
+    arguments = commands[-1]
+    for option, expected in (("--memory", "536870912"), ("--memory-swap", "536870912"),
+                             ("--cpus", "1"), ("--cgroupns", "private"), ("--network", "none")):
+        assert arguments[arguments.index(option) + 1] == expected
+    assert "readonly" in arguments[arguments.index("--mount") + 1]
+
+
+def test_budget_probe_keeps_image_failure_output(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    layout = SimpleNamespace(tests_repo_root=source, output_root=tmp_path / "output")
+    monkeypatch.setattr(linux_containers, "git_output", lambda _repo, *args: "" if args[0] == "status" else "a" * 40)
+    monkeypatch.setattr(linux_containers, "_runtime_harness_source", lambda *_args: source)
+    def run(*args, **_kwargs):
+        if args[0] == "version":
+            return SimpleNamespace(stdout="amd64")
+        raise subprocess.CalledProcessError(1, "docker build", output="build output", stderr="build failure")
+    with pytest.raises(subprocess.CalledProcessError):
+        linux_containers.verify_resource_budget(layout, SimpleNamespace(run=run, path=lambda value: value.as_posix()))
+    path = next((layout.output_root / "reports/linux-containers/budget").glob("*/report.json"))
+    assert json.loads(path.read_text())["status"] == "failed"
+    assert (path.parent / "image.log").read_text() == "build outputbuild failure"
+
+
 def _linked_harness_fixture(tmp_path):
     """Build a real linked checkout whose host Git pointer cannot be mounted."""
     canonical = tmp_path / "workspace/repos/emulebb-build-tests"

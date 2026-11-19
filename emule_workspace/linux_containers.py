@@ -636,6 +636,70 @@ def _runtime_harness_source(layout, reports: Path) -> Path:
     return snapshot
 
 
+def verify_resource_budget(layout, docker: LinuxDocker) -> Path:
+    """@brief Verify the shared campaign's kernel observer in an owned capped container."""
+    source = layout.tests_repo_root.resolve()
+    if git_output(source, "status", "--porcelain").strip():
+        raise RuntimeError("Budget preflight requires clean selected Harness source")
+    revision = git_output(source, "rev-parse", "HEAD").strip()
+    reports = layout.output_root / "reports/linux-containers/budget" / uuid4().hex
+    reports.mkdir(parents=True)
+    snapshot = _runtime_harness_source(layout, reports)
+    report = {"schema": "emulebb.container-budget-preflight.v1", "status": "running",
+              "workloadQualified": False, "harnessRevision": revision, "container": {}}
+    path = reports / "report.json"
+    try:
+        architecture = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
+        if architecture not in {"amd64", "arm64"}:
+            raise RuntimeError("Budget preflight requires a supported native Linux architecture")
+        runtime = f"local/emulebb-rust-runtime:gnu-{architecture}"
+        context = Path(__file__).parent / "release_assets/rust_linux"
+        report.update(architecture=architecture, runtimeBase=RUNTIME_IMAGES["gnu"])
+        build = docker.run("build", "--platform", f"linux/{architecture}", "--build-arg",
+                           f"BASE_IMAGE={RUNTIME_IMAGES['gnu']}", "--file",
+                           docker.path(context) + "/Dockerfile.runtime", "--tag", runtime,
+                           docker.path(context), capture=True, timeout=600)
+        (reports / "image.log").write_text((build.stdout or "") + (build.stderr or ""), encoding="utf-8")
+        probe = "\n".join((
+            "import json",
+            "from emule_test_harness.rust_cgroup_budget import sample_budget, matches_target, finish_report",
+            "before = sample_budget()",
+            "if before is None or not matches_target(before): raise RuntimeError('Kernel budget differs from the required envelope')",
+            "report = {'status': 'passed', 'qualificationScope': {'containerLimitsEnforced': False}, 'acceptance': {'ok': True}}",
+            "finish_report(report, before)",
+            "if report['status'] != 'passed' or not report['qualificationScope']['containerLimitsEnforced']: raise RuntimeError('Kernel budget proof failed')",
+            "print(json.dumps(report))",
+        ))
+        raw = run_owned_container(docker, [
+            "--rm", "--platform", f"linux/{architecture}", "--user", "65534:65534",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "none",
+            "--memory", str(512 * 1024 * 1024), "--memory-swap", str(512 * 1024 * 1024),
+            "--cpus", "1", "--cgroupns", "private", "--workdir", "/harness",
+            "--mount", f"type=bind,source={docker.path(snapshot)},target=/harness,readonly",
+            runtime, "python3", "-B", "-c", probe,
+        ], reports / "budget.log", timeout=120, capture=True, ownership=report["container"])
+        value = json.loads(raw)
+        if (value.get("status") != "passed" or value.get("qualificationScope", {}).get("containerLimitsEnforced") is not True
+                or report["container"].get("absent") is not True):
+            raise RuntimeError("Container budget or owned cleanup was not proved")
+        if (git_output(source, "rev-parse", "HEAD").strip() != revision
+                or git_output(source, "status", "--porcelain").strip()):
+            raise RuntimeError("Harness source changed during the budget preflight")
+        report.update(status="passed", kernelResourceBudget=value["kernelResourceBudget"])
+    except Exception as error:
+        if isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            parts = (error.stdout, error.stderr)
+            (reports / "image.log").write_text("".join(
+                part.decode("utf-8", errors="replace") if isinstance(part, bytes) else part or ""
+                for part in parts), encoding="utf-8")
+        report.update(status="failed", error=type(error).__name__)
+        raise
+    finally:
+        path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"Container budget preflight passed (no scale workload): {path}")
+    return path
+
+
 def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, use_ci_image_mirrors: bool = False) -> Path:
     """@brief Run the shared two-peer lifecycle harness as a non-root container user."""
     from .release import _emulebb_rust_artifact_origin, _assert_emulebb_rust_hosted_artifact

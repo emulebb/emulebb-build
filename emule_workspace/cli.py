@@ -2504,12 +2504,16 @@ def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: P
 @_common_options
 @click.option("--wsl-distro", default="Ubuntu", show_default=True)
 @click.option("--setup-arm64", is_flag=True, help="Register pinned ARM64 QEMU in the Docker host.")
-def linux_containers(*, wsl_distro: str, setup_arm64: bool, workspace_options: WorkspaceOptions, layout) -> None:
+@click.option("--resource-budget", is_flag=True, help="Verify the scale campaign's 512 MiB/one-CPU kernel budget in an owned probe.")
+def linux_containers(*, wsl_distro: str, setup_arm64: bool, resource_budget: bool, workspace_options: WorkspaceOptions, layout) -> None:
     """Verify local WSL/Linux Docker and actual ARM64 execution."""
-    from .linux_containers import LinuxDocker
+    from .linux_containers import LinuxDocker, verify_resource_budget
 
     def verify(**kwargs: Any) -> None:
-        LinuxDocker(wsl_distro).preflight(kwargs["layout"].output_root, setup_arm64=setup_arm64)
+        with LinuxDocker(wsl_distro) as docker:
+            docker.preflight(kwargs["layout"].output_root, setup_arm64=setup_arm64)
+            if resource_budget:
+                verify_resource_budget(kwargs["layout"], docker)
 
     _locked("linux containers", verify)(workspace_options=workspace_options, layout=layout)
 
