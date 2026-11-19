@@ -2532,6 +2532,33 @@ def linux_containers(*, wsl_distro: str, setup_arm64: bool, resource_budget: boo
     _locked("linux containers", verify)(workspace_options=workspace_options, layout=layout)
 
 
+@test.command("rust-library-container")
+@_common_options
+@click.option("--archive", type=click.Path(path_type=Path), required=True)
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def test_rust_library_container(*, archive: Path, wsl_distro: str, workspace_options: WorkspaceOptions, layout) -> None:
+    """Run the full 100k library/history campaign within 512 MiB and one CPU."""
+    from .linux_containers import run_library_resource_campaign
+
+    _locked("test Rust library container", lambda **kwargs: run_library_resource_campaign(
+        kwargs["layout"], archive=archive, wsl_distro=wsl_distro))(
+            workspace_options=workspace_options, layout=layout)
+
+
+@main.command("cleanup-rust-library-container")
+@_common_options
+@click.option("--receipt", type=click.Path(path_type=Path), required=True)
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def cleanup_rust_library_container(*, receipt: Path, wsl_distro: str,
+                                  workspace_options: WorkspaceOptions, layout) -> None:
+    """Remove only the unused labelled native volume belonging to a campaign receipt."""
+    from .linux_containers import remove_library_campaign_volume
+
+    _locked("cleanup Rust library container", lambda **kwargs: remove_library_campaign_volume(
+        kwargs["layout"], receipt=receipt, wsl_distro=wsl_distro))(
+            workspace_options=workspace_options, layout=layout)
+
+
 @main.command("verify-linux-profile-scratch")
 @_common_options
 def verify_linux_profile_scratch(*, workspace_options: WorkspaceOptions, layout) -> None:

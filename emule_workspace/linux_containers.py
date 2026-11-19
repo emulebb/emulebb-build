@@ -610,9 +610,12 @@ def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: P
     return archive
 
 
-def _runtime_harness_source(layout, reports: Path) -> Path:
-    """Provide self-contained Git metadata when the runtime inspects a worktree."""
-    source = layout.tests_repo_root.resolve()
+def _runtime_source_snapshot(layout, reports: Path, *, source: Path | None = None,
+                             name: str = "harness") -> Path:
+    """Provide exact, independent Git metadata for a read-only runtime source."""
+    if name not in {"harness", "rust"}:
+        raise ValueError("Expected a named runtime source")
+    source = (source if source is not None else layout.tests_repo_root).resolve()
     if not (source / ".git").is_file():
         return source
     output = layout.output_root.resolve()
@@ -624,7 +627,7 @@ def _runtime_harness_source(layout, reports: Path) -> Path:
     branch = git_output(source, "branch", "--show-current").strip()
     if not branch:
         raise RuntimeError("Runtime harness worktree snapshot requires an assigned branch")
-    snapshot = output / "tmp" / "linux-harness-snapshots" / uuid4().hex / "source"
+    snapshot = output / "tmp" / "linux-source-snapshots" / uuid4().hex / "source"
     if not snapshot.resolve().is_relative_to(output) or snapshot.exists():
         raise RuntimeError("Invalid runtime harness snapshot destination")
     snapshot.parent.mkdir(parents=True)
@@ -643,8 +646,8 @@ def _runtime_harness_source(layout, reports: Path) -> Path:
             or git_output(source, "rev-parse", "HEAD").strip() != revision
             or git_output(source, "status", "--porcelain").strip()):
         raise RuntimeError("Runtime harness source changed or snapshot is not independent")
-    (reports / "harness-snapshot.json").write_text(json.dumps({
-        "schema": "emulebb.runtime-harness-snapshot/1", "sourcePath": str(source),
+    (reports / f"{name}-snapshot.json").write_text(json.dumps({
+        "schema": "emulebb.runtime-source-snapshot/1", "sourceKind": name, "sourcePath": str(source),
         "snapshotPath": str(snapshot), "revision": revision,
     }, indent=2) + "\n", encoding="utf-8")
     return snapshot
@@ -658,7 +661,7 @@ def verify_resource_budget(layout, docker: LinuxDocker) -> Path:
     revision = git_output(source, "rev-parse", "HEAD").strip()
     reports = layout.output_root / "reports/linux-containers/budget" / uuid4().hex
     reports.mkdir(parents=True)
-    snapshot = _runtime_harness_source(layout, reports)
+    snapshot = _runtime_source_snapshot(layout, reports)
     report = {"schema": "emulebb.container-budget-preflight.v1", "status": "running",
               "workloadQualified": False, "harnessRevision": revision, "container": {}}
     path = reports / "report.json"
@@ -743,7 +746,7 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
     reports = output / "reports/rust-linux" / f"{libc}-{architecture}" / uuid4().hex
     reports.mkdir(parents=True)
     (reports / "tmp").mkdir()
-    harness_source = _runtime_harness_source(layout, reports)
+    harness_source = _runtime_source_snapshot(layout, reports)
     with LinuxDocker() as docker:
         host_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
         hosted_environment = _hosted_linux_environment(architecture, host_arch)
@@ -792,6 +795,164 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
         }, indent=2) + "\n", encoding="utf-8")
     print(f"Non-root Linux {architecture}/{libc} lifecycle passed: {reports / 'package-smoke.json'}")
     return reports / "package-smoke.json"
+
+
+LIBRARY_CONTAINER_SCHEMA = "emulebb.rust-container-library-io.v1"
+
+
+def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "Ubuntu") -> Path:
+    """Run the existing 100k physical-library/history campaign in a measured native budget."""
+    output = layout.output_root.resolve()
+    archive = archive.resolve()
+    if not archive.is_relative_to(output) or not archive.is_file():
+        raise RuntimeError("Library campaign archive must be below the operator output root")
+    sources = {"rust": layout.emulebb_rust_repo_root, "harness": layout.tests_repo_root,
+               "tooling": layout.tooling_repo_root}
+    revisions = {}
+    for name, source in sources.items():
+        if git_output(source, "status", "--porcelain").strip():
+            raise RuntimeError(f"Library campaign requires clean {name} source")
+        revisions[name] = git_output(source, "rev-parse", "HEAD").strip()
+    manifest = json.loads(archive.with_name(archive.name + ".manifest.json").read_text(encoding="utf-8"))
+    version = manifest.get("version")
+    with archive.open("rb") as stream:
+        archive_sha = hashlib.file_digest(stream, "sha256").hexdigest()
+    if (manifest.get("schema") != "emulebb.rust.package/2" or not isinstance(version, str) or not version
+            or archive.name != f"emulebb-rust-v{version}-linux-amd64-gnu.tar.zst"
+            or manifest.get("asset") != archive.name or manifest.get("target") != "x86_64-unknown-linux-gnu"
+            or manifest.get("sha256") != archive_sha or manifest.get("sourceDirty") is not False
+            or manifest.get("source", {}).get("emulebbRust", {}).get("commit") != revisions["rust"]):
+        raise RuntimeError("Library campaign requires the exact current clean GNU/AMD64 archive")
+    run_id = uuid4().hex
+    reports = output / "reports/linux-containers/library" / run_id
+    reports.mkdir(parents=True)
+    (reports / "campaign").mkdir()
+    receipt = reports / "report.json"
+    volume = f"emulebb-library-{run_id}"
+    labels = {"emulebb.scope": "shared-library-io", "emulebb.run": run_id}
+    report = {"schema": LIBRARY_CONTAINER_SCHEMA, "status": "running", "runId": run_id,
+              "sourceRevisions": revisions, "archiveSha256": archive_sha,
+              "volume": {"name": volume, "labels": labels, "retained": False},
+              "container": {}, "initializationContainer": {}, "workloadQualified": False}
+    receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    try:
+        harness = _runtime_source_snapshot(layout, reports)
+        rust = _runtime_source_snapshot(layout, reports, source=layout.emulebb_rust_repo_root, name="rust")
+        with LinuxDocker(wsl_distro) as docker:
+            if docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip() != "amd64":
+                raise RuntimeError("Library resource qualification requires native GNU/AMD64 Docker")
+            context = Path(__file__).parent / "release_assets/rust_linux"
+            runtime = "local/emulebb-rust-runtime:gnu-amd64"
+            image = docker.run("build", "--platform", "linux/amd64", "--build-arg", f"BASE_IMAGE={RUNTIME_IMAGES['gnu']}",
+                               "--file", docker.path(context) + "/Dockerfile.runtime", "--tag", runtime,
+                               docker.path(context), capture=True, timeout=600)
+            (reports / "image.log").write_text((image.stdout or "") + (image.stderr or ""), encoding="utf-8")
+            report.update(runtimeBase=RUNTIME_IMAGES["gnu"], runtimeImageId=docker.run(
+                "image", "inspect", runtime, "--format", "{{.Id}}", capture=True, timeout=30).stdout.strip())
+            report["volume"]["retained"] = True
+            report["volume"]["created"] = False
+            receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            docker.run("volume", "create", *[argument for key, value in labels.items()
+                       for argument in ("--label", f"{key}={value}")], volume, capture=True, timeout=30)
+            report["volume"]["created"] = True
+            receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            relative = reports.relative_to(output).as_posix()
+            report_root = f"/output/{relative}"
+            native = report_root + "/native"
+            mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
+                      "--mount", f"type=volume,source={volume},target={native}"]
+            # Only this fresh labelled volume and this report directory are writable.
+            run_owned_container(docker, ["--rm", "--network", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN",
+                "--cap-add", "FOWNER", *mounts, runtime, "sh", "-ec",
+                'mkdir -p "$1/tmp"; chown 65534:65534 "$1" "$1/tmp"; chmod 0777 "$2" "$2/campaign"',
+                "initialize", native, report_root], reports / "initialize.log", timeout=60,
+                ownership=report["initializationContainer"])
+            mounts.extend(["--mount", f"type=bind,source={docker.path(harness)},target=/workspace/repos/emulebb-build-tests,readonly",
+                           "--mount", f"type=bind,source={docker.path(rust)},target=/workspace/repos/emulebb-rust,readonly",
+                           "--mount", f"type=bind,source={docker.path(layout.tooling_repo_root)},target=/workspace/repos/emulebb-tooling,readonly"])
+            command = ["--rm", "--platform", "linux/amd64", "--user", "65534:65534", "--cap-drop", "ALL",
+                       "--security-opt", "no-new-privileges", "--network", "none", "--cgroupns", "private",
+                       "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", *mounts,
+                       "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                       "--env", f"TMPDIR={native}/tmp", "--env", "GIT_CONFIG_COUNT=2",
+                       "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-rust",
+                       "--env", "GIT_CONFIG_KEY_1=safe.directory", "--env", "GIT_CONFIG_VALUE_1=/workspace/repos/emulebb-build-tests",
+                       "--workdir", "/workspace/repos/emulebb-build-tests", runtime, "python3", "-B",
+                       "scripts/rust-shared-library-io.py", "--rust-repo", "/workspace/repos/emulebb-rust",
+                       "container-run", "--archive", "/output/" + archive.relative_to(output).as_posix(),
+                       "--source-sha", revisions["rust"], "--version", version,
+                       "--native-root", native, "--report-root", report_root]
+            run_owned_container(docker, command, reports / "campaign.log", timeout=4 * 60 * 60,
+                                ownership=report["container"])
+            result = json.loads((reports / "container-result.json").read_text(encoding="utf-8"))
+            report["campaign"] = result
+            campaign_path = result.get("campaignReport")
+            if not isinstance(campaign_path, str) or not campaign_path.startswith(report_root + "/campaign/"):
+                raise RuntimeError("Library campaign report escaped its managed report directory")
+            campaign_host = (output / campaign_path.removeprefix("/output/")).resolve()
+            if not campaign_host.is_relative_to(reports / "campaign"):
+                raise RuntimeError("Library campaign report escaped its managed report directory")
+            campaign = json.loads(campaign_host.read_text(encoding="utf-8"))
+            scope = campaign.get("qualificationScope", {})
+            if (campaign.get("schema") != "emulebb.rust-shared-library-io.v8"
+                    or campaign.get("status") != "passed" or campaign.get("acceptance", {}).get("ok") is not True
+                    or any(scope.get(key) is not True for key in
+                           ("fullCampaign", "physicalLibrary", "initialPayloadHashing", "containerLimitsEnforced"))
+                    or scope.get("downloadHistory") != "metadata-only"):
+                raise RuntimeError("Full physical-library/history campaign acceptance was not proved")
+            if (result.get("status") != "passed" or result.get("sourceSha") != revisions["rust"]
+                    or result.get("archiveSha256") != archive_sha or result.get("acceptance", {}).get("ok") is not True
+                    or result.get("qualificationScope", {}).get("containerLimitsEnforced") is not True
+                    or report["container"].get("absent") is not True):
+                raise RuntimeError("Library workload, kernel budget or owned container cleanup was not proved")
+        for name, source in sources.items():
+            if (git_output(source, "rev-parse", "HEAD").strip() != revisions[name]
+                    or git_output(source, "status", "--porcelain").strip()):
+                raise RuntimeError(f"Library campaign {name} source changed during execution")
+        report.update(status="passed", workloadQualified=True)
+    except BaseException as error:
+        report.update(status="failed", error=type(error).__name__)
+        raise
+    finally:
+        receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"Constrained library campaign passed; native volume retained: {receipt}")
+    return receipt
+
+
+def remove_library_campaign_volume(layout, *, receipt: Path, wsl_distro: str = "Ubuntu") -> None:
+    """Remove only a receipt-matched, unused labelled native volume under the workspace lock."""
+    receipt = receipt.resolve()
+    boundary = layout.output_root.resolve() / "reports/linux-containers/library"
+    if not receipt.is_relative_to(boundary) or receipt.name != "report.json":
+        raise RuntimeError("Campaign volume cleanup requires its managed receipt")
+    report = json.loads(receipt.read_text(encoding="utf-8"))
+    run_id = report.get("runId")
+    if (report.get("schema") != LIBRARY_CONTAINER_SCHEMA or report.get("status") not in {"running", "passed", "failed"}
+            or not isinstance(run_id, str) or re.fullmatch(r"[0-9a-f]{32}", run_id) is None
+            or receipt.parent.name != run_id or report.get("volume", {}).get("retained") is not True):
+        raise RuntimeError("Campaign volume receipt is not an owned allocation")
+    volume = f"emulebb-library-{run_id}"
+    expected = {"emulebb.scope": "shared-library-io", "emulebb.run": run_id}
+    if report["volume"].get("name") != volume or report["volume"].get("labels") != expected:
+        raise RuntimeError("Campaign volume receipt identity differs")
+    with LinuxDocker(wsl_distro) as docker:
+        values = json.loads(docker.run("volume", "inspect", volume, capture=True, timeout=30).stdout)
+        if (len(values) != 1 or values[0].get("Name") != volume
+                or any(values[0].get("Labels", {}).get(key) != value for key, value in expected.items())):
+            raise RuntimeError("Native volume labels differ from the campaign receipt")
+        attached = docker.run("ps", "--all", "--filter", f"volume={volume}", "--format", "{{.ID}}",
+                              capture=True, timeout=30).stdout.strip()
+        if attached:
+            raise RuntimeError("Native campaign volume is still attached to a container")
+        docker.run("volume", "rm", volume, capture=True, timeout=60)
+        names = docker.run("volume", "ls", "--filter", f"name={volume}", "--format", "{{.Name}}",
+                           capture=True, timeout=30).stdout.splitlines()
+        if volume in names:
+            raise RuntimeError("Native campaign volume survived cleanup")
+    report["volume"]["retained"] = False
+    if report["status"] == "running":
+        report["status"] = "interrupted"
+    receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
 def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architecture: str,

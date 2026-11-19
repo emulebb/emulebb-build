@@ -22,7 +22,7 @@ def test_budget_probe_requires_kernel_proof_and_owned_cleanup(tmp_path, monkeypa
     source.mkdir(parents=True)
     layout = SimpleNamespace(tests_repo_root=source, output_root=tmp_path / "output")
     monkeypatch.setattr(linux_containers, "git_output", lambda _repo, *args: "" if args[0] == "status" else "a" * 40)
-    monkeypatch.setattr(linux_containers, "_runtime_harness_source", lambda *_args: source)
+    monkeypatch.setattr(linux_containers, "_runtime_source_snapshot", lambda *_args: source)
     commands = []
     def run(*args, **_kwargs):
         commands.append(args)
@@ -55,7 +55,7 @@ def test_budget_probe_keeps_image_failure_output(tmp_path, monkeypatch):
     source.mkdir()
     layout = SimpleNamespace(tests_repo_root=source, output_root=tmp_path / "output")
     monkeypatch.setattr(linux_containers, "git_output", lambda _repo, *args: "" if args[0] == "status" else "a" * 40)
-    monkeypatch.setattr(linux_containers, "_runtime_harness_source", lambda *_args: source)
+    monkeypatch.setattr(linux_containers, "_runtime_source_snapshot", lambda *_args: source)
     def run(*args, **_kwargs):
         if args[0] == "version":
             return SimpleNamespace(stdout="amd64")
@@ -91,19 +91,20 @@ def _linked_harness_fixture(tmp_path):
     return layout, reports, git
 
 
-def test_runtime_harness_worktree_gets_independent_git_metadata_and_exact_revision(tmp_path):
+@pytest.mark.parametrize("name", ["harness", "rust"])
+def test_runtime_source_worktree_gets_independent_git_metadata_and_exact_revision(tmp_path, name):
     layout, reports, git = _linked_harness_fixture(tmp_path)
     original_pointer = (layout.tests_repo_root / ".git").read_text()
     expected = git(layout.tests_repo_root, "rev-parse", "HEAD")
-    snapshot = linux_containers._runtime_harness_source(layout, reports)
-    assert snapshot.is_relative_to(layout.output_root / "tmp/linux-harness-snapshots")
+    snapshot = linux_containers._runtime_source_snapshot(layout, reports, source=layout.tests_repo_root, name=name)
+    assert snapshot.is_relative_to(layout.output_root / "tmp/linux-source-snapshots")
     assert (snapshot / ".git").is_dir()
     assert not (snapshot / ".git/objects/info/alternates").exists()
     assert git(snapshot, "rev-parse", "HEAD") == expected
     assert git(snapshot, "status", "--porcelain") == ""
     assert (snapshot / "sample.txt").read_text() == "sample harness\n"
     assert (layout.tests_repo_root / ".git").read_text() == original_pointer
-    receipt = json.loads((reports / "harness-snapshot.json").read_text())
+    receipt = json.loads((reports / f"{name}-snapshot.json").read_text())
     assert receipt["revision"] == expected
     assert receipt["sourcePath"] == str(layout.tests_repo_root.resolve())
 
@@ -112,15 +113,15 @@ def test_runtime_harness_snapshot_refuses_dirty_selected_source(tmp_path):
     layout, reports, _git = _linked_harness_fixture(tmp_path)
     (layout.tests_repo_root / "sample.txt").write_text("uncommitted changes\n")
     with pytest.raises(RuntimeError, match="clean selected source"):
-        linux_containers._runtime_harness_source(layout, reports)
-    assert not (layout.output_root / "tmp/linux-harness-snapshots").exists()
+        linux_containers._runtime_source_snapshot(layout, reports)
+    assert not (layout.output_root / "tmp/linux-source-snapshots").exists()
 
 
 def test_runtime_harness_canonical_clone_keeps_existing_mount_path(tmp_path):
     source = tmp_path / "canonical"
     (source / ".git").mkdir(parents=True)
     layout = SimpleNamespace(tests_repo_root=source)
-    assert linux_containers._runtime_harness_source(layout, tmp_path / "reports") == source.resolve()
+    assert linux_containers._runtime_source_snapshot(layout, tmp_path / "reports") == source.resolve()
 
 
 @pytest.fixture
@@ -1126,3 +1127,124 @@ def test_unverifiable_startup_teardown_is_failed_even_after_proxy_reaping(owned_
     assert children[0].stdin.closed and children[0].poll() is not None
     assert stopped == [] and session.receipt["status"] == "cleanup-failed"
     assert "identity is incomplete" in session.receipt["cleanupError"]
+
+
+@pytest.fixture
+def library_container_inputs(tmp_path, monkeypatch):
+    import hashlib
+    output = tmp_path / "output"
+    output.mkdir()
+    roots = [tmp_path / name for name in ("rust", "harness", "tooling")]
+    for root in roots:
+        root.mkdir()
+    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=roots[0],
+                             tests_repo_root=roots[1], tooling_repo_root=roots[2])
+    archive = output / "emulebb-rust-v0.1.0-beta.2-linux-amd64-gnu.tar.zst"
+    archive.write_bytes(b"synthetic archive")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    archive.with_name(archive.name + ".manifest.json").write_text(json.dumps({
+        "schema": "emulebb.rust.package/2", "version": "0.1.0-beta.2", "asset": archive.name,
+        "sha256": digest, "sourceDirty": False, "target": "x86_64-unknown-linux-gnu",
+        "source": {"emulebbRust": {"commit": "a" * 40}},
+    }))
+    monkeypatch.setattr(linux_containers, "git_output", lambda repo, *args: "" if args[0] == "status" else "a" * 40)
+    monkeypatch.setattr(linux_containers, "_runtime_source_snapshot", lambda selected, reports, **kwargs:
+                        kwargs.get("source", selected.tests_repo_root))
+    return layout, archive, digest
+
+
+@pytest.mark.parametrize("fault", ["none", "kernel", "cleanup", "partial-campaign", "source-drift"])
+def test_library_campaign_requires_full_workload_budget_cleanup_and_frozen_source(library_container_inputs, monkeypatch, fault):
+    layout, archive, digest = library_container_inputs
+    commands = []
+    revisions = 0
+    def git(repo, *arguments):
+        nonlocal revisions
+        if arguments[0] == "status": return ""
+        if repo == layout.emulebb_rust_repo_root:
+            revisions += 1
+            if revisions > 1 and fault == "source-drift": return "b" * 40
+        return "a" * 40
+    monkeypatch.setattr(linux_containers, "git_output", git)
+    class Docker:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def path(self, value): return value.as_posix()
+        def run(self, *args, **kwargs):
+            commands.append(args)
+            return SimpleNamespace(stdout="amd64" if args[0] == "version" else "", stderr="")
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_args: Docker())
+    def owned(_docker, arguments, _log, **kwargs):
+        commands.append(arguments)
+        initialization = "initialize" in arguments
+        kwargs["ownership"].update(absent=initialization or fault != "cleanup")
+        if initialization: return ""
+        root = arguments[arguments.index("--report-root") + 1]
+        host = layout.output_root / root.removeprefix("/output/")
+        campaign = host / "campaign/full.json"
+        campaign.write_text(json.dumps({"schema": "emulebb.rust-shared-library-io.v8", "status": "passed",
+            "acceptance": {"ok": True}, "qualificationScope": {"fullCampaign": fault != "partial-campaign",
+                "physicalLibrary": True, "initialPayloadHashing": True, "containerLimitsEnforced": True,
+                "downloadHistory": "metadata-only"}}))
+        (host / "container-result.json").write_text(json.dumps({"status": "passed", "sourceSha": "a" * 40,
+            "archiveSha256": digest, "acceptance": {"ok": True}, "campaignReport": root + "/campaign/full.json",
+            "qualificationScope": {"containerLimitsEnforced": fault != "kernel"}}))
+        return ""
+    monkeypatch.setattr(linux_containers, "run_owned_container", owned)
+    if fault == "none":
+        receipt = linux_containers.run_library_resource_campaign(layout, archive=archive)
+    else:
+        with pytest.raises(RuntimeError, match="not proved|changed during"):
+            linux_containers.run_library_resource_campaign(layout, archive=archive)
+        receipt = next((layout.output_root / "reports/linux-containers/library").glob("*/report.json"))
+    result = json.loads(receipt.read_text())
+    assert result["workloadQualified"] is (fault == "none")
+    assert result["volume"]["retained"] is True
+    assert result["status"] == ("passed" if fault == "none" else "failed")
+    arguments = next(args for args in commands if "container-run" in args)
+    for option, value in (("--memory", "536870912"), ("--memory-swap", "536870912"),
+                          ("--cpus", "1"), ("--user", "65534:65534"), ("--network", "none"), ("--cgroupns", "private")):
+        assert arguments[arguments.index(option) + 1] == value
+    assert "--tmpfs" not in arguments
+    assert any("type=volume" in value for value in arguments)
+    assert sum("readonly" in value for value in arguments) == 3
+
+
+def test_library_campaign_rejects_changed_archive_before_container_allocation(library_container_inputs, monkeypatch):
+    layout, archive, _digest = library_container_inputs
+    archive.write_bytes(b"substituted archive")
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_args: pytest.fail("must reject before allocation"))
+    with pytest.raises(RuntimeError, match="exact current clean"):
+        linux_containers.run_library_resource_campaign(layout, archive=archive)
+
+
+@pytest.mark.parametrize("fault", ["none", "foreign-label", "attached"])
+def test_native_campaign_cleanup_requires_receipt_labels_and_unused_volume(tmp_path, monkeypatch, fault):
+    run_id = "a" * 32
+    output = tmp_path / "output"
+    receipt = output / "reports/linux-containers/library" / run_id / "report.json"
+    receipt.parent.mkdir(parents=True)
+    volume = "emulebb-library-" + run_id
+    labels = {"emulebb.scope": "shared-library-io", "emulebb.run": run_id}
+    receipt.write_text(json.dumps({"schema": linux_containers.LIBRARY_CONTAINER_SCHEMA, "status": "running",
+        "runId": run_id, "volume": {"name": volume, "labels": labels, "retained": True}}))
+    calls = []
+    class Docker:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def run(self, *args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("volume", "inspect"):
+                actual = labels if fault != "foreign-label" else {}
+                value = json.dumps([{"Name": volume, "Labels": actual}])
+            elif args[0] == "ps": value = "owned-active" if fault == "attached" else ""
+            else: value = ""
+            return SimpleNamespace(stdout=value)
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_args: Docker())
+    if fault == "none":
+        linux_containers.remove_library_campaign_volume(SimpleNamespace(output_root=output), receipt=receipt)
+    else:
+        with pytest.raises(RuntimeError, match="labels differ|still attached"):
+            linux_containers.remove_library_campaign_volume(SimpleNamespace(output_root=output), receipt=receipt)
+    assert any(args[:2] == ("volume", "rm") for args in calls) is (fault == "none")
+    assert json.loads(receipt.read_text())["volume"]["retained"] is (fault != "none")
