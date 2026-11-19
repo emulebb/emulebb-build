@@ -1267,6 +1267,11 @@ def test_library_volume_authority_is_checked_before_initialization(library_conta
     def reject(*args):
         raise RuntimeError("foreign volume authority")
     monkeypatch.setattr(linux_containers, "_inspect_library_volume", reject)
-    monkeypatch.setattr(linux_containers, "run_owned_container", lambda *a, **k: pytest.fail("must verify before initialization"))
+    def preflight_only(_docker, arguments, _log, **kwargs):
+        if "--help" not in arguments:
+            pytest.fail("must verify before initialization")
+        kwargs["ownership"]["absent"] = True
+        return ""
+    monkeypatch.setattr(linux_containers, "run_owned_container", preflight_only)
     with pytest.raises(RuntimeError, match="foreign volume authority"):
         linux_containers.run_library_resource_campaign(layout, archive=archive)

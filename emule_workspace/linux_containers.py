@@ -842,7 +842,7 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
     report = {"schema": LIBRARY_CONTAINER_SCHEMA, "status": "running", "runId": run_id,
               "sourceRevisions": revisions, "archiveSha256": archive_sha,
               "volume": {"name": volume, "labels": labels, "retained": False},
-              "container": {}, "initializationContainer": {}, "workloadQualified": False}
+              "container": {}, "initializationContainer": {}, "inputCheckContainer": {}, "workloadQualified": False}
     receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     try:
         harness = _runtime_source_snapshot(layout, reports)
@@ -858,6 +858,17 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
             (reports / "image.log").write_text((image.stdout or "") + (image.stderr or ""), encoding="utf-8")
             report.update(runtimeBase=RUNTIME_IMAGES["gnu"], runtimeImageId=docker.run(
                 "image", "inspect", runtime, "--format", "{{.Id}}", capture=True, timeout=30).stdout.strip())
+            source_mounts = [
+                "--mount", f"type=bind,source={docker.path(harness)},target=/workspace/repos/emulebb-build-tests,readonly",
+                "--mount", f"type=bind,source={docker.path(rust)},target=/workspace/repos/emulebb-rust,readonly",
+                "--mount", f"type=bind,source={docker.path(layout.tooling_repo_root)},target=/workspace/repos/emulebb-tooling,readonly",
+            ]
+            # Validate real runtime imports before allocating the 10 GiB fixture volume.
+            run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", "65534:65534",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "none", *source_mounts,
+                "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--workdir", "/workspace/repos/emulebb-build-tests",
+                runtime, "python3", "-B", "scripts/rust-shared-library-io.py", "--help"],
+                reports / "runtime-inputs.log", timeout=120, ownership=report["inputCheckContainer"])
             report["volume"]["retained"] = True
             report["volume"]["created"] = False
             receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -883,9 +894,7 @@ def run_library_resource_campaign(layout, *, archive: Path, wsl_distro: str = "U
                 "--cap-add", "FOWNER", *mounts, runtime, "python3", "-B", "-c", initialization,
                 native, report_root], reports / "initialize.log", timeout=60,
                 ownership=report["initializationContainer"])
-            mounts.extend(["--mount", f"type=bind,source={docker.path(harness)},target=/workspace/repos/emulebb-build-tests,readonly",
-                           "--mount", f"type=bind,source={docker.path(rust)},target=/workspace/repos/emulebb-rust,readonly",
-                           "--mount", f"type=bind,source={docker.path(layout.tooling_repo_root)},target=/workspace/repos/emulebb-tooling,readonly"])
+            mounts.extend(source_mounts)
             command = ["--rm", "--platform", "linux/amd64", "--user", "65534:65534", "--cap-drop", "ALL",
                        "--security-opt", "no-new-privileges", "--network", "none", "--cgroupns", "private",
                        "--memory", "536870912", "--memory-swap", "536870912", "--cpus", "1", *mounts,
