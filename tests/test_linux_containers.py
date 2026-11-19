@@ -1218,6 +1218,10 @@ def test_library_campaign_requires_full_workload_budget_cleanup_and_frozen_sourc
     assert result["volume"]["retained"] is True
     assert result["status"] == ("passed" if fault == "none" else "failed")
     arguments = next(args for args in commands if "container-run" in args)
+    preflight = next(args for args in commands if "--help" in args)
+    for command in (preflight, arguments):
+        assert command.index(linux_containers.RUNTIME_OPENAPI_ENV) < command.index("python3")
+        assert "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output" in command
     for option, value in (("--memory", str(memory_bytes)), ("--memory-swap", str(memory_bytes)),
                           ("--library-files", str(library_files)),
                           ("--cpus", "1"), ("--user", "65534:65534"), ("--network", "none"), ("--cgroupns", "private")):

@@ -894,7 +894,8 @@ def run_library_resource_campaign(layout, *, archive: Path, library_files: int =
             # Validate real runtime imports before allocating the tier's fixture volume.
             run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", "65534:65534",
                 "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "none", *source_mounts,
-                "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--workdir", "/workspace/repos/emulebb-build-tests",
+                "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                "--env", RUNTIME_OPENAPI_ENV, "--workdir", "/workspace/repos/emulebb-build-tests",
                 runtime, "python3", "-B", "scripts/rust-shared-library-io.py", "--help"],
                 reports / "runtime-inputs.log", timeout=120, ownership=report["inputCheckContainer"])
             report["volume"]["retained"] = True
