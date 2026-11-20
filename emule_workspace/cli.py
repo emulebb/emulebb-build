@@ -2144,7 +2144,7 @@ def test_rust_release_package(*, release_dir, release_version, target_os, linux_
 @_common_options
 @click.option("--package", default=None, help="Limit to one Rust workspace package.")
 @click.option("--refresh-workspace-lock", is_flag=True,
-              help="Authoring only: refresh workspace lock entries offline before locked tests.")
+              help="Authoring only: resolve workspace lock changes, including new dependencies, before locked tests.")
 def test_rust_unit(*, package: str | None, refresh_workspace_lock: bool,
                    workspace_options: WorkspaceOptions, layout) -> None:
     """Run Rust tests through workspace orchestration."""

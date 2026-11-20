@@ -1212,11 +1212,11 @@ def invoke_rust_unit_tests(
         # only this child's temporary files; operator environment remains intact.
         environment.update(TEMP=str(scratch), TMP=str(scratch), TMPDIR=str(scratch))
         if refresh_workspace_lock:
-            # WHY: adding a workspace crate needs a lockfile update, but ordinary
-            # CI must never rewrite it. Cargo's workspace-only offline update
-            # retains unrelated locked dependencies and never downloads new input.
+            # WHY: explicit authoring may add workspace crates or registry
+            # dependencies. Workspace-only resolution retains unrelated pins;
+            # normal CI still uses the unchanged locked test command.
             run_native(
-                ["cargo", "update", "--workspace", "--offline"],
+                ["cargo", "update", "--workspace"],
                 label="eMuleBB Rust workspace lock refresh",
                 cwd=layout.emulebb_rust_repo_root,
                 env=environment,

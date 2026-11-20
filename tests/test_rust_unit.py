@@ -92,7 +92,7 @@ def test_explicit_author_refresh_stays_offline_and_cannot_mask_a_failure(tmp_pat
     else:
         test_runs.invoke_rust_unit_tests(layout, refresh_workspace_lock=True)
         assert calls[1] == ["cargo", "test", "--locked", "--workspace"]
-    assert calls[0] == ["cargo", "update", "--workspace", "--offline"]
+    assert calls[0] == ["cargo", "update", "--workspace"]
     assert not executable.exists()
     assert all(item["TEMP"] == item["TMP"] == item["TMPDIR"] for item in child_environments)
     assert len({item["TEMP"] for item in child_environments}) == 1
