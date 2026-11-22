@@ -22,10 +22,12 @@ def _layout(tmp_path: Path) -> SimpleNamespace:
 
 
 @pytest.mark.parametrize("fail", (False, True))
+@pytest.mark.parametrize("diagnostic", (False, True))
 def test_rust_unit_prunes_runnable_cargo_artifacts_even_after_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fail: bool,
+    diagnostic: bool,
 ) -> None:
     layout = _layout(tmp_path)
     executable = layout.output_rust_target_root / "debug" / "emulebb-rust.exe"
@@ -54,13 +56,17 @@ def test_rust_unit_prunes_runnable_cargo_artifacts_even_after_failure(
     monkeypatch.setattr(test_runs, "ensure_rust_source_cache", lambda selected, **kwargs: guarded.append((selected, kwargs)))
     monkeypatch.setattr(test_runs, "_workspace_env", lambda _layout: protected)
 
+    options = {"test_filter": "tests::download_endgame", "nocapture": True} if diagnostic else {}
     if fail:
         with pytest.raises(RuntimeError, match="test failure"):
-            test_runs.invoke_rust_unit_tests(layout, package="emulebb-core")
+            test_runs.invoke_rust_unit_tests(layout, package="emulebb-core", **options)
     else:
-        test_runs.invoke_rust_unit_tests(layout, package="emulebb-core")
+        test_runs.invoke_rust_unit_tests(layout, package="emulebb-core", **options)
 
-    assert calls == [["cargo", "test", "--locked", "-p", "emulebb-core"]]
+    expected = ["cargo", "test", "--locked", "-p", "emulebb-core"]
+    if diagnostic:
+        expected.extend(["--", "--nocapture", "--", "tests::download_endgame"])
+    assert calls == [expected]
     assert guarded == [(layout, {"prefetch": True})]
     assert not executable.exists()
     assert len(scratch_paths) == 1 and scratch_paths[0].is_dir()

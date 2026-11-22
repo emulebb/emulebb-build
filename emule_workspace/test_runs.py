@@ -1193,6 +1193,7 @@ def invoke_rust_release_package(
 
 def invoke_rust_unit_tests(
     layout: WorkspaceLayout, *, package: str | None = None, refresh_workspace_lock: bool = False,
+    test_filter: str | None = None, nocapture: bool = False,
 ) -> None:
     """Run Rust unit/integration tests against the inherited canonical target dir."""
 
@@ -1201,6 +1202,13 @@ def invoke_rust_unit_tests(
         args.extend(["-p", package])
     else:
         args.append("--workspace")
+    if test_filter is not None or nocapture:
+        args.append("--")
+        if nocapture:
+            args.append("--nocapture")
+        if test_filter is not None:
+            # Keep the filter literal and outside Cargo/libtest option parsing.
+            args.extend(["--", test_filter])
     try:
         from uuid import uuid4
         from .workstreams import _safe_path
