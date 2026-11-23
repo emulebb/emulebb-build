@@ -17,15 +17,14 @@ import pytest
 from emule_workspace import android_inputs, config, python_runtime
 from emule_workspace import android_toolchain as android
 from emule_workspace.ci_linux_images import PYTHON_IMAGE
-from emule_workspace.ubuntu_ci import ARCHIVE_MIRRORS
 
 
 @pytest.mark.parametrize(("failure", "expected", "exit_code"), [
-    ("none", "official:update official:download official:install", 0),
-    ("update", "official:update mirror:update mirror:download mirror:install", 0),
-    ("download", "official:update official:download mirror:update mirror:download mirror:install", 0),
-    ("install", "official:update official:download official:install", 1),
-    ("both-downloads", "official:update official:download mirror:update mirror:download", 1),
+    ("none", "azure:update azure:download azure:install", 0),
+    ("update", "azure:update official:update official:download official:install", 0),
+    ("download", "azure:update azure:download official:update official:download official:install", 0),
+    ("install", "azure:update azure:download azure:install", 1),
+    ("both-downloads", "azure:update azure:download official:update official:download", 1),
 ])
 def test_emulator_image_bounds_apt_recovery_before_install(tmp_path, failure, expected, exit_code):
     shell = shutil.which("sh")
@@ -33,7 +32,7 @@ def test_emulator_image_bounds_apt_recovery_before_install(tmp_path, failure, ex
         shell = subprocess.check_output(["git", "var", "GIT_SHELL_PATH"], text=True).strip()
     recipe = (Path(android.__file__).parent / "release_assets/android/Dockerfile.emulator").read_text(encoding="utf-8")
     assert f"FROM {PYTHON_IMAGE} AS apt-ca" in recipe
-    assert f"mirror={ARCHIVE_MIRRORS['amd64']}" in recipe
+    assert "mirror=https://azure.archive.ubuntu.com/ubuntu" in recipe
     commands = recipe.split("<<'APT'\n", 1)[1].split("\nAPT\n", 1)[0]
     assert commands.count("apt-get") == 1
     assert 'timeout --kill-after=3s "$limit" apt-get' in commands
@@ -56,12 +55,12 @@ timeout() {
     done
     grep -q 'signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg' "$source_file" || return 99
     case "$(cat "$source_file")" in
+        *azure.archive.ubuntu.com*) origin=azure ;;
         *archive.ubuntu.com*) origin=official ;;
-        *mirrors.edge.kernel.org*) origin=mirror ;;
         *) return 99 ;;
     esac
     printf '%s:%s\n' "$origin" "$operation"
-    [ "$origin:$operation" != "official:$fixture_failure" ] &&
+    [ "$origin:$operation" != "azure:$fixture_failure" ] &&
         [ "$operation:$fixture_failure" != "download:both-downloads" ]
 }
 """

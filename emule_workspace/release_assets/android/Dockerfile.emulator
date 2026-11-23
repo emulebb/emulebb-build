@@ -32,11 +32,11 @@ fetch_packages() {
 
 set -- python3 unzip ca-certificates libasound2t64 libdbus-1-3 libegl1 libgl1 libnss3 \
     libpulse0 libxcb1 libx11-6 libxkbcommon0
-# WHY: Slow archive downloads exhausted the image build budget. Retry the fetch
-# against the reviewed signed mirror before the single package installation.
-mirror=https://mirrors.edge.kernel.org/ubuntu
-fetch_packages https://archive.ubuntu.com/ubuntu https://security.ubuntu.com/ubuntu 180s "$@" ||
-    fetch_packages "$mirror" "$mirror" 420s "$@"
+# WHY: Prefer Ubuntu's Azure archive for hosted runners. Keep one bounded
+# alternate fetch before installing the verified packages once.
+mirror=https://azure.archive.ubuntu.com/ubuntu
+fetch_packages "$mirror" "$mirror" 180s "$@" ||
+    fetch_packages https://archive.ubuntu.com/ubuntu https://security.ubuntu.com/ubuntu 420s "$@"
 apt 180s install --no-download --no-install-recommends -y "$@"
 APT
 COPY emule_workspace/__init__.py emule_workspace/python_runtime.py \
