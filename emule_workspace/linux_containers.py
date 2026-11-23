@@ -141,6 +141,13 @@ def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int
                 stream.write(result.stdout)
             return result.stdout if capture else ""
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        failure = {"error": type(exc).__name__}
+        if isinstance(exc, subprocess.TimeoutExpired):
+            failure["timeoutSeconds"] = exc.timeout
+        else:
+            failure["exitCode"] = exc.returncode
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write("\ncontainerFailure: " + json.dumps(failure, sort_keys=True) + "\n")
         raise RuntimeError(f"Linux container check failed; inspect {log}") from exc
     finally:
         # WHY: terminating wsl.exe does not reliably terminate its Docker job.
@@ -787,7 +794,9 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
                    "--release-version", version, "--target-os", "linux", "--platform", "x64" if architecture == "amd64" else "ARM64",
                    "--linux-libc", libc, "--expected-source-sha", source_sha,
                    "--rust-repo", "/workspace/repos/emulebb-rust", "--report-path", f"/output/{relative}/package-smoke.json"]
-        run_owned_container(docker, command, reports / "runtime.log", timeout=600)
+        # WHY: the paced transfer proof alone permits 1,144 seconds. Let its
+        # bounded guard report failure before the outer container cleanup guard.
+        run_owned_container(docker, command, reports / "runtime.log", timeout=30 * 60)
         if (git_output(layout.tooling_repo_root, "rev-parse", "HEAD").strip() != tooling_revision
                 or git_output(layout.tooling_repo_root, "status", "--porcelain").strip()):
             raise RuntimeError("Selected OpenAPI contract changed during runtime validation")

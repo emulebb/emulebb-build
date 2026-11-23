@@ -347,7 +347,10 @@ def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypat
     launches = []
     monkeypatch.setattr(linux_containers, "LinuxDocker", Docker)
     monkeypatch.setattr(linux_containers.subprocess, "check_output", lambda *args, **kwargs: host_uid)
-    monkeypatch.setattr(linux_containers, "run_owned_container", lambda docker, arguments, *args, **kwargs: launches.append(arguments))
+    def launch(docker, arguments, *args, **kwargs):
+        assert kwargs["timeout"] >= 20 * 60  # The paced proof's inner guard exceeds 19 minutes.
+        launches.append(arguments)
+    monkeypatch.setattr(linux_containers, "run_owned_container", launch)
     if producer_run != "123":
         with pytest.raises(RuntimeError, match="this GitHub run and workflow"):
             linux_containers.smoke_linux_archive(layout, archive=archive, libc="musl", architecture="amd64", use_ci_image_mirrors=mirrors)
@@ -588,7 +591,14 @@ def test_owned_container_removes_only_its_invocation_and_retains_log(tmp_path, m
     assert calls[-2][-3:] == ["rm", "--force", name]
     assert f"name={name}" in calls[-1]
     assert ownership == {"name": name, "absent": outcome != "remaining"}
-    assert path.read_text() == "retained container output\n"
+    retained = path.read_text()
+    assert retained.startswith("retained container output\n")
+    if outcome in {"failed", "timeout"}:
+        failure = json.loads(retained.split("containerFailure: ", 1)[1])
+        assert failure == ({"error": "TimeoutExpired", "timeoutSeconds": 1} if outcome == "timeout" else
+                           {"error": "CalledProcessError", "exitCode": 3})
+    else:
+        assert retained == "retained container output\n"
 
 
 @pytest.mark.parametrize("counts", [(0, 0, 0), (1, 0, 0), (2, 0, 0), (1, 1, 0), (1, 0, 1)])
