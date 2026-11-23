@@ -89,8 +89,12 @@ def _is_workspace_builder(root: Path) -> bool:
 
 
 def environment_root(output: Path) -> Path:
-    """Keep separate environments for native host architectures and Python pins."""
-    return output / "tools/python/workspace" / host_target() / python_version()
+    """Isolate reviewed dependency inputs as well as host and interpreter pins."""
+    # WHY: a workstream lock update must not replace the canonical hook runtime.
+    fingerprint = hashlib.sha256(
+        json.dumps(environment_inputs(), sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    return output / "tools/python/workspace" / host_target() / python_version() / fingerprint
 
 
 def environment_python(environment: Path) -> Path:

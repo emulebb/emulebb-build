@@ -74,6 +74,7 @@ from .test_runs import (
     invoke_fake_kad_trust_soak,
     invoke_rust_network_proof,
     invoke_rust_rest_openapi,
+    invoke_rust_shared_library_io,
     invoke_rust_release_package,
     invoke_rust_unit_tests,
     invoke_rust_webui_tests,
@@ -2077,6 +2078,37 @@ def test_public_presence(*, repository: str, workspace_options: WorkspaceOptions
     ))(workspace_options=workspace_options, layout=layout)
 
 
+@test.command("rust-shared-library-io")
+@click.argument("action", type=click.Choice(["describe", "prepare", "run"]))
+@click.option("--allow-non-ssd", is_flag=True, help="Explicitly admit a non-SSD synthetic fixture target.")
+@click.option("--timeout-seconds", type=click.FloatRange(min=0, min_open=True), default=7200.0)
+@click.option("--poll-seconds", type=click.FloatRange(min=0, min_open=True), default=2.0)
+@click.option("--watcher-replay-from", help="Owned verified baseline run ID; excludes initial hashing qualification.")
+@_common_options
+def test_rust_shared_library_io(*, action, allow_non_ssd, timeout_seconds, poll_seconds, watcher_replay_from,
+                                workspace_options, layout) -> None:
+    """Describe, prepare or run the existing owned synthetic 100k library campaign."""
+    _locked("test rust-shared-library-io", lambda **kwargs: invoke_rust_shared_library_io(
+        kwargs["layout"], action=action, allow_non_ssd=allow_non_ssd,
+        timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+        watcher_replay_from=watcher_replay_from,
+    ))(workspace_options=workspace_options, layout=layout)
+
+
+@test.command("rust-linux-quality-diagnostics")
+@_common_options
+@click.option("--libc", type=click.Choice(["gnu", "musl"]), required=True)
+@click.option("--architecture", type=click.Choice(["amd64", "arm64"]), required=True)
+def test_rust_linux_quality_diagnostics(*, libc: str, architecture: str,
+                                       workspace_options: WorkspaceOptions, layout) -> None:
+    """Collect Linux Clippy diagnostics; this does not pass the package gate."""
+    from .linux_containers import collect_linux_quality_diagnostics
+
+    _locked("collect Linux quality diagnostics", lambda **kwargs: collect_linux_quality_diagnostics(
+        kwargs["layout"], libc=libc, architecture=architecture,
+    ))(workspace_options=workspace_options, layout=layout)
+
+
 @test.command("rust-rest-openapi")
 @_common_options
 def test_rust_rest_openapi(*, workspace_options: WorkspaceOptions, layout) -> None:
@@ -2111,9 +2143,13 @@ def test_rust_release_package(*, release_dir, release_version, target_os, linux_
 @test.command("rust-unit")
 @_common_options
 @click.option("--package", default=None, help="Limit to one Rust workspace package.")
+@click.option("--filter", "test_filter", default=None,
+              help="Substring filter for diagnostic runs; omit for full validation.")
+@click.option("--nocapture", is_flag=True, help="Show Rust test output during diagnostics.")
 @click.option("--refresh-workspace-lock", is_flag=True,
-              help="Authoring only: refresh workspace lock entries offline before locked tests.")
+              help="Authoring only: resolve workspace lock changes, including new dependencies, before locked tests.")
 def test_rust_unit(*, package: str | None, refresh_workspace_lock: bool,
+                   test_filter: str | None, nocapture: bool,
                    workspace_options: WorkspaceOptions, layout) -> None:
     """Run Rust tests through workspace orchestration."""
 
@@ -2121,6 +2157,7 @@ def test_rust_unit(*, package: str | None, refresh_workspace_lock: bool,
         "test rust-unit",
         lambda **kwargs: invoke_rust_unit_tests(
             kwargs["layout"], package=package, refresh_workspace_lock=refresh_workspace_lock,
+            test_filter=test_filter, nocapture=nocapture,
         ),
     )(workspace_options=workspace_options, layout=layout)
 
@@ -2486,14 +2523,61 @@ def package_emulebb_rust_linux_ci(*, libc: str, architecture: str, webui_dist: P
 @_common_options
 @click.option("--wsl-distro", default="Ubuntu", show_default=True)
 @click.option("--setup-arm64", is_flag=True, help="Register pinned ARM64 QEMU in the Docker host.")
-def linux_containers(*, wsl_distro: str, setup_arm64: bool, workspace_options: WorkspaceOptions, layout) -> None:
+@click.option("--resource-budget", is_flag=True, help="Verify the scale campaign's 512 MiB/one-CPU kernel budget in an owned probe.")
+def linux_containers(*, wsl_distro: str, setup_arm64: bool, resource_budget: bool, workspace_options: WorkspaceOptions, layout) -> None:
     """Verify local WSL/Linux Docker and actual ARM64 execution."""
-    from .linux_containers import LinuxDocker
+    from .linux_containers import LinuxDocker, verify_resource_budget
 
     def verify(**kwargs: Any) -> None:
-        LinuxDocker(wsl_distro).preflight(kwargs["layout"].output_root, setup_arm64=setup_arm64)
+        with LinuxDocker(wsl_distro) as docker:
+            docker.preflight(kwargs["layout"].output_root, setup_arm64=setup_arm64)
+            if resource_budget:
+                verify_resource_budget(kwargs["layout"], docker)
 
     _locked("linux containers", verify)(workspace_options=workspace_options, layout=layout)
+
+
+@test.command("rust-library-container")
+@_common_options
+@click.option("--archive", type=click.Path(path_type=Path), required=True)
+@click.option("--library-files", type=click.Choice(["50000", "100000"]), default="100000", show_default=True)
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def test_rust_library_container(*, archive: Path, library_files: str, wsl_distro: str,
+                               workspace_options: WorkspaceOptions, layout) -> None:
+    """Qualify 50k files/512 MiB or 100k files/1 GiB, each with 100k retained jobs."""
+    from .linux_containers import run_library_resource_campaign
+
+    _locked("test Rust library container", lambda **kwargs: run_library_resource_campaign(
+        kwargs["layout"], archive=archive, library_files=int(library_files), wsl_distro=wsl_distro))(
+            workspace_options=workspace_options, layout=layout)
+
+
+@test.command("rust-library-heap-profile")
+@_common_options
+@click.option("--archive", type=click.Path(path_type=Path), required=True)
+@click.option("--receipt", type=click.Path(path_type=Path), required=True)
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def test_rust_library_heap_profile(*, archive: Path, receipt: Path, wsl_distro: str,
+                                   workspace_options: WorkspaceOptions, layout) -> None:
+    """Profile a copied retained library at 1 GiB; never qualify the workload."""
+    from .linux_containers import run_library_heap_profile
+    _locked("test Rust library heap profile", lambda **kwargs: run_library_heap_profile(
+        kwargs["layout"], archive=archive, receipt=receipt, wsl_distro=wsl_distro))(
+            workspace_options=workspace_options, layout=layout)
+
+
+@main.command("cleanup-rust-library-container")
+@_common_options
+@click.option("--receipt", type=click.Path(path_type=Path), required=True)
+@click.option("--wsl-distro", default="Ubuntu", show_default=True)
+def cleanup_rust_library_container(*, receipt: Path, wsl_distro: str,
+                                  workspace_options: WorkspaceOptions, layout) -> None:
+    """Remove only the unused labelled native volume belonging to a campaign receipt."""
+    from .linux_containers import remove_library_campaign_volume
+
+    _locked("cleanup Rust library container", lambda **kwargs: remove_library_campaign_volume(
+        kwargs["layout"], receipt=receipt, wsl_distro=wsl_distro))(
+            workspace_options=workspace_options, layout=layout)
 
 
 @main.command("verify-linux-profile-scratch")

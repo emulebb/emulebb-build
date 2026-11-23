@@ -16,6 +16,57 @@ from emule_workspace.linux_containers import linux_test_plan, linux_quality_plan
 from emule_workspace import linux_containers
 
 
+@pytest.mark.parametrize("proof_ok,cleanup_ok", [(True, True), (False, True), (True, False)])
+def test_budget_probe_requires_kernel_proof_and_owned_cleanup(tmp_path, monkeypatch, proof_ok, cleanup_ok):
+    source = tmp_path / "workspace/repos/emulebb-build-tests"
+    source.mkdir(parents=True)
+    layout = SimpleNamespace(tests_repo_root=source, output_root=tmp_path / "output")
+    monkeypatch.setattr(linux_containers, "git_output", lambda _repo, *args: "" if args[0] == "status" else "a" * 40)
+    monkeypatch.setattr(linux_containers, "_runtime_source_snapshot", lambda *_args: source)
+    commands = []
+    def run(*args, **_kwargs):
+        commands.append(args)
+        return SimpleNamespace(stdout="amd64" if args[0] == "version" else "", stderr="")
+    docker = SimpleNamespace(run=run, path=lambda value: value.as_posix())
+    def owned(_docker, arguments, _log, **kwargs):
+        commands.append(arguments)
+        kwargs["ownership"].update(name="synthetic-budget-probe", absent=cleanup_ok)
+        return json.dumps({"status": "passed", "qualificationScope": {"containerLimitsEnforced": proof_ok},
+                           "kernelResourceBudget": {"ok": proof_ok}})
+    monkeypatch.setattr(linux_containers, "run_owned_container", owned)
+    if proof_ok and cleanup_ok:
+        path = linux_containers.verify_resource_budget(layout, docker)
+    else:
+        with pytest.raises(RuntimeError, match="not proved"):
+            linux_containers.verify_resource_budget(layout, docker)
+        path = next((layout.output_root / "reports/linux-containers/budget").glob("*/report.json"))
+    value = json.loads(path.read_text())
+    assert value["status"] == ("passed" if proof_ok and cleanup_ok else "failed")
+    assert value["workloadQualified"] is False
+    arguments = commands[-1]
+    for option, expected in (("--memory", "536870912"), ("--memory-swap", "536870912"),
+                             ("--cpus", "1"), ("--cgroupns", "private"), ("--network", "none")):
+        assert arguments[arguments.index(option) + 1] == expected
+    assert "readonly" in arguments[arguments.index("--mount") + 1]
+
+
+def test_budget_probe_keeps_image_failure_output(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    layout = SimpleNamespace(tests_repo_root=source, output_root=tmp_path / "output")
+    monkeypatch.setattr(linux_containers, "git_output", lambda _repo, *args: "" if args[0] == "status" else "a" * 40)
+    monkeypatch.setattr(linux_containers, "_runtime_source_snapshot", lambda *_args: source)
+    def run(*args, **_kwargs):
+        if args[0] == "version":
+            return SimpleNamespace(stdout="amd64")
+        raise subprocess.CalledProcessError(1, "docker build", output="build output", stderr="build failure")
+    with pytest.raises(subprocess.CalledProcessError):
+        linux_containers.verify_resource_budget(layout, SimpleNamespace(run=run, path=lambda value: value.as_posix()))
+    path = next((layout.output_root / "reports/linux-containers/budget").glob("*/report.json"))
+    assert json.loads(path.read_text())["status"] == "failed"
+    assert (path.parent / "image.log").read_text() == "build outputbuild failure"
+
+
 def _linked_harness_fixture(tmp_path):
     """Build a real linked checkout whose host Git pointer cannot be mounted."""
     canonical = tmp_path / "workspace/repos/emulebb-build-tests"
@@ -40,19 +91,20 @@ def _linked_harness_fixture(tmp_path):
     return layout, reports, git
 
 
-def test_runtime_harness_worktree_gets_independent_git_metadata_and_exact_revision(tmp_path):
+@pytest.mark.parametrize("name", ["harness", "rust"])
+def test_runtime_source_worktree_gets_independent_git_metadata_and_exact_revision(tmp_path, name):
     layout, reports, git = _linked_harness_fixture(tmp_path)
     original_pointer = (layout.tests_repo_root / ".git").read_text()
     expected = git(layout.tests_repo_root, "rev-parse", "HEAD")
-    snapshot = linux_containers._runtime_harness_source(layout, reports)
-    assert snapshot.is_relative_to(layout.output_root / "tmp/linux-harness-snapshots")
+    snapshot = linux_containers._runtime_source_snapshot(layout, reports, source=layout.tests_repo_root, name=name)
+    assert snapshot.is_relative_to(layout.output_root / "tmp/linux-source-snapshots")
     assert (snapshot / ".git").is_dir()
     assert not (snapshot / ".git/objects/info/alternates").exists()
     assert git(snapshot, "rev-parse", "HEAD") == expected
     assert git(snapshot, "status", "--porcelain") == ""
     assert (snapshot / "sample.txt").read_text() == "sample harness\n"
     assert (layout.tests_repo_root / ".git").read_text() == original_pointer
-    receipt = json.loads((reports / "harness-snapshot.json").read_text())
+    receipt = json.loads((reports / f"{name}-snapshot.json").read_text())
     assert receipt["revision"] == expected
     assert receipt["sourcePath"] == str(layout.tests_repo_root.resolve())
 
@@ -61,15 +113,15 @@ def test_runtime_harness_snapshot_refuses_dirty_selected_source(tmp_path):
     layout, reports, _git = _linked_harness_fixture(tmp_path)
     (layout.tests_repo_root / "sample.txt").write_text("uncommitted changes\n")
     with pytest.raises(RuntimeError, match="clean selected source"):
-        linux_containers._runtime_harness_source(layout, reports)
-    assert not (layout.output_root / "tmp/linux-harness-snapshots").exists()
+        linux_containers._runtime_source_snapshot(layout, reports)
+    assert not (layout.output_root / "tmp/linux-source-snapshots").exists()
 
 
 def test_runtime_harness_canonical_clone_keeps_existing_mount_path(tmp_path):
     source = tmp_path / "canonical"
     (source / ".git").mkdir(parents=True)
     layout = SimpleNamespace(tests_repo_root=source)
-    assert linux_containers._runtime_harness_source(layout, tmp_path / "reports") == source.resolve()
+    assert linux_containers._runtime_source_snapshot(layout, tmp_path / "reports") == source.resolve()
 
 
 @pytest.fixture
@@ -187,6 +239,7 @@ def test_linux_build_prepares_user_owned_paths_and_never_runs_cargo_or_packaging
             binary = target_directory / target / "release/emulebb-rust"
             binary.parent.mkdir(parents=True)
             binary.write_bytes(b"ELF fixture")
+            binary.with_name("emulebb-profile-init").write_bytes(b"initializer ELF fixture")
     def sbom(**kwargs):
         (kwargs["package_root"] / "SBOM.spdx.json").write_text('{"spdxVersion":"SPDX-2.3"}')
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
@@ -274,7 +327,8 @@ def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypat
     manifest = {"origin": "github-actions", "workflow": workflow, "sourceDirty": False,
                 "source": {"emulebbRust": {"commit": "a" * 40}}, "sha256": "b" * 64}
     archive.with_name(archive.name + ".manifest.json").write_text(json.dumps(manifest))
-    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=tmp_path / "rust", tests_repo_root=tmp_path / "tests")
+    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=tmp_path / "rust",
+                             tests_repo_root=tmp_path / "tests", tooling_repo_root=tmp_path / "tooling")
     monkeypatch.setattr(linux_containers, "git_output", lambda repo, *args: "a" * 40 if args == ("rev-parse", "HEAD") else "")
     monkeypatch.setattr(linux_containers.platform, "system", lambda: "Linux")
     monkeypatch.setattr(linux_containers.platform, "machine", lambda: "x86_64")
@@ -293,7 +347,10 @@ def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypat
     launches = []
     monkeypatch.setattr(linux_containers, "LinuxDocker", Docker)
     monkeypatch.setattr(linux_containers.subprocess, "check_output", lambda *args, **kwargs: host_uid)
-    monkeypatch.setattr(linux_containers, "run_owned_container", lambda docker, arguments, *args, **kwargs: launches.append(arguments))
+    def launch(docker, arguments, *args, **kwargs):
+        assert kwargs["timeout"] >= 20 * 60  # The paced proof's inner guard exceeds 19 minutes.
+        launches.append(arguments)
+    monkeypatch.setattr(linux_containers, "run_owned_container", launch)
     if producer_run != "123":
         with pytest.raises(RuntimeError, match="this GitHub run and workflow"):
             linux_containers.smoke_linux_archive(layout, archive=archive, libc="musl", architecture="amd64", use_ci_image_mirrors=mirrors)
@@ -305,6 +362,8 @@ def test_hosted_runtime_launch_receives_only_this_runs_public_identity(monkeypat
     assert "BASE_IMAGE=" + expected in next(args for args in calls if args[0] == "build")
     command = launches[0]
     image_index = command.index("local/emulebb-rust-runtime:musl-amd64")
+    assert command.index(linux_containers.RUNTIME_OPENAPI_ENV) < image_index
+    assert f"type=bind,source={layout.tooling_repo_root.as_posix()},target=/workspace/repos/emulebb-tooling,readonly" in command
     assert command[command.index("--user") + 1] == ("65534:65534" if host_uid == "0" else "1000:1000")
     for setting in ("GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory",
                     "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-build-tests"):
@@ -455,7 +514,7 @@ def test_vpn_leak_step():
     cross = linux_test_plan("full", cross=True, rust_root=tmp_path)
     assert cross[0] == ("workspace-tests-build", ["--workspace", "--no-run"])
     assert cross[1][1][-3:] == ["--no-run", "--", "--test-threads=1"]
-    assert [label for label, _ in cross[2:]] == ["native-library-tests", "tracker-tests", "durability-tests"]
+    assert [label for label, _ in cross[2:]] == ["native-library-tests", "tracker-tests", "durability-tests", "container-profile-tests"]
     assert cross[3][1] == ["--lib", "-p", "emulebb-kad-net", "tracker::tests"]
     assert linux_test_plan("portable", cross=False) == cross[2:]
     portable = cross[2][1]
@@ -496,6 +555,12 @@ def diagnostics_step():
         ("clippy", ["clippy", "--workspace", "--all-targets", "--features", "candidate-feature", "--locked", "--target", target, "--", "-D", "warnings"]),
         ("packet-diagnostics", ["check", "--bin", "candidate-diagnostics", "--features", "packet-diagnostics", "--locked", "--target", target]),
     ]
+    collected = linux_quality_plan(tmp_path, target, diagnostics_only=True)
+    diagnostic_arguments = list(plan[0][1])
+    separator = diagnostic_arguments.index("--")
+    diagnostic_arguments[separator:separator] = ["--message-format", "json"]
+    assert collected == [("clippy-diagnostics", [*diagnostic_arguments, "--cap-lints", "warn"])]
+    assert linux_quality_plan(tmp_path, target) == plan
     definition.write_text(definition.read_text().replace(', "--locked"', ""))
     with pytest.raises(RuntimeError, match="locked Cargo clippy"):
         linux_quality_plan(tmp_path, target)
@@ -526,7 +591,14 @@ def test_owned_container_removes_only_its_invocation_and_retains_log(tmp_path, m
     assert calls[-2][-3:] == ["rm", "--force", name]
     assert f"name={name}" in calls[-1]
     assert ownership == {"name": name, "absent": outcome != "remaining"}
-    assert path.read_text() == "retained container output\n"
+    retained = path.read_text()
+    assert retained.startswith("retained container output\n")
+    if outcome in {"failed", "timeout"}:
+        failure = json.loads(retained.split("containerFailure: ", 1)[1])
+        assert failure == ({"error": "TimeoutExpired", "timeoutSeconds": 1} if outcome == "timeout" else
+                           {"error": "CalledProcessError", "exitCode": 3})
+    else:
+        assert retained == "retained container output\n"
 
 
 @pytest.mark.parametrize("counts", [(0, 0, 0), (1, 0, 0), (2, 0, 0), (1, 1, 0), (1, 0, 1)])
@@ -672,6 +744,7 @@ def test_gnu_deb_uses_verified_linux_payload_and_private_native_modes(tmp_path, 
     (stage / "webui").mkdir(parents=True)
     (stage / "licenses").mkdir()
     (stage / "emulebb-rust").write_bytes(b"verified Linux ELF payload")
+    (stage / "emulebb-profile-init").write_bytes(b"verified Linux initializer")
     (stage / "webui/index.html").write_text("bundled SPA")
     (stage / "licenses/native-LICENSE").write_text("native notice")
     rust = tmp_path / "rust"
@@ -704,6 +777,7 @@ def test_gnu_deb_uses_verified_linux_payload_and_private_native_modes(tmp_path, 
                              mounts=[], manifest={"sourceDirty": False, "target": "aarch64-unknown-linux-gnu"},
                              log_root=root)
     assert (root / "deb/usr/lib/emulebb-rust/emulebb-rust").read_bytes() == (stage / "emulebb-rust").read_bytes()
+    assert (root / "deb/usr/lib/emulebb-rust/emulebb-profile-init").read_bytes() == (stage / "emulebb-profile-init").read_bytes()
     assert set(path.name for path in (root / "deb").iterdir()) == {"usr", "DEBIAN"}
     control = (root / "deb/DEBIAN/control").read_text()
     assert "Architecture: arm64" in control and "Depends: libc6 (>= 2.36)" in control
@@ -1069,3 +1143,218 @@ def test_unverifiable_startup_teardown_is_failed_even_after_proxy_reaping(owned_
     assert children[0].stdin.closed and children[0].poll() is not None
     assert stopped == [] and session.receipt["status"] == "cleanup-failed"
     assert "identity is incomplete" in session.receipt["cleanupError"]
+
+
+@pytest.fixture
+def library_container_inputs(tmp_path, monkeypatch):
+    import hashlib
+    output = tmp_path / "output"
+    output.mkdir()
+    roots = [tmp_path / name for name in ("rust", "harness", "tooling", "builder")]
+    for root in roots:
+        root.mkdir()
+    layout = SimpleNamespace(output_root=output, emulebb_rust_repo_root=roots[0],
+                             tests_repo_root=roots[1], tooling_repo_root=roots[2], build_repo_root=roots[3])
+    archive = output / "emulebb-rust-v0.1.0-beta.2-linux-amd64-gnu.tar.zst"
+    archive.write_bytes(b"synthetic archive")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    archive.with_name(archive.name + ".manifest.json").write_text(json.dumps({
+        "schema": "emulebb.rust.package/2", "version": "0.1.0-beta.2", "asset": archive.name,
+        "sha256": digest, "sourceDirty": False, "target": "x86_64-unknown-linux-gnu",
+        "source": {"emulebbRust": {"commit": "a" * 40}},
+    }))
+    monkeypatch.setattr(linux_containers, "git_output", lambda repo, *args: "" if args[0] == "status" else "a" * 40)
+    monkeypatch.setattr(linux_containers, "_runtime_source_snapshot", lambda selected, reports, **kwargs:
+                        kwargs.get("source", selected.tests_repo_root))
+    return layout, archive, digest
+
+
+@pytest.mark.parametrize("library_files", [50_000, 100_000])
+@pytest.mark.parametrize("fault", ["none", "kernel", "cleanup", "partial-campaign", "source-drift", "wrong-tier", "wrong-files", "wrong-jobs"])
+def test_library_campaign_requires_full_workload_budget_cleanup_and_frozen_source(library_container_inputs, monkeypatch, fault, library_files):
+    layout, archive, digest = library_container_inputs
+    memory_bytes = (512 if library_files == 50_000 else 1024) * 1024 * 1024
+    capacity = {"libraryFiles": library_files, "memoryBytes": memory_bytes, "retainedJobs": 100_000}
+    commands = []
+    revisions = 0
+    def git(repo, *arguments):
+        nonlocal revisions
+        if arguments[0] == "status": return ""
+        if repo == layout.emulebb_rust_repo_root:
+            revisions += 1
+            if revisions > 1 and fault == "source-drift": return "b" * 40
+        return "a" * 40
+    monkeypatch.setattr(linux_containers, "git_output", git)
+    class Docker:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def path(self, value): return value.as_posix()
+        def run(self, *args, **kwargs):
+            commands.append(args)
+            if args[:2] == ("volume", "inspect"):
+                value = json.dumps([{"Name": args[2], "Driver": "local", "Options": None,
+                    "Labels": {"emulebb.scope": "shared-library-io", "emulebb.run": args[2].removeprefix("emulebb-library-")}}])
+            else: value = "amd64" if args[0] == "version" else ""
+            return SimpleNamespace(stdout=value, stderr="")
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_args: Docker())
+    def owned(_docker, arguments, _log, **kwargs):
+        commands.append(arguments)
+        initialization = "container-run" not in arguments
+        kwargs["ownership"].update(absent=initialization or fault != "cleanup")
+        if initialization: return ""
+        root = arguments[arguments.index("--report-root") + 1]
+        host = layout.output_root / root.removeprefix("/output/")
+        campaign = host / "campaign/full.json"
+        campaign.write_text(json.dumps({"schema": "emulebb.rust-shared-library-io.v8", "status": "passed",
+            "capacityTarget": capacity if fault != "wrong-tier" else {**capacity, "memoryBytes": memory_bytes * 2},
+            "fixture": {"fileCount": library_files if fault != "wrong-files" else library_files // 2},
+            "retainedDownloadFixture": {"downloadJobs": 100_000 if fault != "wrong-jobs" else 1000},
+            "acceptance": {"ok": True}, "qualificationScope": {"fullCampaign": fault != "partial-campaign",
+                "physicalLibrary": True, "initialPayloadHashing": True, "containerLimitsEnforced": True,
+                "downloadHistory": "metadata-only"}}))
+        (host / "container-result.json").write_text(json.dumps({"status": "passed", "capacityTarget": capacity, "sourceSha": "a" * 40,
+            "archiveSha256": digest, "acceptance": {"ok": True}, "campaignReport": root + "/campaign/full.json",
+            "qualificationScope": {"containerLimitsEnforced": fault != "kernel"}}))
+        return ""
+    monkeypatch.setattr(linux_containers, "run_owned_container", owned)
+    if fault == "none":
+        receipt = linux_containers.run_library_resource_campaign(layout, archive=archive, library_files=library_files)
+    else:
+        with pytest.raises(RuntimeError, match="not proved|changed during"):
+            linux_containers.run_library_resource_campaign(layout, archive=archive, library_files=library_files)
+        receipt = next((layout.output_root / "reports/linux-containers/library").glob("*/report.json"))
+    result = json.loads(receipt.read_text())
+    assert result["workloadQualified"] is (fault == "none")
+    assert result["volume"]["retained"] is True
+    assert result["status"] == ("passed" if fault == "none" else "failed")
+    arguments = next(args for args in commands if "container-run" in args)
+    preflight = next(args for args in commands if "--help" in args)
+    for command in (preflight, arguments):
+        assert command.index(linux_containers.RUNTIME_OPENAPI_ENV) < command.index("python3")
+        assert "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output" in command
+    for option, value in (("--memory", str(memory_bytes)), ("--memory-swap", str(memory_bytes)),
+                          ("--library-files", str(library_files)),
+                          ("--cpus", "1"), ("--user", "65534:65534"), ("--network", "none"), ("--cgroupns", "private")):
+        assert arguments[arguments.index(option) + 1] == value
+    assert "--tmpfs" not in arguments
+    assert any("type=volume" in value for value in arguments)
+    assert sum("readonly" in value for value in arguments) == 3
+
+
+@pytest.mark.parametrize("fault", ["none", "cleanup", "claims-qualification", "attached"])
+def test_heap_replay_preserves_source_authority_and_never_qualifies(library_container_inputs, monkeypatch, fault):
+    layout, archive, digest = library_container_inputs
+    run_id = "c" * 32
+    source_root = layout.output_root / "reports/linux-containers/library" / run_id
+    source_root.mkdir(parents=True)
+    source = source_root / "report.json"
+    labels = {"emulebb.scope": "shared-library-io", "emulebb.run": run_id}
+    source.write_text(json.dumps({"schema": linux_containers.LIBRARY_CONTAINER_SCHEMA,
+        "runId": run_id, "status": "failed", "container": {"absent": True},
+        "volume": {"name": f"emulebb-library-{run_id}", "labels": labels, "retained": True},
+        "sourceRevisions": {"rust": "a" * 40}, "archiveSha256": digest}))
+    before = source.read_bytes()
+    commands = []
+    class Docker:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def path(self, value): return value.as_posix()
+        def run(self, *args, **kwargs):
+            commands.append(args)
+            if args[0] == "version": value = "amd64"
+            elif args[:2] == ("volume", "inspect"):
+                value = json.dumps([{"Name": f"emulebb-library-{run_id}", "Driver": "local", "Options": {}, "Labels": labels}])
+            elif args[0] == "ps": value = "still-attached" if fault == "attached" else ""
+            else: value = ""
+            return SimpleNamespace(stdout=value, stderr="")
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_: Docker())
+    def owned(_docker, arguments, log, **kwargs):
+        commands.append(arguments)
+        kwargs["ownership"].update(absent=fault != "cleanup")
+        if "container-heap-profile" not in arguments: return
+        root = arguments[arguments.index("--report-root") + 1]
+        host = layout.output_root / root.removeprefix("/output/")
+        (host / "heap-result.json").write_text(json.dumps({
+            "schema": "emulebb.rust-library-heap.v1", "status": "diagnosticComplete",
+            "workloadQualified": fault == "claims-qualification", "sourceSha": "a" * 40,
+            "archiveSha256": digest, "traces": [{"bytes": 100}], "acceptance": {"ok": False},
+            "qualificationScope": {"containerLimitsEnforced": False}, "kernelResourceBudget": {"ok": True}}))
+    monkeypatch.setattr(linux_containers, "run_owned_container", owned)
+    if fault == "none":
+        report = linux_containers.run_library_heap_profile(layout, archive=archive, receipt=source)
+    else:
+        with pytest.raises(RuntimeError, match="not proved|still attached"):
+            linux_containers.run_library_heap_profile(layout, archive=archive, receipt=source)
+        report = next((layout.output_root / "reports/linux-containers/library-heap").glob("*/report.json"))
+    result = json.loads(report.read_text())
+    assert result["workloadQualified"] is False
+    assert result["status"] == ("diagnosticComplete" if fault == "none" else "failed")
+    assert source.read_bytes() == before
+    if fault != "attached":
+        arguments = next(command for command in commands if "container-heap-profile" in command)
+        assert arguments[arguments.index("--memory") + 1] == "1073741824"
+        assert arguments[arguments.index("--memory-swap") + 1] == "1073741824"
+    assert not any(command[:2] in (("volume", "create"), ("volume", "rm")) for command in commands)
+
+
+def test_library_campaign_rejects_changed_archive_before_container_allocation(library_container_inputs, monkeypatch):
+    layout, archive, _digest = library_container_inputs
+    archive.write_bytes(b"substituted archive")
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_args: pytest.fail("must reject before allocation"))
+    with pytest.raises(RuntimeError, match="exact current clean"):
+        linux_containers.run_library_resource_campaign(layout, archive=archive)
+
+
+@pytest.mark.parametrize("fault", ["none", "foreign-label", "remote-options", "attached"])
+def test_native_campaign_cleanup_requires_receipt_labels_and_unused_volume(tmp_path, monkeypatch, fault):
+    run_id = "a" * 32
+    output = tmp_path / "output"
+    receipt = output / "reports/linux-containers/library" / run_id / "report.json"
+    receipt.parent.mkdir(parents=True)
+    volume = "emulebb-library-" + run_id
+    labels = {"emulebb.scope": "shared-library-io", "emulebb.run": run_id}
+    receipt.write_text(json.dumps({"schema": linux_containers.LIBRARY_CONTAINER_SCHEMA, "status": "running",
+        "runId": run_id, "volume": {"name": volume, "labels": labels, "retained": True}}))
+    calls = []
+    class Docker:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def run(self, *args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("volume", "inspect"):
+                actual = labels if fault != "foreign-label" else {}
+                value = json.dumps([{"Name": volume, "Labels": actual, "Driver": "local",
+                    "Options": {"type": "nfs"} if fault == "remote-options" else None}])
+            elif args[0] == "ps": value = "owned-active" if fault == "attached" else ""
+            else: value = ""
+            return SimpleNamespace(stdout=value)
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_args: Docker())
+    if fault == "none":
+        linux_containers.remove_library_campaign_volume(SimpleNamespace(output_root=output), receipt=receipt)
+    else:
+        with pytest.raises(RuntimeError, match="authority differ|still attached"):
+            linux_containers.remove_library_campaign_volume(SimpleNamespace(output_root=output), receipt=receipt)
+    assert any(args[:2] == ("volume", "rm") for args in calls) is (fault == "none")
+    assert json.loads(receipt.read_text())["volume"]["retained"] is (fault != "none")
+
+
+def test_library_volume_authority_is_checked_before_initialization(library_container_inputs, monkeypatch):
+    layout, archive, _digest = library_container_inputs
+    class Docker:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def path(self, value): return value.as_posix()
+        def run(self, *args, **kwargs):
+            return SimpleNamespace(stdout="amd64" if args[0] == "version" else "", stderr="")
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda *_args: Docker())
+    def reject(*args):
+        raise RuntimeError("foreign volume authority")
+    monkeypatch.setattr(linux_containers, "_inspect_library_volume", reject)
+    def preflight_only(_docker, arguments, _log, **kwargs):
+        if "--help" not in arguments:
+            pytest.fail("must verify before initialization")
+        kwargs["ownership"]["absent"] = True
+        return ""
+    monkeypatch.setattr(linux_containers, "run_owned_container", preflight_only)
+    with pytest.raises(RuntimeError, match="foreign volume authority"):
+        linux_containers.run_library_resource_campaign(layout, archive=archive)

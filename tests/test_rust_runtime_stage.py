@@ -81,6 +81,23 @@ def test_complete_registered_bundle_preserves_operator_executables_and_webui(sel
     assert not Path(description["pendingRoot"]).exists()
 
 
+def test_linux_regular_bundle_requires_and_attests_the_private_initializer(selected):
+    target = "x86_64-unknown-linux-gnu"
+    description = stage.prepare_stage(selected, target=target, flavor="regular")
+    root = Path(description["pendingRoot"])
+    (root / "bin/webui").mkdir()
+    (root / "bin/webui/index.html").write_bytes(b"candidate WebUI")
+    (root / "bin/emulebb-rust").write_bytes(b"candidate daemon")
+    with pytest.raises(RuntimeError, match="required native binaries"):
+        stage.publish_stage(selected, description)
+    (root / "bin/emulebb-profile-init").write_bytes(b"candidate initializer")
+    published = stage.publish_stage(selected, description)
+    assert {item["path"] for item in published["files"]} == {
+        "bin/emulebb-rust", "bin/emulebb-profile-init", "bin/webui/index.html",
+    }
+    assert stage.verify_stage(selected, target=target)["files"] == published["files"]
+
+
 def test_partial_flavor_preserves_only_proven_same_source_companions(selected):
     first = stage.prepare_stage(selected, target=TARGET)
     bundle(first)

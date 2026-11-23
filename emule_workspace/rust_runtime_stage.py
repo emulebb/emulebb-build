@@ -117,6 +117,8 @@ def _inventory(root: Path, target: str) -> list[dict]:
     """Bind native companions and the installed WebUI to their actual bytes."""
     suffix = ".exe" if "windows" in target else ""
     native = {name + suffix for name in BINARIES}
+    if "linux" in target:
+        native.add("emulebb-profile-init")
     native.update(name + ".pdb" for name in BINARIES)
     native.update(name.replace("-", "_") + ".pdb" for name in BINARIES)
     if not (root / "bin/webui/index.html").is_file():
@@ -230,6 +232,8 @@ def publish_stage(layout, description: dict) -> dict:
     suffix = ".exe" if "windows" in context["target"] else ""
     flavor = description.get("flavor")
     required = {"fresh": BINARIES, "regular": (BINARIES[0],), "diagnostics": (BINARIES[1],)}.get(flavor)
+    if required is not None and "linux" in context["target"]:
+        required = (*required, "emulebb-profile-init")
     if required is None or any(not (pending / "bin" / (name + suffix)).is_file() for name in required):
         raise RuntimeError("Runtime producer did not provide its required native binaries")
     previous_owned = None
@@ -244,7 +248,8 @@ def publish_stage(layout, description: dict) -> dict:
             # the same material identity. Old regular/diagnostic bytes never
             # inherit a new source receipt merely because their names match.
             previous_files = {item["path"] for item in previous["files"]}
-            for name in BINARIES:
+            companions_to_keep = (*BINARIES, "emulebb-profile-init") if "linux" in context["target"] else BINARIES
+            for name in companions_to_keep:
                 executable = name + suffix
                 if (pending / "bin" / executable).exists() or "bin/" + executable not in previous_files:
                     continue

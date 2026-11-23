@@ -75,3 +75,60 @@ def test_rest_adapter_propagates_campaign_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(test_runs, "run_native", fail)
     with pytest.raises(RuntimeError, match="persisted campaign failed"):
         test_runs.invoke_rust_rest_openapi(layout)
+
+
+@pytest.mark.parametrize("action,replay", [("describe", None), ("prepare", None), ("run", None), ("run", "verified-run")])
+def test_shared_library_adapter_uses_selected_script_and_bounded_source_payload(tmp_path, monkeypatch, action, replay):
+    from emule_workspace import local_checks
+
+    layout, _, _ = selected_layout(tmp_path)
+    layout.build_repo_root = layout.tests_repo_root.parent / "emulebb-build"
+    script = layout.tests_repo_root / "scripts/rust-shared-library-io.py"
+    script.write_text("fixture", encoding="utf-8")
+    sources = []
+    snapshot = {"emulebb-rust": {"revision": "selected-revision"}}
+
+    def source_snapshot(selected, *, clean):
+        assert clean
+        sources.append(selected)
+        return snapshot
+
+    monkeypatch.setattr(local_checks, "_source_snapshot", source_snapshot)
+    monkeypatch.setattr(workstreams, "resolve_workstream", lambda *args, **kwargs: {"id": "sample"})
+    monkeypatch.setattr(test_runs, "_workspace_env", lambda *args: {"fixture-lock": "held"})
+    monkeypatch.setattr(test_runs, "get_python_invocation", lambda: PythonInvocation(Path("selected-python")))
+    calls = []
+    monkeypatch.setattr(test_runs, "run_native", lambda command, **kwargs: calls.append((command, kwargs)))
+    test_runs.invoke_rust_shared_library_io(layout, action=action, watcher_replay_from=replay)
+    expected = ["selected-python", "-B", str(script), "--rust-repo", str(layout.emulebb_rust_repo_root),
+                "--registered-stage", action]
+    if action == "run":
+        expected += ["--timeout-seconds", "7200.0", "--poll-seconds", "2.0"]
+        if replay is not None:
+            expected += ["--watcher-replay-from", replay]
+    assert calls == [(expected, {"label": "Rust shared-library I/O", "cwd": layout.tests_repo_root,
+                                "env": {"fixture-lock": "held"}})]
+    assert len(sources) == 2
+    assert all(source["emulebb-build"] == layout.build_repo_root for source in sources)
+    reports = list(layout.output_root.rglob("sources.json"))
+    assert len(reports) == (0 if action == "describe" else 1)
+    if reports:
+        import json
+        receipt = json.loads(reports[0].read_text())
+        assert receipt["sources"] == snapshot and receipt["status"] == "passed"
+
+
+def test_shared_library_adapter_rejects_source_changes(tmp_path, monkeypatch):
+    from emule_workspace import local_checks
+
+    layout, _, _ = selected_layout(tmp_path)
+    layout.build_repo_root = layout.tests_repo_root.parent / "emulebb-build"
+    (layout.tests_repo_root / "scripts/rust-shared-library-io.py").write_text("fixture", encoding="utf-8")
+    snapshots = iter(({"revision": "before"}, {"revision": "after"}))
+    monkeypatch.setattr(local_checks, "_source_snapshot", lambda *args, **kwargs: next(snapshots))
+    monkeypatch.setattr(workstreams, "resolve_workstream", lambda *args, **kwargs: {"id": "sample"})
+    monkeypatch.setattr(test_runs, "_workspace_env", lambda *args: {})
+    monkeypatch.setattr(test_runs, "get_python_invocation", lambda: PythonInvocation(Path("selected-python")))
+    monkeypatch.setattr(test_runs, "run_native", lambda *args, **kwargs: None)
+    with pytest.raises(RuntimeError, match="sources changed"):
+        test_runs.invoke_rust_shared_library_io(layout, action="run")

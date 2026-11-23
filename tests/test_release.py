@@ -1282,6 +1282,7 @@ def test_emulebb_rust_linux_package_emits_deb_appimage_and_metadata(
     _stage_rust_package_inputs(layout)
     staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
     (staged_bin / "emulebb-rust").write_bytes(b"\x7fELF-linux")
+    (staged_bin / "emulebb-profile-init").write_bytes(b"\x7fELF-initializer")
     monkeypatch.setattr(release, "repo_status_lines", lambda _repo: ["## main...origin/main"])
     monkeypatch.setattr(
         release,
@@ -1418,6 +1419,7 @@ def test_emulebb_rust_linux_deb_only_does_not_require_appimagetool(
     _stage_rust_package_inputs(layout)
     staged_bin = layout.output_tools_root / "emulebb-rust" / "bin"
     (staged_bin / "emulebb-rust").write_bytes(b"\x7fELF-linux")
+    (staged_bin / "emulebb-profile-init").write_bytes(b"\x7fELF-initializer")
     monkeypatch.setattr(release, "repo_status_lines", lambda _repo: ["## main...origin/main"])
     monkeypatch.setattr(
         release,

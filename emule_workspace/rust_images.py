@@ -258,7 +258,9 @@ def verified_smoke_platforms(result: dict, *, manifest: dict, architectures: tup
             or sorted(item.get("platform", "") for item in items) != sorted(f"linux/{arch}" for arch in architectures)):
         raise RuntimeError("Fresh image smoke evidence does not match the archive and CPU set")
     common = {"firstRunProfile": True, "webui": True, "uid": 1234, "gid": 1235,
-              "daemonUid": 1234, "daemonGid": 1235, "configOwner": "1234:1235", "dataOwner": "1234:1235",
+              "daemonUid": 1234, "daemonGid": 1235, "configOwner": "1234:1235",
+              "incomingOwner": "1234:1235", "tempOwner": "1234:1235",
+              "networkFixture": "saved-eth0-interface-before-s6",
               "publishedPorts": 0, "restAuthentication": True, "authenticatedStatus": 200, "unauthenticatedStatus": 401,
               "appVersion": manifest["version"], "appBuild": "release", "gracefulShutdown": True,
               "networkIsolation": "internal-bridge", "dns": "loopback-only"}

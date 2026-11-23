@@ -1042,6 +1042,65 @@ def invoke_builder_unit_tests(layout: WorkspaceLayout, *, paths: tuple[str, ...]
         print(f"Builder unit {value['status']}; evidence: {report}", flush=True)
 
 
+def invoke_rust_shared_library_io(layout: WorkspaceLayout, *, action: str,
+                                  allow_non_ssd: bool = False,
+                                  timeout_seconds: float = 7200.0,
+                                  poll_seconds: float = 2.0,
+                                  watcher_replay_from: str | None = None) -> None:
+    """Invoke only the existing synthetic-library campaign with selected sources."""
+    from uuid import uuid4
+    from .local_checks import _source_snapshot
+    from .workstreams import _safe_path, resolve_workstream
+
+    if action not in {"describe", "prepare", "run"}:
+        raise ValueError("Shared-library action must be describe, prepare or run")
+    if timeout_seconds <= 0 or poll_seconds <= 0:
+        raise ValueError("Shared-library timeouts must be positive")
+    if action == "describe" and allow_non_ssd:
+        raise ValueError("describe does not override fixture storage admission")
+    if watcher_replay_from is not None and action != "run":
+        raise ValueError("watcher replay requires the run action")
+    if layout.emulebb_rust_repo_root is None:
+        raise RuntimeError("Shared-library campaign requires selected Rust sources")
+    root, output = layout.emule_workspace_root.resolve(), layout.output_root.resolve()
+    sources = {"emulebb-build": layout.build_repo_root, "emulebb-rust": layout.emulebb_rust_repo_root,
+               "emulebb-build-tests": layout.tests_repo_root, "emulebb-tooling": layout.tooling_repo_root}
+    sources = {name: _safe_path(root, path) for name, path in sources.items()}
+    rust, harness = sources["emulebb-rust"], sources["emulebb-build-tests"]
+    registration = resolve_workstream(root, output, repo=rust)
+    script = _safe_path(harness, harness / "scripts/rust-shared-library-io.py")
+    if not script.is_file():
+        raise RuntimeError("Selected shared-library campaign script is missing")
+    before = _source_snapshot(sources, clean=True)
+    arguments = ["-B", script, "--rust-repo", rust]
+    if registration is not None:
+        arguments.append("--registered-stage")
+    arguments.append(action)
+    if allow_non_ssd:
+        arguments.append("--allow-non-ssd")
+    if action == "run":
+        arguments.extend(["--timeout-seconds", str(timeout_seconds), "--poll-seconds", str(poll_seconds)])
+        if watcher_replay_from is not None:
+            arguments.extend(["--watcher-replay-from", watcher_replay_from])
+    receipt = {"schema": "emulebb.shared-library-campaign-source/1", "action": action,
+               "sources": before, "status": "failed"}
+    try:
+        run_native(get_python_invocation().command(arguments), label="Rust shared-library I/O",
+                   cwd=harness, env=_workspace_env(layout))
+        if _source_snapshot(sources, clean=True) != before:
+            raise RuntimeError("Selected shared-library sources changed during campaign")
+        receipt["status"] = "passed"
+    finally:
+        if action != "describe":
+            reports = output / "reports"
+            if registration is not None:
+                reports = reports / "workstreams" / registration["id"]
+            report = _safe_path(output, reports / "shared-library-io-admission" / uuid4().hex)
+            report.mkdir(parents=True)
+            (report / "sources.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+            print(f"Shared-library source evidence: {report}", flush=True)
+
+
 def invoke_rust_rest_openapi(layout: WorkspaceLayout) -> None:
     """Run the persisted REST campaign against selected sources under the CLI lock."""
     from .workstreams import _safe_path, resolve_workstream
@@ -1134,6 +1193,7 @@ def invoke_rust_release_package(
 
 def invoke_rust_unit_tests(
     layout: WorkspaceLayout, *, package: str | None = None, refresh_workspace_lock: bool = False,
+    test_filter: str | None = None, nocapture: bool = False,
 ) -> None:
     """Run Rust unit/integration tests against the inherited canonical target dir."""
 
@@ -1142,6 +1202,13 @@ def invoke_rust_unit_tests(
         args.extend(["-p", package])
     else:
         args.append("--workspace")
+    if test_filter is not None or nocapture:
+        args.append("--")
+        if nocapture:
+            args.append("--nocapture")
+        if test_filter is not None:
+            # Keep the filter literal and outside Cargo/libtest option parsing.
+            args.extend(["--", test_filter])
     try:
         from uuid import uuid4
         from .workstreams import _safe_path
@@ -1153,11 +1220,11 @@ def invoke_rust_unit_tests(
         # only this child's temporary files; operator environment remains intact.
         environment.update(TEMP=str(scratch), TMP=str(scratch), TMPDIR=str(scratch))
         if refresh_workspace_lock:
-            # WHY: adding a workspace crate needs a lockfile update, but ordinary
-            # CI must never rewrite it. Cargo's workspace-only offline update
-            # retains unrelated locked dependencies and never downloads new input.
+            # WHY: explicit authoring may add workspace crates or registry
+            # dependencies. Workspace-only resolution retains unrelated pins;
+            # normal CI still uses the unchanged locked test command.
             run_native(
-                ["cargo", "update", "--workspace", "--offline"],
+                ["cargo", "update", "--workspace"],
                 label="eMuleBB Rust workspace lock refresh",
                 cwd=layout.emulebb_rust_repo_root,
                 env=environment,

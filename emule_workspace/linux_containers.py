@@ -27,6 +27,7 @@ ALPINE_IMAGE = UPSTREAM_ALPINE
 RUST_IMAGES = dict(UPSTREAM_RUST)
 MUSL_CROSS_IMAGE = "ghcr.io/rust-cross/rust-musl-cross:aarch64-musl@sha256:02e790506c5f15a533bc05b3af8719b16a8a2314480f6f0fdc0166432035d9b4"
 RUNTIME_IMAGES = dict(UPSTREAM_RUNTIME)
+RUNTIME_OPENAPI_ENV = "EMULEBB_REST_OPENAPI_CONTRACT_PATH=/workspace/repos/emulebb-tooling/docs/products/emulebb-rust/api/REST-API-OPENAPI.yaml"
 _WSL_STOP_TIMEOUT = 10
 
 
@@ -86,16 +87,18 @@ def linux_test_plan(scope: str, *, cross: bool, rust_root: Path | None = None) -
         ) for argument in ("-p", package)]]),
         ("tracker-tests", ["--lib", "-p", "emulebb-kad-net", "tracker::tests"]),
         ("durability-tests", ["--lib", "-p", "emulebb-ed2k", "fs_durability::tests"]),
+        ("container-profile-tests", ["--lib", "-p", "emulebb-daemon", "container_profile::tests"]),
     ])
     return plan
 
 
-def linux_quality_plan(rust_root: Path, target: str) -> list[tuple[str, list[str]]]:
+def linux_quality_plan(rust_root: Path, target: str, *, diagnostics_only: bool = False) -> list[tuple[str, list[str]]]:
     """Compile target-specific lint and diagnostics from the candidate CI gate."""
     definitions = runpy.run_path(str(rust_root / "tools/rust_quality_gate.py"))
     plan = []
-    for label, factory, subcommand in (("clippy", "clippy_step", "clippy"),
-                                        ("packet-diagnostics", "diagnostics_step", "check")):
+    steps = (("clippy-diagnostics", "clippy_step", "clippy"),) if diagnostics_only else (
+        ("clippy", "clippy_step", "clippy"), ("packet-diagnostics", "diagnostics_step", "check"))
+    for label, factory, subcommand in steps:
         _description, command = definitions[factory]()
         if command[:2] != ["cargo", subcommand] or "--locked" not in command:
             raise RuntimeError(f"Canonical {factory} must remain a locked Cargo {subcommand} command")
@@ -104,6 +107,11 @@ def linux_quality_plan(rust_root: Path, target: str) -> list[tuple[str, list[str
         # separator. Passing it after -- would change the compiler invocation.
         index = arguments.index("--") if "--" in arguments else len(arguments)
         arguments[index:index] = ["--target", target]
+        if diagnostics_only:
+            # WHY: collect dependent crates in one non-gating pass; strict
+            # package checks retain their canonical -D warnings invocation.
+            arguments[arguments.index("--"):arguments.index("--")] = ["--message-format", "json"]
+            arguments.extend(["--cap-lints", "warn"])
         plan.append((label, arguments))
     return plan
 
@@ -133,6 +141,13 @@ def run_owned_container(docker, arguments: list[str], log: Path, *, timeout: int
                 stream.write(result.stdout)
             return result.stdout if capture else ""
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        failure = {"error": type(exc).__name__}
+        if isinstance(exc, subprocess.TimeoutExpired):
+            failure["timeoutSeconds"] = exc.timeout
+        else:
+            failure["exitCode"] = exc.returncode
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write("\ncontainerFailure: " + json.dumps(failure, sort_keys=True) + "\n")
         raise RuntimeError(f"Linux container check failed; inspect {log}") from exc
     finally:
         # WHY: terminating wsl.exe does not reliably terminate its Docker job.
@@ -577,6 +592,14 @@ def _prove_profile_test_scratch(docker, test_cargo: list[str], target: str, targ
     return report
 
 
+def collect_linux_quality_diagnostics(layout, *, libc: str, architecture: str) -> Path:
+    """@brief Collect workspace lints without producing or qualifying a package."""
+    with LinuxDocker() as docker:
+        return _build_linux_artifacts(layout, docker, libc=libc, architecture=architecture,
+                                      webui_dist=None, release_version=None, test_scope="full",
+                                      quality_diagnostics_only=True)
+
+
 def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: Path | None = None,
                           release_version: str | None = None, smoke: bool = False, test_scope: str = "portable",
                           use_ci_image_mirrors: bool = False) -> Path:
@@ -596,9 +619,12 @@ def build_linux_artifacts(layout, *, libc: str, architecture: str, webui_dist: P
     return archive
 
 
-def _runtime_harness_source(layout, reports: Path) -> Path:
-    """Provide self-contained Git metadata when the runtime inspects a worktree."""
-    source = layout.tests_repo_root.resolve()
+def _runtime_source_snapshot(layout, reports: Path, *, source: Path | None = None,
+                             name: str = "harness") -> Path:
+    """Provide exact, independent Git metadata for a read-only runtime source."""
+    if name not in {"harness", "rust"}:
+        raise ValueError("Expected a named runtime source")
+    source = (source if source is not None else layout.tests_repo_root).resolve()
     if not (source / ".git").is_file():
         return source
     output = layout.output_root.resolve()
@@ -610,7 +636,7 @@ def _runtime_harness_source(layout, reports: Path) -> Path:
     branch = git_output(source, "branch", "--show-current").strip()
     if not branch:
         raise RuntimeError("Runtime harness worktree snapshot requires an assigned branch")
-    snapshot = output / "tmp" / "linux-harness-snapshots" / uuid4().hex / "source"
+    snapshot = output / "tmp" / "linux-source-snapshots" / uuid4().hex / "source"
     if not snapshot.resolve().is_relative_to(output) or snapshot.exists():
         raise RuntimeError("Invalid runtime harness snapshot destination")
     snapshot.parent.mkdir(parents=True)
@@ -629,11 +655,75 @@ def _runtime_harness_source(layout, reports: Path) -> Path:
             or git_output(source, "rev-parse", "HEAD").strip() != revision
             or git_output(source, "status", "--porcelain").strip()):
         raise RuntimeError("Runtime harness source changed or snapshot is not independent")
-    (reports / "harness-snapshot.json").write_text(json.dumps({
-        "schema": "emulebb.runtime-harness-snapshot/1", "sourcePath": str(source),
+    (reports / f"{name}-snapshot.json").write_text(json.dumps({
+        "schema": "emulebb.runtime-source-snapshot/1", "sourceKind": name, "sourcePath": str(source),
         "snapshotPath": str(snapshot), "revision": revision,
     }, indent=2) + "\n", encoding="utf-8")
     return snapshot
+
+
+def verify_resource_budget(layout, docker: LinuxDocker) -> Path:
+    """@brief Verify the shared campaign's kernel observer in an owned capped container."""
+    source = layout.tests_repo_root.resolve()
+    if git_output(source, "status", "--porcelain").strip():
+        raise RuntimeError("Budget preflight requires clean selected Harness source")
+    revision = git_output(source, "rev-parse", "HEAD").strip()
+    reports = layout.output_root / "reports/linux-containers/budget" / uuid4().hex
+    reports.mkdir(parents=True)
+    snapshot = _runtime_source_snapshot(layout, reports)
+    report = {"schema": "emulebb.container-budget-preflight.v1", "status": "running",
+              "workloadQualified": False, "harnessRevision": revision, "container": {}}
+    path = reports / "report.json"
+    try:
+        architecture = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
+        if architecture not in {"amd64", "arm64"}:
+            raise RuntimeError("Budget preflight requires a supported native Linux architecture")
+        runtime = f"local/emulebb-rust-runtime:gnu-{architecture}"
+        context = Path(__file__).parent / "release_assets/rust_linux"
+        report.update(architecture=architecture, runtimeBase=RUNTIME_IMAGES["gnu"])
+        build = docker.run("build", "--platform", f"linux/{architecture}", "--build-arg",
+                           f"BASE_IMAGE={RUNTIME_IMAGES['gnu']}", "--file",
+                           docker.path(context) + "/Dockerfile.runtime", "--tag", runtime,
+                           docker.path(context), capture=True, timeout=600)
+        (reports / "image.log").write_text((build.stdout or "") + (build.stderr or ""), encoding="utf-8")
+        probe = "\n".join((
+            "import json",
+            "from emule_test_harness.rust_cgroup_budget import sample_budget, matches_target, finish_report",
+            "before = sample_budget()",
+            "if before is None or not matches_target(before): raise RuntimeError('Kernel budget differs from the required envelope')",
+            "report = {'status': 'passed', 'qualificationScope': {'containerLimitsEnforced': False}, 'acceptance': {'ok': True}}",
+            "finish_report(report, before)",
+            "if report['status'] != 'passed' or not report['qualificationScope']['containerLimitsEnforced']: raise RuntimeError('Kernel budget proof failed')",
+            "print(json.dumps(report))",
+        ))
+        raw = run_owned_container(docker, [
+            "--rm", "--platform", f"linux/{architecture}", "--user", "65534:65534",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "none",
+            "--memory", str(512 * 1024 * 1024), "--memory-swap", str(512 * 1024 * 1024),
+            "--cpus", "1", "--cgroupns", "private", "--workdir", "/harness",
+            "--mount", f"type=bind,source={docker.path(snapshot)},target=/harness,readonly",
+            runtime, "python3", "-B", "-c", probe,
+        ], reports / "budget.log", timeout=120, capture=True, ownership=report["container"])
+        value = json.loads(raw)
+        if (value.get("status") != "passed" or value.get("qualificationScope", {}).get("containerLimitsEnforced") is not True
+                or report["container"].get("absent") is not True):
+            raise RuntimeError("Container budget or owned cleanup was not proved")
+        if (git_output(source, "rev-parse", "HEAD").strip() != revision
+                or git_output(source, "status", "--porcelain").strip()):
+            raise RuntimeError("Harness source changed during the budget preflight")
+        report.update(status="passed", kernelResourceBudget=value["kernelResourceBudget"])
+    except Exception as error:
+        if isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            parts = (error.stdout, error.stderr)
+            (reports / "image.log").write_text("".join(
+                part.decode("utf-8", errors="replace") if isinstance(part, bytes) else part or ""
+                for part in parts), encoding="utf-8")
+        report.update(status="failed", error=type(error).__name__)
+        raise
+    finally:
+        path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"Container budget preflight passed (no scale workload): {path}")
+    return path
 
 
 def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, use_ci_image_mirrors: bool = False) -> Path:
@@ -654,8 +744,10 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
     version = archive.name[len(prefix):-len(suffix)]
     source_sha = git_output(layout.emulebb_rust_repo_root, "rev-parse", "HEAD").strip()
     if (git_output(layout.emulebb_rust_repo_root, "status", "--porcelain").strip()
-            or git_output(layout.tests_repo_root, "status", "--porcelain").strip()):
-        raise RuntimeError("Runtime validation requires clean Rust and harness sources")
+            or git_output(layout.tests_repo_root, "status", "--porcelain").strip()
+            or git_output(layout.tooling_repo_root, "status", "--porcelain").strip()):
+        raise RuntimeError("Runtime validation requires clean Rust, harness and contract sources")
+    tooling_revision = git_output(layout.tooling_repo_root, "rev-parse", "HEAD").strip()
     if manifest.get("sourceDirty") is not False or manifest.get("source", {}).get("emulebbRust", {}).get("commit") != source_sha:
         raise RuntimeError("Runtime archive must match the clean current Rust revision")
     if _emulebb_rust_artifact_origin()["origin"] == "github-actions":
@@ -665,7 +757,7 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
     reports = output / "reports/rust-linux" / f"{libc}-{architecture}" / uuid4().hex
     reports.mkdir(parents=True)
     (reports / "tmp").mkdir()
-    harness_source = _runtime_harness_source(layout, reports)
+    harness_source = _runtime_source_snapshot(layout, reports)
     with LinuxDocker() as docker:
         host_arch = docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip()
         hosted_environment = _hosted_linux_environment(architecture, host_arch)
@@ -674,7 +766,8 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
                    "--file", docker.path(context) + "/Dockerfile.runtime", "--tag", runtime, docker.path(context))
         mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
                   "--mount", f"type=bind,source={docker.path(layout.emulebb_rust_repo_root)},target=/workspace/repos/emulebb-rust,readonly",
-                  "--mount", f"type=bind,source={docker.path(harness_source)},target=/workspace/repos/emulebb-build-tests,readonly"]
+                  "--mount", f"type=bind,source={docker.path(harness_source)},target=/workspace/repos/emulebb-build-tests,readonly",
+                  "--mount", f"type=bind,source={docker.path(layout.tooling_repo_root)},target=/workspace/repos/emulebb-tooling,readonly"]
         relative = reports.relative_to(output).as_posix()
         docker.run("run", "--rm", "--platform", f"linux/{architecture}", *mounts, runtime,
                    "chmod", "0777", f"/output/{relative}", f"/output/{relative}/tmp")
@@ -690,6 +783,7 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
                    "--tmpfs", scratch_mount,
                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "bridge", *mounts,
                    "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                   "--env", RUNTIME_OPENAPI_ENV,
                    # WHY: Git must inspect this exact read-only source mount even
                    # when a root host runs the smoke as the unprivileged UID.
                    "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory",
@@ -700,7 +794,12 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
                    "--release-version", version, "--target-os", "linux", "--platform", "x64" if architecture == "amd64" else "ARM64",
                    "--linux-libc", libc, "--expected-source-sha", source_sha,
                    "--rust-repo", "/workspace/repos/emulebb-rust", "--report-path", f"/output/{relative}/package-smoke.json"]
-        run_owned_container(docker, command, reports / "runtime.log", timeout=600)
+        # WHY: the paced transfer proof alone permits 1,144 seconds. Let its
+        # bounded guard report failure before the outer container cleanup guard.
+        run_owned_container(docker, command, reports / "runtime.log", timeout=30 * 60)
+        if (git_output(layout.tooling_repo_root, "rev-parse", "HEAD").strip() != tooling_revision
+                or git_output(layout.tooling_repo_root, "status", "--porcelain").strip()):
+            raise RuntimeError("Selected OpenAPI contract changed during runtime validation")
         if harness_source != layout.tests_repo_root.resolve() and (
                 git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip()
                 != git_output(harness_source, "rev-parse", "HEAD").strip()
@@ -711,14 +810,300 @@ def smoke_linux_archive(layout, *, archive: Path, libc: str, architecture: str, 
             "execution": "native" if host_arch == architecture else "qemu",
             "sourceSha": source_sha, "archiveSha256": manifest["sha256"],
             "harnessSha": git_output(layout.tests_repo_root, "rev-parse", "HEAD").strip(),
+            "toolingSha": tooling_revision,
         }, indent=2) + "\n", encoding="utf-8")
     print(f"Non-root Linux {architecture}/{libc} lifecycle passed: {reports / 'package-smoke.json'}")
     return reports / "package-smoke.json"
 
 
+LIBRARY_CONTAINER_SCHEMA = "emulebb.rust-container-library-io.v1"
+
+
+def _inspect_library_volume(docker, volume: str, labels: dict[str, str]) -> None:
+    """Prove the labelled allocation uses Docker's local filesystem without remote mount options."""
+    values = json.loads(docker.run("volume", "inspect", volume, capture=True, timeout=30).stdout)
+    if (not isinstance(values, list) or len(values) != 1 or values[0].get("Name") != volume
+            or values[0].get("Driver") != "local" or values[0].get("Options") not in (None, {})
+            or any((values[0].get("Labels") or {}).get(key) != value for key, value in labels.items())):
+        raise RuntimeError("Native volume labels or local filesystem authority differ from the campaign receipt")
+
+
+def _library_inputs(layout, archive: Path):
+    """Admit the current clean archive and all participating source identities."""
+    output = layout.output_root.resolve()
+    archive = archive.resolve()
+    if not archive.is_relative_to(output) or not archive.is_file():
+        raise RuntimeError("Library campaign archive must be below the operator output root")
+    sources = {"rust": layout.emulebb_rust_repo_root, "harness": layout.tests_repo_root,
+               "tooling": layout.tooling_repo_root, "builder": layout.build_repo_root}
+    revisions = {}
+    for name, source in sources.items():
+        if git_output(source, "status", "--porcelain").strip():
+            raise RuntimeError(f"Library campaign requires clean {name} source")
+        revisions[name] = git_output(source, "rev-parse", "HEAD").strip()
+    manifest = json.loads(archive.with_name(archive.name + ".manifest.json").read_text(encoding="utf-8"))
+    version = manifest.get("version")
+    with archive.open("rb") as stream:
+        archive_sha = hashlib.file_digest(stream, "sha256").hexdigest()
+    if (manifest.get("schema") != "emulebb.rust.package/2" or not isinstance(version, str) or not version
+            or archive.name != f"emulebb-rust-v{version}-linux-amd64-gnu.tar.zst"
+            or manifest.get("asset") != archive.name or manifest.get("target") != "x86_64-unknown-linux-gnu"
+            or manifest.get("sha256") != archive_sha or manifest.get("sourceDirty") is not False
+            or manifest.get("source", {}).get("emulebbRust", {}).get("commit") != revisions["rust"]):
+        raise RuntimeError("Library campaign requires the exact current clean GNU/AMD64 archive")
+    return output, archive, sources, revisions, version, archive_sha
+
+
+def _library_runtime(docker, reports: Path, *, heap_profile: bool = False):
+    context = Path(__file__).parent / "release_assets/rust_linux"
+    runtime = "local/emulebb-rust-runtime:gnu-amd64" + ("-heaptrack" if heap_profile else "")
+    extra = ["--build-arg", "HEAP_PROFILE=1"] if heap_profile else []
+    image = docker.run("build", "--platform", "linux/amd64", "--build-arg", f"BASE_IMAGE={RUNTIME_IMAGES['gnu']}",
+                       *extra, "--file", docker.path(context) + "/Dockerfile.runtime", "--tag", runtime,
+                       docker.path(context), capture=True, timeout=600)
+    (reports / "image.log").write_text((image.stdout or "") + (image.stderr or ""), encoding="utf-8")
+    identity = docker.run("image", "inspect", runtime, "--format", "{{.Id}}", capture=True, timeout=30).stdout.strip()
+    return runtime, identity
+
+
+def run_library_resource_campaign(layout, *, archive: Path, library_files: int = 100_000,
+                                  wsl_distro: str = "Ubuntu") -> Path:
+    """Run an approved physical-library/history tier in its measured native budget."""
+    if library_files not in (50_000, 100_000):
+        raise ValueError("library capacity must be 50000 or 100000 files")
+    memory_bytes = (512 if library_files == 50_000 else 1024) * 1024 * 1024
+    capacity = {"libraryFiles": library_files, "memoryBytes": memory_bytes, "retainedJobs": 100_000}
+    output, archive, sources, revisions, version, archive_sha = _library_inputs(layout, archive)
+    run_id = uuid4().hex
+    reports = output / "reports/linux-containers/library" / run_id
+    reports.mkdir(parents=True)
+    (reports / "campaign").mkdir()
+    receipt = reports / "report.json"
+    volume = f"emulebb-library-{run_id}"
+    labels = {"emulebb.scope": "shared-library-io", "emulebb.run": run_id}
+    report = {"schema": LIBRARY_CONTAINER_SCHEMA, "status": "running", "runId": run_id,
+              "capacityTarget": capacity,
+              "sourceRevisions": revisions, "archiveSha256": archive_sha,
+              "volume": {"name": volume, "labels": labels, "retained": False},
+              "container": {}, "initializationContainer": {}, "inputCheckContainer": {}, "workloadQualified": False}
+    receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    try:
+        harness = _runtime_source_snapshot(layout, reports)
+        rust = _runtime_source_snapshot(layout, reports, source=layout.emulebb_rust_repo_root, name="rust")
+        with LinuxDocker(wsl_distro) as docker:
+            if docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip() != "amd64":
+                raise RuntimeError("Library resource qualification requires native GNU/AMD64 Docker")
+            runtime, image_id = _library_runtime(docker, reports)
+            report.update(runtimeBase=RUNTIME_IMAGES["gnu"], runtimeImageId=image_id)
+            source_mounts = [
+                "--mount", f"type=bind,source={docker.path(harness)},target=/workspace/repos/emulebb-build-tests,readonly",
+                "--mount", f"type=bind,source={docker.path(rust)},target=/workspace/repos/emulebb-rust,readonly",
+                "--mount", f"type=bind,source={docker.path(layout.tooling_repo_root)},target=/workspace/repos/emulebb-tooling,readonly",
+            ]
+            # Validate real runtime imports before allocating the tier's fixture volume.
+            run_owned_container(docker, ["--rm", "--platform", "linux/amd64", "--user", "65534:65534",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "none", *source_mounts,
+                "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                "--env", RUNTIME_OPENAPI_ENV, "--workdir", "/workspace/repos/emulebb-build-tests",
+                runtime, "python3", "-B", "scripts/rust-shared-library-io.py", "--help"],
+                reports / "runtime-inputs.log", timeout=120, ownership=report["inputCheckContainer"])
+            report["volume"]["retained"] = True
+            report["volume"]["created"] = False
+            receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            docker.run("volume", "create", "--driver", "local", *[argument for key, value in labels.items()
+                       for argument in ("--label", f"{key}={value}")], volume, capture=True, timeout=30)
+            report["volume"]["created"] = True
+            _inspect_library_volume(docker, volume, labels)
+            receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            relative = reports.relative_to(output).as_posix()
+            report_root = f"/output/{relative}"
+            native = report_root + "/native"
+            mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
+                      "--mount", f"type=volume,source={volume},target={native}"]
+            # WHY: WSL can expand nested shell variables before Docker receives
+            # them. The persisted initializer uses Python argv and filesystem APIs.
+            initialization = "\n".join((
+                "import os, sys", "native, reports = sys.argv[1:]",
+                "os.mkdir(native + '/tmp')",
+                "os.chown(native, 65534, 65534)", "os.chown(native + '/tmp', 65534, 65534)",
+                "os.chmod(reports, 0o777)", "os.chmod(reports + '/campaign', 0o777)",
+            ))
+            run_owned_container(docker, ["--rm", "--network", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN",
+                "--cap-add", "FOWNER", *mounts, runtime, "python3", "-B", "-c", initialization,
+                native, report_root], reports / "initialize.log", timeout=60,
+                ownership=report["initializationContainer"])
+            mounts.extend(source_mounts)
+            command = ["--rm", "--platform", "linux/amd64", "--user", "65534:65534", "--cap-drop", "ALL",
+                       "--security-opt", "no-new-privileges", "--network", "none", "--cgroupns", "private",
+                       "--memory", str(memory_bytes), "--memory-swap", str(memory_bytes), "--cpus", "1", *mounts,
+                       "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                       "--env", RUNTIME_OPENAPI_ENV,
+                       "--env", f"TMPDIR={native}/tmp", "--env", "GIT_CONFIG_COUNT=2",
+                       "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-rust",
+                       "--env", "GIT_CONFIG_KEY_1=safe.directory", "--env", "GIT_CONFIG_VALUE_1=/workspace/repos/emulebb-build-tests",
+                       "--workdir", "/workspace/repos/emulebb-build-tests", runtime, "python3", "-B",
+                       "scripts/rust-shared-library-io.py", "--rust-repo", "/workspace/repos/emulebb-rust",
+                       "container-run", "--archive", "/output/" + archive.relative_to(output).as_posix(),
+                       "--source-sha", revisions["rust"], "--version", version,
+                       "--native-root", native, "--report-root", report_root,
+                       "--library-files", str(library_files)]
+            run_owned_container(docker, command, reports / "campaign.log", timeout=4 * 60 * 60,
+                                ownership=report["container"])
+            result = json.loads((reports / "container-result.json").read_text(encoding="utf-8"))
+            report["campaign"] = result
+            campaign_path = result.get("campaignReport")
+            if not isinstance(campaign_path, str) or not campaign_path.startswith(report_root + "/campaign/"):
+                raise RuntimeError("Library campaign report escaped its managed report directory")
+            campaign_host = (output / campaign_path.removeprefix("/output/")).resolve()
+            if not campaign_host.is_relative_to(reports / "campaign"):
+                raise RuntimeError("Library campaign report escaped its managed report directory")
+            campaign = json.loads(campaign_host.read_text(encoding="utf-8"))
+            scope = campaign.get("qualificationScope", {})
+            if (campaign.get("schema") != "emulebb.rust-shared-library-io.v8"
+                    or campaign.get("capacityTarget") != capacity
+                    or result.get("capacityTarget") != capacity
+                    or campaign.get("fixture", {}).get("fileCount") != library_files
+                    or campaign.get("retainedDownloadFixture", {}).get("downloadJobs") != 100_000
+                    or campaign.get("status") != "passed" or campaign.get("acceptance", {}).get("ok") is not True
+                    or any(scope.get(key) is not True for key in
+                           ("fullCampaign", "physicalLibrary", "initialPayloadHashing", "containerLimitsEnforced"))
+                    or scope.get("downloadHistory") != "metadata-only"):
+                raise RuntimeError("Full physical-library/history campaign acceptance was not proved")
+            if (result.get("status") != "passed" or result.get("sourceSha") != revisions["rust"]
+                    or result.get("archiveSha256") != archive_sha or result.get("acceptance", {}).get("ok") is not True
+                    or result.get("qualificationScope", {}).get("containerLimitsEnforced") is not True
+                    or report["container"].get("absent") is not True):
+                raise RuntimeError("Library workload, kernel budget or owned container cleanup was not proved")
+        for name, source in sources.items():
+            if (git_output(source, "rev-parse", "HEAD").strip() != revisions[name]
+                    or git_output(source, "status", "--porcelain").strip()):
+                raise RuntimeError(f"Library campaign {name} source changed during execution")
+        report.update(status="passed", workloadQualified=True)
+    except BaseException as error:
+        report.update(status="failed", error=type(error).__name__)
+        raise
+    finally:
+        receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"Constrained library campaign passed; native volume retained: {receipt}")
+    return receipt
+
+
+def _library_volume_receipt(output: Path, receipt: Path):
+    """Read the existing labelled volume authority without changing its receipt."""
+    receipt = receipt.resolve()
+    boundary = output.resolve() / "reports/linux-containers/library"
+    if receipt.parent.parent != boundary or receipt.name != "report.json":
+        raise RuntimeError("Campaign volume cleanup requires its managed receipt")
+    report = json.loads(receipt.read_text(encoding="utf-8"))
+    run_id = report.get("runId")
+    if (report.get("schema") != LIBRARY_CONTAINER_SCHEMA or report.get("status") not in {"running", "passed", "failed"}
+            or not isinstance(run_id, str) or re.fullmatch(r"[0-9a-f]{32}", run_id) is None
+            or receipt.parent.name != run_id or report.get("volume", {}).get("retained") is not True):
+        raise RuntimeError("Campaign volume receipt is not an owned allocation")
+    volume = f"emulebb-library-{run_id}"
+    expected = {"emulebb.scope": "shared-library-io", "emulebb.run": run_id}
+    if report["volume"].get("name") != volume or report["volume"].get("labels") != expected:
+        raise RuntimeError("Campaign volume receipt identity differs")
+    return receipt, report, volume, expected
+
+
+def run_library_heap_profile(layout, *, archive: Path, receipt: Path, wsl_distro: str = "Ubuntu") -> Path:
+    """Collect allocation stacks from a copied retained profile; never qualify workload."""
+    output, archive, sources, revisions, version, archive_sha = _library_inputs(layout, archive)
+    receipt, source, volume, labels = _library_volume_receipt(output, receipt)
+    if (source["status"] not in {"passed", "failed"} or source.get("container", {}).get("absent") is not True
+            or source.get("sourceRevisions", {}).get("rust") != revisions["rust"]
+            or source.get("archiveSha256") != archive_sha):
+        raise RuntimeError("Heap replay requires the exact retained inactive source/archive")
+    reports = output / "reports/linux-containers/library-heap" / uuid4().hex
+    (reports / "campaign").mkdir(parents=True)
+    report = {"schema": "emulebb.rust-library-heap.v1", "status": "running", "workloadQualified": False,
+        "sourceReceipt": str(receipt), "sourceVolume": {"name": volume, "labels": labels},
+        "sourceRevisions": revisions, "archiveSha256": archive_sha, "container": {}, "initializationContainer": {}}
+    try:
+        harness = _runtime_source_snapshot(layout, reports)
+        rust = _runtime_source_snapshot(layout, reports, source=layout.emulebb_rust_repo_root, name="rust")
+        with LinuxDocker(wsl_distro) as docker:
+            if docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip() != "amd64":
+                raise RuntimeError("Heap replay requires native GNU/AMD64 Docker")
+            _inspect_library_volume(docker, volume, labels)
+            if docker.run("ps", "--all", "--filter", f"volume={volume}", "--format", "{{.ID}}", capture=True, timeout=30).stdout.strip():
+                raise RuntimeError("Heap replay source volume is still attached")
+            runtime, image_id = _library_runtime(docker, reports, heap_profile=True)
+            report.update(runtimeBase=RUNTIME_IMAGES["gnu"], runtimeImageId=image_id)
+            report_root = "/output/" + reports.relative_to(output).as_posix()
+            native = "/output/" + receipt.parent.relative_to(output).as_posix() + "/native"
+            mounts = ["--mount", f"type=bind,source={docker.path(output)},target=/output",
+                "--mount", f"type=volume,source={volume},target={native}",
+                "--mount", f"type=bind,source={docker.path(harness)},target=/workspace/repos/emulebb-build-tests,readonly",
+                "--mount", f"type=bind,source={docker.path(rust)},target=/workspace/repos/emulebb-rust,readonly",
+                "--mount", f"type=bind,source={docker.path(layout.tooling_repo_root)},target=/workspace/repos/emulebb-tooling,readonly"]
+            initialization = "import os,sys; os.chmod(sys.argv[1],0o777); os.chmod(sys.argv[1]+'/campaign',0o777)"
+            run_owned_container(docker, ["--rm", "--network", "none", "--cap-drop", "ALL", "--cap-add", "FOWNER",
+                *mounts, runtime, "python3", "-B", "-c", initialization, report_root], reports / "initialize.log",
+                timeout=60, ownership=report["initializationContainer"])
+            command = ["--rm", "--platform", "linux/amd64", "--user", "65534:65534", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges", "--network", "none", "--cgroupns", "private",
+                "--memory", "1073741824", "--memory-swap", "1073741824", "--cpus", "1", *mounts,
+                "--env", "EMULEBB_WORKSPACE_ROOT=/workspace", "--env", "EMULEBB_WORKSPACE_OUTPUT_ROOT=/output",
+                "--env", RUNTIME_OPENAPI_ENV,
+                "--env", f"TMPDIR={native}/tmp", "--env", "GIT_CONFIG_COUNT=2",
+                "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=/workspace/repos/emulebb-rust",
+                "--env", "GIT_CONFIG_KEY_1=safe.directory", "--env", "GIT_CONFIG_VALUE_1=/workspace/repos/emulebb-build-tests",
+                "--workdir", "/workspace/repos/emulebb-build-tests", runtime, "python3", "-B", "scripts/rust-shared-library-io.py",
+                "--rust-repo", "/workspace/repos/emulebb-rust", "container-heap-profile",
+                "--archive", "/output/" + archive.relative_to(output).as_posix(), "--source-sha", revisions["rust"],
+                "--version", version, "--source-receipt", "/output/" + receipt.relative_to(output).as_posix(),
+                "--report-root", report_root]
+            run_owned_container(docker, command, reports / "campaign.log", timeout=4 * 60 * 60, ownership=report["container"])
+            result = json.loads((reports / "heap-result.json").read_text(encoding="utf-8"))
+            report["diagnostic"] = result
+            if (result.get("schema") != report["schema"] or result.get("status") != "diagnosticComplete"
+                    or result.get("workloadQualified") is not False or not result.get("traces")
+                    or result.get("acceptance", {}).get("ok") is not False
+                    or result.get("qualificationScope", {}).get("containerLimitsEnforced") is not False
+                    or result.get("kernelResourceBudget", {}).get("ok") is not True
+                    or result.get("sourceSha") != revisions["rust"] or result.get("archiveSha256") != archive_sha
+                    or report["container"].get("absent") is not True):
+                raise RuntimeError("Heap trace collection or owned cleanup was not proved")
+        for name, path in sources.items():
+            if (git_output(path, "rev-parse", "HEAD").strip() != revisions[name]
+                    or git_output(path, "status", "--porcelain").strip()):
+                raise RuntimeError(f"Heap replay {name} source changed during execution")
+        report["status"] = "diagnosticComplete"
+    except BaseException as error:
+        report.update(status="failed", error=type(error).__name__)
+        raise
+    finally:
+        (reports / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"Heap diagnostic collected; workload not qualified: {reports / 'report.json'}")
+    return reports / "report.json"
+
+
+def remove_library_campaign_volume(layout, *, receipt: Path, wsl_distro: str = "Ubuntu") -> None:
+    """Remove only a receipt-matched, unused labelled native volume under the workspace lock."""
+    receipt, report, volume, expected = _library_volume_receipt(layout.output_root, receipt)
+    with LinuxDocker(wsl_distro) as docker:
+        _inspect_library_volume(docker, volume, expected)
+        attached = docker.run("ps", "--all", "--filter", f"volume={volume}", "--format", "{{.ID}}",
+                              capture=True, timeout=30).stdout.strip()
+        if attached:
+            raise RuntimeError("Native campaign volume is still attached to a container")
+        docker.run("volume", "rm", volume, capture=True, timeout=60)
+        names = docker.run("volume", "ls", "--filter", f"name={volume}", "--format", "{{.Name}}",
+                           capture=True, timeout=30).stdout.splitlines()
+        if volume in names:
+            raise RuntimeError("Native campaign volume survived cleanup")
+    report["volume"]["retained"] = False
+    if report["status"] == "running":
+        report["status"] = "interrupted"
+    receipt.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
 def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architecture: str,
                            webui_dist: Path | None, release_version: str | None, test_scope: str,
                            use_ci_image_mirrors: bool = False,
+                           quality_diagnostics_only: bool = False,
                            profile_scratch_proof: tuple[Path, dict] | None = None) -> Path:
     from . import release
     from .workstreams import _safe_path
@@ -746,7 +1131,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     hosted_environment = _hosted_linux_environment(architecture, engine_arch)
     base, build_arch, cross = build_configuration(libc, architecture, engine_arch, use_ci_image_mirrors=use_ci_image_mirrors)
     test_plan = linux_test_plan(test_scope, cross=cross, rust_root=rust)
-    quality_plan = linux_quality_plan(rust, target) if test_scope == "full" else []
+    quality_plan = linux_quality_plan(rust, target, diagnostics_only=quality_diagnostics_only) if test_scope == "full" else []
     user = _builder_user(docker)
     uid, gid = user.split(":")
     if profile_scratch_proof is not None and uid == "0":
@@ -828,8 +1213,20 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     for label, arguments in quality_plan:
         print(f"Checking Linux {architecture}/{libc}: {label}; log: {log_root / (label + '.log')}", flush=True)
         run_owned_container(docker, [*cargo, *arguments], log_root / f"{label}.log", timeout=3600)
+    if quality_diagnostics_only:
+        path = log_root / "diagnostic-collection.json"
+        path.write_text(json.dumps({
+            "schema": "emulebb.linux-quality-diagnostics.v1", "status": "collected",
+            "qualityGatePassed": False, "packageProduced": False,
+            "diagnosticFormat": "cargo-json",
+            "sourceRevision": source_revision, "target": target,
+            "plan": quality_plan, "log": str(log_root / "clippy-diagnostics.log"),
+        }, indent=2) + "\n", encoding="utf-8")
+        print(f"Linux quality diagnostics collected; strict gate remains required: {path}", flush=True)
+        return path
     command = ["run", *cargo, "build", "--locked", "--release",
-               "--target", target, "-p", "emulebb-daemon", "--bin", "emulebb-rust"]
+               "--target", target, "-p", "emulebb-daemon", "--bin", "emulebb-rust",
+               "--bin", "emulebb-profile-init"]
     log = log_root / "build.log"
     print(f"Building Linux {architecture}/{libc}; log: {log}", flush=True)
     run_owned_container(docker, command[1:], log, timeout=7200)
@@ -842,6 +1239,12 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                        *user_options, *environment, builder, "readelf", "-h", "-l", "-d", f"{target_root}/{target}/release/emulebb-rust", capture=True).stdout
     (log_root / "elf.txt").write_text(audit, encoding="utf-8")
     validate_elf_audit(audit, libc=libc, architecture=architecture)
+    initializer = binary.with_name("emulebb-profile-init")
+    initializer_audit = docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}",
+                                   *mounts, *user_options, *environment, builder, "readelf", "-h", "-l", "-d",
+                                   f"{target_root}/{target}/release/emulebb-profile-init", capture=True).stdout
+    (log_root / "initializer-elf.txt").write_text(initializer_audit, encoding="utf-8")
+    validate_elf_audit(initializer_audit, libc=libc, architecture=architecture)
     tools = docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}",
                        *user_options, *mounts, *environment, builder, "sh", "-ec", "rustc --version; cc --version; "
                        "if command -v apk >/dev/null; then apk info -v; else dpkg-query -W; fi", capture=True).stdout
@@ -853,6 +1256,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         shutil.rmtree(stage)
     stage.mkdir(parents=True, exist_ok=True)
     shutil.copy2(binary, stage / "emulebb-rust")
+    shutil.copy2(initializer, stage / "emulebb-profile-init")
     if webui_dist is None:
         webui_dist = root / "webui-built"
         subprocess.run([sys.executable, "-B", str(rust / "tools/build_webui.py"), "--stage-dir", str(webui_dist)], check=True)
@@ -883,7 +1287,8 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                                          asset_name=archive.name, version=version, arch=f"{architecture}-{libc}")
     relative = root.relative_to(output).as_posix()
     docker.run("run", "--rm", "--network", "none", "--platform", f"linux/{build_arch}", *mounts,
-               *user_options, builder, "chmod", "755", f"/output/{relative}/staging/emulebb-rust/emulebb-rust")
+               *user_options, builder, "chmod", "755", f"/output/{relative}/staging/emulebb-rust/emulebb-rust",
+               f"/output/{relative}/staging/emulebb-rust/emulebb-profile-init")
     # Replace through the host owner: an earlier root-run Docker build may have
     # left an archive that the operator UID cannot truncate through DrvFS.
     if archive.is_symlink() or not archive.resolve().is_relative_to(output):
@@ -899,6 +1304,7 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
                 "asset": archive.name, "sha256": release._sha256(archive), "sbom": sbom.name,
                 "sbomSha256": release._sha256(sbom), "target": target, "libc": libc,
                 "builderBase": base, "buildUser": user, "elfAudit": audit,
+                "initializerElfAudit": initializer_audit,
                 "channel": channel,
                 "buildExecution": "cross" if cross else "native", "libraryTestExecution": "qemu" if cross else "native",
                 "testCompilation": "workspace" if test_scope == "full" else "selected-libraries",
@@ -959,7 +1365,8 @@ def _package_gnu_deb(layout, docker, *, root: Path, stage: Path, version: str, a
         f"find {q(native)} -type f -exec chmod 0644 {{}} +",
         "chmod 0755 " + " ".join(q(native + path) for path in
             ("/usr/bin/emulebb-rust", "/usr/bin/emulebb-rust-launch",
-             "/usr/lib/emulebb-rust/emulebb-rust", "/usr/lib/emulebb-rust/launch")),
+             "/usr/lib/emulebb-rust/emulebb-rust", "/usr/lib/emulebb-rust/emulebb-profile-init",
+             "/usr/lib/emulebb-rust/launch")),
         "desktop-file-validate " + q(native + "/usr/share/applications/io.github.emulebb.emulebb-rust.desktop"),
         "appstreamcli validate-tree --no-net " + q(native),
         f"dpkg-deb --build --root-owner-group {q(native)} {q(destination)}",

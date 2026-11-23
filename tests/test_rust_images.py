@@ -210,7 +210,8 @@ def test_failed_image_build_invalidates_old_sidecars_and_removes_only_its_worker
         assert json.loads(report_path.read_text())["unpackBase"] == selected
 
 
-@pytest.mark.parametrize("fault", [None, "timeout", "old-schema", "wrong-version", "root-daemon"])
+@pytest.mark.parametrize("fault", [None, "timeout", "invalid-schema", "wrong-version", "root-daemon",
+                                 "missing-temp-owner", "wrong-network-fixture"])
 def test_fresh_wsl_smoke_requires_current_release_proof_and_removes_only_labeled_workloads(tmp_path, monkeypatch, fault):
     output = tmp_path / "output"
     output.mkdir()
@@ -245,16 +246,21 @@ def test_fresh_wsl_smoke_requires_current_release_proof_and_removes_only_labeled
                   "platforms": [{"platform": "linux/amd64", "appVersion": manifest["version"], "appBuild": "release",
                                  "appPlatform": "x64", "authenticatedStatus": 200, "unauthenticatedStatus": 401,
                                  "firstRunProfile": True, "webui": True, "uid": 1234, "gid": 1235,
-                                 "configOwner": "1234:1235", "dataOwner": "1234:1235", "publishedPorts": 0,
+                                 "configOwner": "1234:1235", "incomingOwner": "1234:1235", "tempOwner": "1234:1235",
+                                 "networkFixture": "saved-eth0-interface-before-s6", "publishedPorts": 0,
                                  "restAuthentication": True, "networkIsolation": "internal-bridge", "dns": "loopback-only",
                                  "imageManifestDigest": "sha256:" + "b" * 64, "imageConfigDigest": "sha256:" + "c" * 64,
                                  "daemonUid": 1234, "daemonGid": 1235, "gracefulShutdown": True}]}
-        if fault == "old-schema":
-            result["schema"] = "emulebb.rust.image-smoke/3"
+        if fault == "invalid-schema":
+            result["schema"] = "invalid"
         elif fault == "wrong-version":
             result["platforms"][0]["appVersion"] = "0.1.0-beta.1"
         elif fault == "root-daemon":
             result["platforms"][0]["daemonUid"] = 0
+        elif fault == "missing-temp-owner":
+            del result["platforms"][0]["tempOwner"]
+        elif fault == "wrong-network-fixture":
+            result["platforms"][0]["networkFixture"] = "unproven"
         Path(command[command.index("--report-path") + 1]).write_text(json.dumps(result))
         return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr(rust_images, "git_output", lambda repo, *args: "" if args[0] == "status" else "a" * 40)
