@@ -1,7 +1,44 @@
+FROM docker.io/library/python:3.15.2-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS apt-ca
 FROM docker.io/library/ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
-RUN apt-get update && apt-get install --no-install-recommends -y \
-    python3 unzip ca-certificates libasound2t64 libdbus-1-3 libegl1 libgl1 libnss3 \
-    libpulse0 libxcb1 libx11-6 libxkbcommon0 && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=bind,from=apt-ca,source=/etc/ssl/certs/ca-certificates.crt,target=/run/emulebb-apt-ca.crt \
+    --mount=type=tmpfs,target=/var/lib/apt/lists <<'APT'
+set -eu
+. /etc/os-release
+export DEBIAN_FRONTEND=noninteractive
+sources=$(mktemp)
+trap 'rm -f "$sources"' EXIT
+chmod 0644 "$sources"
+
+apt() {
+    limit=$1
+    shift
+    timeout --kill-after=3s "$limit" apt-get \
+        -o "Dir::Etc::sourcelist=$sources" -o Dir::Etc::sourceparts=- \
+        -o Acquire::Retries=0 -o Acquire::https::Timeout=20 \
+        -o Acquire::https::AllowRedirect=false -o Acquire::https::CAInfo=/run/emulebb-apt-ca.crt \
+        -o Acquire::https::Verify-Peer=true -o Acquire::https::Verify-Host=true \
+        -o Acquire::AllowInsecureRepositories=false -o APT::Get::AllowUnauthenticated=false "$@"
+}
+
+fetch_packages() {
+    archive=$1 security=$2 budget=$3
+    shift 3
+    printf 'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] %s %s main universe\n' \
+        "$archive" "$VERSION_CODENAME" "$archive" "$VERSION_CODENAME-updates" \
+        "$security" "$VERSION_CODENAME-security" > "$sources" &&
+    apt 60s -o APT::Update::Error-Mode=any update &&
+    apt "$budget" install --download-only --no-install-recommends -y "$@"
+}
+
+set -- python3 unzip ca-certificates libasound2t64 libdbus-1-3 libegl1 libgl1 libnss3 \
+    libpulse0 libxcb1 libx11-6 libxkbcommon0
+# WHY: Slow archive downloads exhausted the image build budget. Retry the fetch
+# against the reviewed signed mirror before the single package installation.
+mirror=https://mirrors.edge.kernel.org/ubuntu
+fetch_packages https://archive.ubuntu.com/ubuntu https://security.ubuntu.com/ubuntu 180s "$@" ||
+    fetch_packages "$mirror" "$mirror" 420s "$@"
+apt 180s install --no-download --no-install-recommends -y "$@"
+APT
 COPY emule_workspace/__init__.py emule_workspace/python_runtime.py \
      emule_workspace/android_inputs.py emule_workspace/android_install.py /opt/emulebb/emule_workspace/
 COPY emule_workspace/release_assets/android/toolchain.json \

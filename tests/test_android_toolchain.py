@@ -5,15 +5,72 @@ import copy
 import hashlib
 import io
 import json
+import shutil
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
-from urllib.error import HTTPError
 from unittest.mock import Mock
+from urllib.error import HTTPError
 
 import pytest
 
+from emule_workspace import android_inputs, config, python_runtime
 from emule_workspace import android_toolchain as android
-from emule_workspace import android_inputs, config
-from emule_workspace import python_runtime
+from emule_workspace.ci_linux_images import PYTHON_IMAGE
+from emule_workspace.ubuntu_ci import ARCHIVE_MIRRORS
+
+
+@pytest.mark.parametrize(("failure", "expected", "exit_code"), [
+    ("none", "official:update official:download official:install", 0),
+    ("update", "official:update mirror:update mirror:download mirror:install", 0),
+    ("download", "official:update official:download mirror:update mirror:download mirror:install", 0),
+    ("install", "official:update official:download official:install", 1),
+    ("both-downloads", "official:update official:download mirror:update mirror:download", 1),
+])
+def test_emulator_image_bounds_apt_recovery_before_install(tmp_path, failure, expected, exit_code):
+    shell = shutil.which("sh")
+    if shell is None:
+        shell = subprocess.check_output(["git", "var", "GIT_SHELL_PATH"], text=True).strip()
+    recipe = (Path(android.__file__).parent / "release_assets/android/Dockerfile.emulator").read_text(encoding="utf-8")
+    assert f"FROM {PYTHON_IMAGE} AS apt-ca" in recipe
+    assert f"mirror={ARCHIVE_MIRRORS['amd64']}" in recipe
+    commands = recipe.split("<<'APT'\n", 1)[1].split("\nAPT\n", 1)[0]
+    assert commands.count("apt-get") == 1
+    assert 'timeout --kill-after=3s "$limit" apt-get' in commands
+    commands = commands.replace(". /etc/os-release", "VERSION_CODENAME=resolute", 1)
+    # Intercept the bounded command. APT and network traffic stay outside this test.
+    fake_apt = r"""
+PATH=/usr/bin:$PATH
+export TMPDIR=.
+timeout() {
+    [ "$1" = --kill-after=3s ] && [ "$3" = apt-get ] || return 99
+    shift 3
+    source_file= origin= operation=
+    for argument do
+        case "$argument" in
+            Dir::Etc::sourcelist=*) source_file=${argument#*=} ;;
+            update) operation=update ;;
+            --download-only) operation=download ;;
+            --no-download) operation=install ;;
+        esac
+    done
+    grep -q 'signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg' "$source_file" || return 99
+    case "$(cat "$source_file")" in
+        *archive.ubuntu.com*) origin=official ;;
+        *mirrors.edge.kernel.org*) origin=mirror ;;
+        *) return 99 ;;
+    esac
+    printf '%s:%s\n' "$origin" "$operation"
+    [ "$origin:$operation" != "official:$fixture_failure" ] &&
+        [ "$operation:$fixture_failure" != "download:both-downloads" ]
+}
+"""
+    result = subprocess.run(
+        [shell, "-s"], input=f"fixture_failure={failure}\n" + fake_apt + commands,
+        cwd=tmp_path, text=True, capture_output=True, timeout=10,
+    )
+    assert result.returncode == exit_code, result.stderr
+    assert result.stdout.split() == expected.split()
 
 
 @pytest.fixture
