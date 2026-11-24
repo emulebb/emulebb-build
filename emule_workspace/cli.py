@@ -2779,6 +2779,23 @@ def assemble_emulebb_rust_release_ci(*, release_version: str, assets_dir: Path,
     print(f"Rust release checksums: {sums}")
 
 
+@main.command("replay-rust-nightly")
+@click.option("--run-id", type=click.IntRange(min=1), required=True)
+@click.option("--attempt", type=click.IntRange(min=1), required=True)
+@click.option("--expected-candidate-sha256", help="Independently observed digest of the assembled candidate.")
+def replay_rust_nightly(run_id: int, attempt: int, expected_candidate_sha256: str | None) -> None:
+    """Replay original nightly inputs with the production assembly and verifiers."""
+    from .nightly_replay import replay
+
+    workspace, output = resolve_required_workspace_roots()
+    try:
+        path = replay(workspace=workspace, output=output, run_id=run_id, attempt=attempt,
+                      expected_candidate_sha256=expected_candidate_sha256)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(path)
+
+
 @main.command("package-emulebb-rust-image-ci")
 @click.option("--use-ci-image-mirrors", is_flag=True, help="Use exact-digest unpack-stage mirror; GHCR runtime bases stay unchanged.")
 @click.option("--variant", type=click.Choice(["ubuntu", "alpine"]), default="ubuntu", show_default=True)
