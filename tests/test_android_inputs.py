@@ -11,7 +11,7 @@ from emule_workspace import android_inputs as inputs
 
 def test_reviewed_inputs_are_complete_and_use_stable_platform_tools():
     value = inputs.tool_inputs()
-    assert value["assets"]["platform-tools"]["version"] == "37.0.1"
+    assert value["assets"]["platform-tools"]["version"] == "37.0.3"
     assert value["assets"]["platform"]["version"] == "37.2-r2"
 
 
