@@ -402,7 +402,7 @@ def _packages(root: Path, context: CandidateContext) -> dict[str, dict]:
 
 def _partial(value: object, payload_size: int, label: str) -> dict:
     snapshot = _object(value, label)
-    _fields(snapshot, {"state": "paused"}, label)
+    _fields(snapshot, {"state": "stopped", "intent": "stopped"}, label)
     total = _positive(snapshot.get("partsTotal"), f"{label} part count")
     indices = snapshot.get("verifiedPartIndices")
     if (not isinstance(indices, list) or not 0 < len(indices) < total
@@ -410,8 +410,7 @@ def _partial(value: object, payload_size: int, label: str) -> dict:
             or len(set(indices)) != len(indices)):
         raise RuntimeError(f"{label} requires unique, in-bounds verified part indices")
     verified = _positive(snapshot.get("verifiedBytes"), f"{label} verified bytes")
-    completed = _positive(snapshot.get("completedBytes"), f"{label} completed bytes")
-    if not verified <= completed < payload_size:
+    if verified >= payload_size:
         raise RuntimeError(f"{label} must prove verified data before completion")
     return snapshot
 
@@ -419,9 +418,15 @@ def _partial(value: object, payload_size: int, label: str) -> dict:
 def _transfer(value: object, label: str) -> None:
     transfer = _object(value, label)
     _fields(transfer, {
-        "transferAccepted": True, "sourceDiscovery": "ed2k-link-direct-source",
+        "retainedCompletedJob": True, "sourceDiscovery": "ed2k-link-direct-source",
         "publicDiscoveryDisabled": True, "gracefulShutdowns": 3,
     }, label)
+    job_id = transfer.get("jobId")
+    if (not isinstance(job_id, str) or re.fullmatch(r"[1-9][0-9]{0,18}", job_id) is None
+            or int(job_id) > 9223372036854775807):
+        raise RuntimeError(f"{label} has an invalid durable download identity")
+    _fields(_object(transfer.get("snapshotCounts"), f"{label} snapshot counts"),
+            {"unfinished": 0, "completed": 1}, label)
     payload = _object(transfer.get("payload"), f"{label} payload")
     size = _positive(payload.get("sizeBytes"), f"{label} payload size")
     if (not isinstance(payload.get("name"), str) or not payload["name"]
@@ -429,16 +434,19 @@ def _transfer(value: object, label: str) -> None:
             or HASH.fullmatch(payload["sha256"]) is None):
         raise RuntimeError(f"{label} has an invalid payload identity")
     shared = _object(transfer.get("sharedFile"), f"{label} shared file")
-    _fields(shared, {"name": payload["name"], "sizeBytes": size}, label)
+    _fields(shared, {"displayName": payload["name"], "sizeBytes": size}, label)
     shared_hash = shared.get("hash")
     if not isinstance(shared_hash, str) or re.fullmatch(r"[0-9a-f]{32}", shared_hash) is None:
         raise RuntimeError(f"{label} has an invalid eD2k identity")
-    _fields(_object(transfer.get("delivery"), f"{label} delivery"), {
-        "hash": shared_hash, "state": "completed", "completedBytes": size,
-        "deliveredPathWithinIncoming": True, "deliveredSha256": payload["sha256"],
+    delivery = _object(transfer.get("delivery"), f"{label} delivery")
+    _fields(delivery, {
+        "id": job_id, "hash": shared_hash, "state": "completed", "completedBytes": size,
+        "sharedFileRegistered": True, "deliveredPathWithinIncoming": True, "deliveredSha256": payload["sha256"],
     }, label)
+    if delivery.get("deliveryOwnership") not in ("owned", "unowned"):
+        raise RuntimeError(f"{label} lacks a durable delivery ownership result")
     restart = _object(transfer.get("partialRestart"), f"{label} restart")
-    _fields(restart, {"sameProfile": True, "sameBinary": True, "resumeRequested": True,
+    _fields(restart, {"sameProfile": True, "sameBinary": True, "startRequested": True,
                       "downloadLimitRestored": True}, label)
     before = _partial(restart.get("before"), size, f"{label} before restart")
     after = _partial(restart.get("after"), size, f"{label} after restart")
@@ -482,7 +490,7 @@ def _package_smoke(root: Path, context: CandidateContext, packages: dict[str, di
                 raise RuntimeError(f"{name} requires WebUI backend proof")
             if platform == "windows-x64":
                 _fields(result, {"renderedWebui": True}, name)
-            _transfer(result.get("localTransfer"), f"{name} {asset}")
+            _transfer(result.get("localDownload"), f"{name} {asset}")
         evidence.append({"platform": platform, "report": name, "sha256": _sha256(root / name),
                          "assets": sorted(assets), "workflow": report["workflow"]})
     return evidence

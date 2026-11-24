@@ -103,7 +103,7 @@ def evidence(tmp_path, monkeypatch):
                               "peerSourceRevision": identity["sourceRevision"]},
             "fileLinks": {"schema": "emulebb.android.apk-file-links/1", "status": "passed", "cases": passed(contract["APK_FILE_LINK_CASES"]),
                 "browser": {"schema": "emulebb-rust.webui-file-link-proof/1", "status": "passed", "buildIdentity": identity,
-                    "confirmation": {"status": "passed", "sizeBytes": 1, "state": "paused", "transferHash": "e" * 32,
+                    "confirmation": {"status": "passed", "sizeBytes": 1, "intent": "stopped", "downloadId": "1", "hash": "e" * 32,
                                      **{key: True for key in contract["FILE_LINK_BROWSER_REQUIRED_CHECKS"]}}, "cleanup": {"status": "passed"}}},
             "endurance": {"activityClosed": True, "requestedSeconds": 0, "observedSeconds": 60.5, "samples": 3, "minimumDwellSeconds": 60, "minimumSamples": 3, "over24Hours": False}}
         proofs.append({"schema": "emulebb.android.guest-validation/1", "status": "passed", "origin": "github-actions", "workflow": WORKFLOW,
