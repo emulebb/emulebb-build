@@ -97,14 +97,14 @@ def emulator_environment(environment, monkeypatch):
         if path.parent.name == "emulator":
             return "Pkg.Revision=37.2.13\nPkg.BuildId=16740729"
         if path.parent.name == "platform-tools":
-            return "Pkg.Revision=37.0.1"
+            return "Pkg.Revision=37.0.3"
         if "android-28" in path.as_posix():
             return "Pkg.Revision=4\nAndroidVersion.ApiLevel=28\nSystemImage.Abi=x86_64\nSystemImage.TagId=default"
         return ("Pkg.Revision=7\nAndroidVersion.ApiLevel=37.2\nSystemImage.Abi=x86_64\n"
                 "SystemImage.TagId=google_apis,page_size_16kb\nAndroidVersion.PreviewSdkInt=0")
     monkeypatch.setattr(Path, "read_text", read)
     monkeypatch.setattr(probe.subprocess, "run", lambda command, **kwargs:
-                        subprocess.CompletedProcess(command, 0, "Version 37.0.1-123" if command[-1] == "version" else
+                        subprocess.CompletedProcess(command, 0, "Version 37.0.3-123" if command[-1] == "version" else
                             "Android emulator version 37.2.13.0 (build_id 16740729)"))
     return inputs
 
