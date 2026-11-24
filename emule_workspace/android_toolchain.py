@@ -709,6 +709,14 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
     harness = layout.tests_repo_root.resolve()
     if not harness.is_relative_to(workspace) or not (harness / "scripts/probe-android-emulator.py").is_file():
         raise RuntimeError("Android guest boot requires the shared harness below the workspace root")
+    openapi_contract = None
+    if apk_payload is not None:
+        tooling = layout.tooling_repo_root.resolve()
+        contract = tooling / "docs/products/emulebb-rust/api/REST-API-OPENAPI.yaml"
+        if (not tooling.is_relative_to(workspace) or not contract.is_file()
+                or not contract.resolve().is_relative_to(tooling)):
+            raise RuntimeError("Android APK qualification requires the pinned REST OpenAPI contract")
+        openapi_contract = contract.resolve()
     with LinuxDocker(wsl_distro) as docker:
         group = _kvm_group(docker)
         if docker.run("version", "--format", "{{.Server.Arch}}", capture=True, timeout=30).stdout.strip() != "amd64":
@@ -811,7 +819,9 @@ def probe_emulator_guest(layout, *, image: str, wsl_distro: str = "Ubuntu", tls_
                 *(["--mount", f"type=bind,source={docker.path(apk_payload['payload'])},target=/apk-payload,readonly",
                    "--mount", f"type=bind,source={docker.path(apk_payload['peer'])},target=/apk-peer-payload,readonly",
                    "--mount", f"type=bind,source={docker.path(layout.emulebb_rust_repo_root)},target=/rust-source,readonly",
-                   "--env", "EMULEBB_RUST_REPO=/rust-source"] if apk_payload is not None else []),
+                   "--env", "EMULEBB_RUST_REPO=/rust-source",
+                   "--mount", f"type=bind,source={docker.path(openapi_contract)},target=/rest-api-openapi.yaml,readonly",
+                   "--env", "EMULEBB_REST_OPENAPI_CONTRACT_PATH=/rest-api-openapi.yaml"] if apk_payload is not None else []),
                 image_id, "python3", "-B", "/harness/scripts/probe-android-emulator.py",
                 "--sdk-root", "/opt/android-emulator", "--image-dir", "/opt/android-emulator/" + image_path,
                 "--api", str(api), "--page-size", str(page_size), "--output-root", "/output",
