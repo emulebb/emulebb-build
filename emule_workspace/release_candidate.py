@@ -102,6 +102,7 @@ class CandidateContext:
     release_validator_build_sha: str | None = None
     apk_harness_root: Path | None = None
     apk_version_code: int | None = None
+    producer_build_root: Path | None = None
 
     def checked(self) -> CandidateContext:
         if not isinstance(self.version, str) or not _is_release_version(self.version):
@@ -248,6 +249,14 @@ def _android_packages(root: Path, context: CandidateContext) -> list[dict]:
     if context.channel != "nightly":
         return []
     android_package.identity(context.version, context.channel, context.source["emulebbRust"])
+    producer_root = context.producer_build_root
+    if producer_root is None:
+        if context.release_validator_build_sha not in (None, context.source["emulebbBuild"]):
+            raise RuntimeError("Android developer packages require the independently pinned producer toolchain")
+        inputs = tool_inputs()
+    else:
+        producer = _checked_checkout(producer_root, context.source["emulebbBuild"], "Android developer producer")
+        inputs = tool_inputs(producer / "emule_workspace/release_assets/android/toolchain.json")
     result = []
     for abi, (target, _machine) in TARGETS.items():
         names = android_package.names(context.version, abi)
@@ -257,7 +266,7 @@ def _android_packages(root: Path, context: CandidateContext) -> list[dict]:
                   "experimental": True, "distribution": "developer-daemon",
                   "runtimeExecution": "not-run", "testCompilation": "workspace",
                   "testExecution": "not-run", "buildExecution": "cross", "sourceDirty": False,
-                  "limitations": list(android_package.LIMITATIONS), "toolInputs": tool_inputs()}
+                  "limitations": list(android_package.LIMITATIONS), "toolInputs": inputs}
         for value, label in ((metadata, names["manifest"]), (proof, names["proof"])):
             _hosted(value, context, label)
             _fields(value, common, label)

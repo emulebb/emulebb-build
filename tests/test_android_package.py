@@ -1,4 +1,5 @@
 """Experimental Android archives retain exact bytes and honest compile-only claims."""
+from dataclasses import replace
 import json
 import shutil
 
@@ -30,6 +31,29 @@ def test_android_both_abis_are_bound_without_claiming_runtime(tmp_path, monkeypa
     assert {item["abi"] for item in result} == set(package.TARGETS)
     assert all(item["runtimeExecution"] == "not-run" for item in result)
     assert all(item["asset"].endswith(".tar.zst") for item in result)
+
+
+def test_android_developer_toolchain_follows_its_checked_producer_checkout(tmp_path, monkeypatch):
+    root = stage_pair(tmp_path, monkeypatch)
+    producer_root = tmp_path / "producer"
+    validator = replace(context(), release_validator_build_sha="9" * 40)
+    with pytest.raises(RuntimeError, match="independently pinned producer toolchain"):
+        candidate._android_packages(root, validator)
+
+    inventory = candidate.tool_inputs()
+    config = producer_root / "emule_workspace/release_assets/android/toolchain.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps(inventory), encoding="utf-8")
+    checked = []
+
+    def check(checkout, revision, label):
+        checked.append((checkout, revision, label))
+        return checkout
+
+    monkeypatch.setattr(candidate, "_checked_checkout", check)
+    selected = replace(validator, producer_build_root=producer_root)
+    assert len(candidate._android_packages(root, selected)) == 2
+    assert checked == [(producer_root, SOURCE["emulebbBuild"], "Android developer producer")]
 
 
 @pytest.mark.parametrize("field,value", [
