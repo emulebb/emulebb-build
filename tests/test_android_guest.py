@@ -30,6 +30,58 @@ def test_kvm_group_must_be_numeric(monkeypatch, group):
         subject._kvm_group(SimpleNamespace(prefix=[]))
 
 
+def test_apk_guest_mounts_only_the_pinned_openapi_contract(tmp_path, monkeypatch):
+    from emule_workspace import android_apk_candidate, release
+
+    workspace, output = tmp_path / "workspace", tmp_path / "output"
+    harness = workspace / "repos/emulebb-build-tests"
+    (harness / "scripts").mkdir(parents=True)
+    (harness / "scripts/probe-android-emulator.py").touch()
+    tooling = workspace / "repos/emulebb-tooling"
+    contract = tooling / "docs/products/emulebb-rust/api/REST-API-OPENAPI.yaml"
+    layout = SimpleNamespace(output_root=output, tests_repo_root=harness, tooling_repo_root=tooling,
+                             emulebb_rust_repo_root=workspace / "repos/emulebb-rust")
+    payload = {"context": SimpleNamespace(apk_signer_sha256="a" * 64),
+               "metadata": {"apk": {"sha256": "b" * 64}, "signerSha256": "a" * 64,
+                            "versionCode": 1, "buildIdentity": {"sourceRevision": "c" * 40}},
+               "payload": output / "apk-input", "peer": output / "peer-input",
+               "manifestName": "apk.manifest.json", "manifestSha256": "d" * 64,
+               "peerManifestSha256": "e" * 64, "soakSeconds": 60}
+    monkeypatch.setattr(config, "resolve_required_workspace_roots", lambda: (workspace, output))
+    with pytest.raises(RuntimeError, match="requires the pinned REST OpenAPI contract"):
+        subject.probe_emulator_guest(layout, image="apk35", apk_payload=payload)
+
+    contract.parent.mkdir(parents=True)
+    contract.write_text("openapi: 3.1.0", encoding="utf-8")
+    docker = Mock()
+    docker.__enter__ = Mock(return_value=docker)
+    docker.__exit__ = Mock(return_value=False)
+    docker.path.side_effect = str
+    docker.run.return_value = SimpleNamespace(stdout="amd64")
+    monkeypatch.setattr(linux_containers, "LinuxDocker", lambda distro: docker)
+    monkeypatch.setattr(subject, "_kvm_group", lambda docker: "108")
+    monkeypatch.setattr(linux_containers, "_builder_user", lambda docker: "1000:1000")
+    monkeypatch.setattr(subject, "_guest_sources", lambda layout: {})
+    monkeypatch.setattr(release, "_emulebb_rust_artifact_origin", lambda: {})
+    monkeypatch.setattr(android_apk_candidate, "apk_contract",
+                        lambda context: {"required_apk_cases": lambda api: ()})
+    report = tmp_path / "tools.json"
+    report.write_text(json.dumps({"image": {"id": "sha256:" + "f" * 64},
+        "inputs": subject.emulator_subset(subject.emulator_inputs(), ("apk35",)),
+        "runtimeExecution": "not-run"}), encoding="utf-8")
+    monkeypatch.setattr(subject, "prepare_apk_emulator_toolchain", lambda *a, **k: report)
+    launch = Mock(side_effect=RuntimeError("stop before emulator launch"))
+    monkeypatch.setattr(linux_containers, "run_owned_container", launch)
+
+    with pytest.raises(RuntimeError, match="stop before emulator launch"):
+        subject.probe_emulator_guest(layout, image="apk35", apk_payload=payload)
+
+    arguments = launch.call_args.args[1]
+    assert f"type=bind,source={contract},target=/rest-api-openapi.yaml,readonly" in arguments
+    assert "EMULEBB_REST_OPENAPI_CONTRACT_PATH=/rest-api-openapi.yaml" in arguments
+    assert all(f"source={tooling}," not in argument for argument in arguments)
+
+
 @pytest.mark.parametrize("outcome", ["success", "failure", "mismatch", "source-change", "private-extra",
                                      "tls-success", "tls-missing", "tls-names", "tls-ignored", "tls-source",
                                      "tls-bool", "tls-pre-source", "tls-post-source", "tls-manifest",
