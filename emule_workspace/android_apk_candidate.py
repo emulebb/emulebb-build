@@ -74,10 +74,13 @@ def validate_runtime(execution: dict, *, api: int, identity: dict, apk_sha256: s
     _fields(browser, {"schema": "emulebb-rust.webui-file-link-proof/1", "status": "passed",
                       "buildIdentity": identity}, "APK browser proof")
     confirmation = _object(browser.get("confirmation"), "APK browser confirmation")
-    _fields(confirmation, {"status": "passed", "sizeBytes": 1, "state": "paused",
+    _fields(confirmation, {"status": "passed", "sizeBytes": 1, "intent": "stopped",
                           **{name: True for name in contract["FILE_LINK_BROWSER_REQUIRED_CHECKS"]}},
             "APK browser confirmation")
-    if not isinstance(confirmation.get("transferHash"), str) or re.fullmatch(r"[0-9a-f]{32}", confirmation["transferHash"]) is None:
+    job_id, file_hash = confirmation.get("downloadId"), confirmation.get("hash")
+    if (not isinstance(job_id, str) or re.fullmatch(r"[1-9][0-9]{0,18}", job_id) is None
+            or int(job_id) > 9223372036854775807
+            or not isinstance(file_hash, str) or re.fullmatch(r"[0-9a-f]{32}", file_hash) is None):
         raise RuntimeError("APK browser must confirm its real neutral queue fixture")
     _fields(_object(browser.get("cleanup"), "APK browser cleanup"), {"status": "passed"}, "APK browser cleanup")
     endurance = _object(execution.get("endurance"), "APK screen-off observation")

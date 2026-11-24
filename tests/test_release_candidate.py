@@ -81,8 +81,8 @@ def evidence(tmp_path):
                 })
             save(name + ".manifest.json", metadata)
             packages[name] = metadata
-            partial = {"state": "paused", "partsTotal": 2, "verifiedPartIndices": [0],
-                       "verifiedBytes": 8, "completedBytes": 10}
+            partial = {"state": "stopped", "intent": "stopped", "partsTotal": 2, "verifiedPartIndices": [0],
+                       "verifiedBytes": 8}
             results.append({
                 "asset": name, "status": "passed", "assetSha256": metadata["sha256"],
                 "packageManifestSha256": _sha256(root / (name + ".manifest.json")),
@@ -92,15 +92,17 @@ def evidence(tmp_path):
                 "restStatus": True, "gracefulShutdown": True, "profile": "fresh-local-only",
                 "webuiAssets": 2, "webuiPanelBackends": {"transfers": "/api/v1/transfers"},
                 "renderedWebui": platform == "windows-x64",
-                "localTransfer": {
+                "localDownload": {
                     "payload": {"name": "synthetic.bin", "sizeBytes": 16, "sha256": "a" * 64},
-                    "sharedFile": {"name": "synthetic.bin", "sizeBytes": 16, "hash": "b" * 32},
-                    "transferAccepted": True, "sourceDiscovery": "ed2k-link-direct-source",
+                    "sharedFile": {"displayName": "synthetic.bin", "sizeBytes": 16, "hash": "b" * 32},
+                    "jobId": "1", "retainedCompletedJob": True, "sourceDiscovery": "ed2k-link-direct-source",
                     "publicDiscoveryDisabled": True, "gracefulShutdowns": 3,
-                    "delivery": {"hash": "b" * 32, "state": "completed", "completedBytes": 16,
+                    "snapshotCounts": {"unfinished": 0, "completed": 1},
+                    "delivery": {"id": "1", "hash": "b" * 32, "state": "completed", "completedBytes": 16,
+                                 "sharedFileRegistered": True, "deliveryOwnership": "owned",
                                  "deliveredPathWithinIncoming": True, "deliveredSha256": "a" * 64},
                     "partialRestart": {"before": partial, "after": partial, "sameProfile": True,
-                                       "sameBinary": True, "resumeRequested": True, "downloadLimitRestored": True},
+                                       "sameBinary": True, "startRequested": True, "downloadLimitRestored": True},
                 },
             })
         save(f"{STEM}-package-smoke-{platform}.json", {
@@ -413,14 +415,14 @@ def test_cross_run_or_newer_package_proof_cannot_be_promoted(evidence, field, va
 
 @pytest.mark.parametrize("fault", [
     "schema", "emulated", "harness", "manifest-hash", "delivery-hash",
-    "shutdown-count", "index-bool", "index-range", "duplicate-index", "part-count",
+    "wrong-job", "unregistered-delivery", "shutdown-count", "index-bool", "index-range", "duplicate-index", "part-count",
     "lost-verified", "completed-before-restart", "other-profile",
 ])
 def test_package_restart_proof_is_strict(evidence, fault):
     name = f"{STEM}-package-smoke-linux-x64-musl.json"
     data = evidence["read"](name)
     result = data["results"][0]
-    transfer = result["localTransfer"]
+    transfer = result["localDownload"]
     restart = transfer["partialRestart"]
     if fault == "schema":
         data["schema"] = "emulebb.rust.package-smoke/2"
@@ -432,6 +434,10 @@ def test_package_restart_proof_is_strict(evidence, fault):
         result["packageManifestSha256"] = "f" * 64
     elif fault == "delivery-hash":
         transfer["delivery"]["deliveredSha256"] = "f" * 64
+    elif fault == "wrong-job":
+        transfer["delivery"]["id"] = "2"
+    elif fault == "unregistered-delivery":
+        transfer["delivery"]["sharedFileRegistered"] = False
     elif fault == "shutdown-count":
         transfer["gracefulShutdowns"] = 2
     elif fault == "index-bool":
@@ -445,7 +451,7 @@ def test_package_restart_proof_is_strict(evidence, fault):
     elif fault == "lost-verified":
         restart["after"]["verifiedBytes"] = 7
     elif fault == "completed-before-restart":
-        restart["before"]["completedBytes"] = 16
+        restart["before"]["verifiedBytes"] = 16
     elif fault == "other-profile":
         restart["sameProfile"] = False
     evidence["save"](name, data)
