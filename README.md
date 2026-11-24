@@ -206,6 +206,18 @@ Command behavior:
 - `build all` runs `build libs`, `build app`, and `build tests`.
 - `full` runs `build all`, then `test all`, then prints a workspace summary.
 - `package-release` builds the main Release app, language DLLs, release ZIP, and release manifest. Use `--require-signing` for release-candidate or stable assets that must fail unless Authenticode signing is configured.
+
+To diagnose full Rust nightly assembly, use the attempt that assembled the
+candidate. The command uses the exact fetched source pins, reuses verified
+GitHub artifact ZIPs, and writes a diagnostic report under the inherited output
+root. Release files generated during replay are temporary.
+
+```powershell
+python -m emule_workspace replay-rust-nightly --run-id 45465191861 --attempt 3
+```
+
+Pass `--expected-candidate-sha256` with an independently recorded manifest
+digest when checking for byte-for-byte assembly parity.
 - `vm-lab prepare` creates or refreshes local Hyper-V Windows 10/11 guest images from operator-provided ISO paths and records the clean checkpoint used by `test windows-vm`.
 
 All top-level `emule_workspace` commands are serialized per workspace root.

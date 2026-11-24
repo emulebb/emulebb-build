@@ -1641,6 +1641,26 @@ def test_emulebb_rust_macos_package_emits_app_dmg_and_metadata(
     assert dmg.name in (release_root / "SHA256SUMS").read_text(encoding="ascii")
 
 
+@pytest.mark.parametrize("failure, expected_delays", [
+    ("hdiutil: create failed - Resource busy", [2, 5]),
+    ("hdiutil: create failed - Permission denied", []),
+])
+def test_dmg_retry_is_limited_to_resource_contention(tmp_path, monkeypatch, failure, expected_delays):
+    commands = []
+    delays = []
+
+    def fail(command, label):
+        commands.append(command)
+        raise RuntimeError(f"{label} failed with exit code 1: {failure}")
+
+    monkeypatch.setattr(release, "_run_packaging_tool", fail)
+    monkeypatch.setattr(release.time, "sleep", delays.append)
+    with pytest.raises(RuntimeError, match=failure):
+        release._write_emulebb_rust_dmg(tmp_path / "app", tmp_path / "app.dmg")
+    assert delays == expected_delays
+    assert commands == [commands[0]] * (len(delays) + 1)
+
+
 def _write_rust_release_assembly_inputs(tmp_path: Path):
     """Create the native and musl payload/manifest/SBOM boundaries for assembly."""
     version = "0.1.0-beta.1"
