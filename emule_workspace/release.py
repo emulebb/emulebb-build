@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
 import uuid
 import zipfile
@@ -617,7 +618,7 @@ def _create_emulebb_rust_macos_package(
         components=_emulebb_rust_sbom_components(layout, rust_root),
     )
     sbom_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
-    _run_packaging_tool(("hdiutil", "create", "-volname", "eMuleBB Rust", "-srcfolder", str(app_root), "-ov", "-format", "UDZO", str(dmg)), "hdiutil")
+    _write_emulebb_rust_dmg(app_root, dmg)
     _assert_emulebb_rust_package_provenance(layout, rust_root, provenance,
         **({"prepared_image_receipt": package_options.prepared_image_receipt} if package_options.prepared_image_receipt else {}))
     manifest_path.write_text(json.dumps({
@@ -636,6 +637,21 @@ def _create_emulebb_rust_macos_package(
     }, indent=2) + "\n", encoding="utf-8", newline="\n")
     _write_sha256sums(sums_path, (dmg, manifest_path, sbom_path))
     print(f"eMuleBB Rust DMG: {dmg}")
+
+
+def _write_emulebb_rust_dmg(app_root: Path, dmg: Path) -> None:
+    """Retry only the transient disk image creation failure on hosted macOS."""
+    command = ("hdiutil", "create", "-volname", "eMuleBB Rust", "-srcfolder", str(app_root),
+               "-ov", "-format", "UDZO", str(dmg))
+    for delay in (2, 5, 0):
+        try:
+            _run_packaging_tool(command, "hdiutil")
+            return
+        except RuntimeError as error:
+            if not delay or not str(error).endswith("hdiutil: create failed - Resource busy"):
+                raise
+            print(f"hdiutil create reported Resource busy; retrying in {delay}s", file=sys.stderr, flush=True)
+            time.sleep(delay)
 
 
 def _stage_emulebb_rust_bootstrap(rust_root: Path, destination: Path) -> Path:
