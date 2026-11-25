@@ -125,7 +125,7 @@ jobs:
 
   mirrors:
     needs: [tests, docker-conformance]
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'emulebb/emulebb-build' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.repository == 'emulebb/emulebb-build' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -161,7 +161,7 @@ jobs:
 
   native:
     needs: mirrors
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'emulebb/emulebb-build' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.repository == 'emulebb/emulebb-build' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -215,7 +215,7 @@ jobs:
 
   verify:
     needs: [mirrors, native]
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'emulebb/emulebb-build' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.repository == 'emulebb/emulebb-build' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
