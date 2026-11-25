@@ -85,12 +85,41 @@ def test_ghcr_rust_cross_is_not_misrepresented_as_a_hub_mirror():
     assert not any("rust-cross" in source for source in images.SOURCES.values())
 
 
-def test_trusted_context_rejects_pr_before_any_git_or_registry_operation(monkeypatch):
+@pytest.mark.parametrize(("event", "ref", "repository"), [
+    ("pull_request", "refs/pull/123/merge", "emulebb/emulebb-build"),
+    ("pull_request_target", "refs/heads/main", "emulebb/emulebb-build"),
+    ("push", "refs/heads/topic", "emulebb/emulebb-build"),
+    ("push", "refs/tags/main", "emulebb/emulebb-build"),
+    ("push", "refs/heads/main", "fork/emulebb-build"),
+])
+def test_untrusted_context_fails_before_any_git_or_registry_operation(monkeypatch, event, ref, repository):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
-    monkeypatch.setenv("GITHUB_REPOSITORY", "emulebb/emulebb-build")
-    monkeypatch.setenv("GITHUB_REF", "refs/pull/123/merge")
+    monkeypatch.setenv("GITHUB_REPOSITORY", repository)
+    monkeypatch.setenv("GITHUB_REF", ref)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_WORKFLOW_SHA", "a" * 40)
     monkeypatch.setattr(images.subprocess, "check_output", lambda *a, **k: pytest.fail("Untrusted source ran a command"))
     with pytest.raises(RuntimeError, match="trusted main"):
+        images.context()
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_trusted_context_binds_clean_main_workflow_source(monkeypatch, event):
+    from emule_workspace import python_runtime
+
+    sha = "a" * 40
+    for name, value in {
+        "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "emulebb/emulebb-build",
+        "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": event,
+        "GITHUB_SHA": sha, "GITHUB_WORKFLOW_SHA": sha, "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(python_runtime, "python_version", lambda: "3.15.2")
+    monkeypatch.setattr(images.subprocess, "check_output", lambda command, **_: sha if command[-1] == "HEAD" else "")
+    assert images.context()["sourceSha"] == sha
+    monkeypatch.setenv("GITHUB_WORKFLOW_SHA", "b" * 40)
+    with pytest.raises(RuntimeError, match="exact Build source"):
         images.context()
 
 
@@ -352,7 +381,7 @@ def test_producer_permissions_and_native_matrix_have_no_untrusted_publication_pa
             artifact = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
             assert artifact["if"] == "always()"
             continue
-        assert "github.event_name == 'workflow_dispatch'" in job["if"]
+        assert "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')" in job["if"]
         assert "github.ref == 'refs/heads/main'" in job["if"]
         assert "github.repository == 'emulebb/emulebb-build'" in job["if"]
         assert job["permissions"]["packages"] == "write"

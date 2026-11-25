@@ -48,7 +48,7 @@ def context() -> dict:
     sha = os.environ.get("GITHUB_SHA", "")
     if (os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REPOSITORY") != "emulebb/emulebb-build"
             or os.environ.get("GITHUB_REF") != "refs/heads/main"
-            or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or os.environ.get("GITHUB_EVENT_NAME") not in {"push", "workflow_dispatch"}
             or not re.fullmatch(r"[0-9a-f]{40}", sha)
             or os.environ.get("GITHUB_WORKFLOW_SHA") != sha):
         raise RuntimeError("CI images require the trusted main workflow and exact Build source")
