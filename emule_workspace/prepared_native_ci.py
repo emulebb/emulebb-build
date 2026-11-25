@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tomllib
 import time
+import urllib.error
 import urllib.request
 from uuid import uuid4
 
@@ -23,6 +24,7 @@ from .git_environment import git_environment
 from .linux_containers import LinuxDocker, _builder_user, run_owned_container
 
 SIGNER = "https://github.com/emulebb/emulebb-build/.github/workflows/ci-linux-images.yml@refs/heads/main"
+REPOSITORY_METADATA_URL = "https://api.github.com/repos/emulebb/emulebb-build"
 BUNDLED_TOOLS = Path("/opt/emulebb/tools")
 FORWARD = ("EMULEBB_WORKSPACE_ROOT", "EMULEBB_WORKSPACE_OUTPUT_ROOT", "CARGO_TARGET_DIR",
            "EMULEBB_RUST_REPO", "EMULEBB_TOOLING_REPO", "MINIUPNP_ROOT", "PCPNATPMP_ROOT",
@@ -53,12 +55,41 @@ def snapshot(roots: dict[str, Path], *, deadline: float | None = None) -> dict[s
     return result
 
 
+def build_repository_metadata(*, token: str, deadline: float) -> dict:
+    """Read the fixed GitHub authority within the metadata request budget."""
+    request = urllib.request.Request(REPOSITORY_METADATA_URL, headers={
+        "Accept": "application/vnd.github+json", "User-Agent": "emulebb-ci-image-verifier"})
+    if token:
+        # WHY: hosted runners share the small anonymous API quota. Use their
+        # existing credential on this exact request and strip it on redirects.
+        request.add_unredirected_header("Authorization", "Bearer " + token)
+    for attempt in range(3):
+        try:
+            return json.loads(public_metadata_bytes(request, deadline=deadline))
+        except urllib.error.HTTPError as error:
+            with error:
+                headers = error.headers or {}
+                retry_after = headers.get("Retry-After", "")
+                remaining = headers.get("X-RateLimit-Remaining")
+                reset = headers.get("X-RateLimit-Reset", "")
+                retryable = error.code == 429 or (
+                    error.code == 403 and (retry_after or remaining == "0")
+                )
+                if not retryable:
+                    raise RuntimeError(f"GitHub Build repository metadata request failed (HTTP {error.code})") from None
+                delay = max(2 ** attempt, int(retry_after) if re.fullmatch(r"[0-9]{1,10}", retry_after) else 0)
+                if remaining == "0" and re.fullmatch(r"[0-9]{1,10}", reset):
+                    delay = max(delay, int(reset) - time.time())
+            if attempt == 2 or time.monotonic() + delay >= deadline:
+                raise RuntimeError("GitHub Build repository metadata rate limit exceeded its retry budget") from None
+            time.sleep(delay)
+
+
 def verify_attestation(image: str, builder_sha: str, *, timeout: int = 180) -> dict:
     """Require cryptographic Build producer identity before pulling/executing code."""
     deadline = time.monotonic() + timeout
-    request = urllib.request.Request("https://api.github.com/repos/emulebb/emulebb-build", headers={
-        "Accept": "application/vnd.github+json", "User-Agent": "emulebb-ci-image-verifier"})
-    repository = json.loads(public_metadata_bytes(request, deadline=min(deadline, time.monotonic() + 20)))
+    token = os.environ.get("GH_TOKEN", "").strip()
+    repository = build_repository_metadata(token=token, deadline=min(deadline, time.monotonic() + 20))
     owner = repository.get("owner", {})
     # WHY: OCI-bundle mode skips GitHub's current-name lookup. Binding the
     # current immutable repository/owner IDs to the verified certificate rejects
@@ -67,6 +98,8 @@ def verify_attestation(image: str, builder_sha: str, *, timeout: int = 180) -> d
             or str(repository.get("id")) != "499553807" or str(owner.get("id")) != "281581430"
             or owner.get("html_url") != "https://github.com/emulebb"):
         raise RuntimeError("Public Build repository identity differs from the reviewed immutable authority")
+    if token:
+        print("Verified Build repository identity through the authenticated GitHub API.", flush=True)
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise RuntimeError("Prepared image attestation deadline expired")

@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler
 from click.testing import CliRunner
 
 import pytest
@@ -277,6 +279,7 @@ def test_verified_baked_runtime_seeds_existing_cache_without_download(tmp_path, 
 
 @pytest.fixture
 def certificate(monkeypatch):
+    monkeypatch.delenv("GH_TOKEN", raising=False)
     source = "b" * 40
     image = prepared.PREPARED + "@sha256:" + "1" * 64
     certificate = {"subjectAlternativeName": prepared.SIGNER, "sourceRepositoryDigest": source,
@@ -313,6 +316,52 @@ def test_oci_bundle_verification_restores_immutable_certificate_identity(certifi
     for option in ("--bundle-from-oci", "--deny-self-hosted-runners", "--source-digest", "--signer-digest", "--source-ref"):
         assert option in command
     assert command[command.index("--source-digest") + 1] == certificate.source
+
+
+def test_repository_lookup_retries_a_rate_limit_with_the_scoped_credential(certificate, monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "synthetic-actions-token")
+    monkeypatch.setattr(prepared.time, "monotonic", lambda: 100)
+    attempts, delays = [], []
+
+    def metadata(request, *, deadline):
+        assert request.full_url == prepared.REPOSITORY_METADATA_URL
+        assert request.get_header("Authorization") == "Bearer synthetic-actions-token"
+        redirected = HTTPRedirectHandler().redirect_request(
+            request, None, 302, "Found", {}, "https://example.invalid/metadata",
+        )
+        assert not redirected.has_header("Authorization")
+        attempts.append(deadline)
+        if len(attempts) == 1:
+            raise HTTPError(request.full_url, 403, "rate limit exceeded", {"Retry-After": "2"}, None)
+        return json.dumps(certificate.repository).encode()
+
+    monkeypatch.setattr(prepared, "public_metadata_bytes", metadata)
+    monkeypatch.setattr(prepared.time, "sleep", delays.append)
+    result = prepared.verify_attestation(certificate.image, certificate.source)
+    assert result["cryptographicallyVerified"] is True
+    assert attempts == [120, 120]
+    assert delays == [2]
+
+
+@pytest.mark.parametrize(("headers", "message"), [
+    ({}, "HTTP 403"),
+    ({"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1500"}, "rate limit exceeded its retry budget"),
+])
+def test_repository_lookup_fails_closed_outside_the_retry_budget(certificate, monkeypatch, headers, message):
+    monkeypatch.setattr(prepared.time, "monotonic", lambda: 100)
+    monkeypatch.setattr(prepared.time, "time", lambda: 1000)
+    calls = []
+
+    def denied(request, *, deadline):
+        calls.append(deadline)
+        raise HTTPError(request.full_url, 403, "synthetic forbidden", headers, None)
+
+    monkeypatch.setattr(prepared, "public_metadata_bytes", denied)
+    monkeypatch.setattr(prepared.time, "sleep", lambda _: pytest.fail("Unexpected retry delay"))
+    with pytest.raises(RuntimeError, match=message):
+        prepared.verify_attestation(certificate.image, certificate.source)
+    assert calls == [120]
+    assert not certificate.calls
 
 
 @pytest.mark.parametrize("field,value", [
