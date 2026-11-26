@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import hashlib
 import os
+import re
 import shutil
 import shlex
 import subprocess
+import tarfile
+import tempfile
 import time
 import zipfile
 from pathlib import Path
@@ -19,11 +23,12 @@ from .cmake import (
     static_msvc_runtime_cmake_arguments,
 )
 from .config import BuildClientsOptions, WorkspaceOptions
-from .git import repo_branch, test_app_branch_allowed
+from .git import git_output, repo_branch, test_app_branch_allowed
 from .layout import WorkspaceLayout, file_token
 from .msbuild import env_override, invoke_msbuild_project
 from .process import find_tool
 from .toolchain import get_cmake_path, get_dumpbin_path, get_perl_path
+from .topology import write_json
 
 APP_EXE_NAME = "emulebb.exe"
 DIAGNOSTICS_APP_EXE_NAME = "emulebb-diagnostics.exe"
@@ -256,7 +261,9 @@ def build_clients(layout: WorkspaceLayout, options: WorkspaceOptions, build_opti
         session.write_recap()
 
 
-def build_ed2k_server(layout: WorkspaceLayout, options: WorkspaceOptions, *, clean: bool) -> None:
+def build_ed2k_server(
+    layout: WorkspaceLayout, options: WorkspaceOptions, *, clean: bool, upstream_revision: str | None = None,
+) -> None:
     """Build and stage the managed Linux ed2k-server Service/Lab fork."""
 
     if options.configuration != "Release":
@@ -265,7 +272,10 @@ def build_ed2k_server(layout: WorkspaceLayout, options: WorkspaceOptions, *, cle
         raise RuntimeError("build ed2k-server currently supports only --platform x64.")
     session = BuildSession(layout=layout, options=options, command_name="build ed2k-server", clean=clean)
     try:
-        build_ed2k_server_service(session, clean=clean)
+        if upstream_revision is None:
+            build_ed2k_server_service(session, clean=clean)
+        else:
+            build_upstream_ed2k_server(session, upstream_revision)
     finally:
         session.write_recap()
 
@@ -273,15 +283,62 @@ def build_ed2k_server(layout: WorkspaceLayout, options: WorkspaceOptions, *, cle
 ED2K_SERVER_LINUX_TARGET = "x86_64-unknown-linux-gnu"
 
 
+def build_upstream_ed2k_server(session: BuildSession, revision: str) -> None:
+    """Build the fetched upstream commit into a run-owned stage with a source receipt."""
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise RuntimeError("ed2k-server upstream revision must be a full lowercase commit SHA.")
+    managed_repo = session.layout.ed2k_server_repo_root
+    upstream_tip = git_output(managed_repo, "rev-parse", "--verify", "refs/remotes/upstream/master^{commit}").strip()
+    if git_output(managed_repo, "merge-base", revision, upstream_tip).strip() != revision:
+        raise RuntimeError("Selected ed2k-server revision is outside fetched upstream/master.")
+    upstream_url = git_output(managed_repo, "remote", "get-url", "upstream").strip()
+    builder = Path(__file__).resolve().parent.parent
+    builder_revision = git_output(builder, "rev-parse", "HEAD").strip()
+    if git_output(builder, "status", "--porcelain").strip():
+        raise RuntimeError("Build the upstream server from a clean Builder checkout.")
+
+    staged_root = session.log_directory / "ed2k-server"
+    if staged_root.exists():
+        raise RuntimeError(f"Run-owned upstream server stage already exists: {staged_root}")
+    with tempfile.TemporaryDirectory(prefix="source-", dir=session.log_directory) as temporary:
+        archive = Path(temporary) / "source.tar"
+        source = Path(temporary) / "source"
+        git_output(managed_repo, "archive", "--format=tar", f"--output={archive}", revision)
+        with tarfile.open(archive, "r:") as tar:
+            tar.extractall(source, filter="data")
+        build_ed2k_server_service(session, clean=True, repo_root=source, staged_root=staged_root)
+    if (git_output(builder, "rev-parse", "HEAD").strip() != builder_revision
+            or git_output(builder, "status", "--porcelain").strip()):
+        raise RuntimeError("Builder checkout changed during the upstream server build.")
+    binary = staged_root / "bin" / "ed2k-server"
+    with binary.open("rb") as file:
+        digest = hashlib.file_digest(file, "sha256").hexdigest()
+    receipt = staged_root / "build-receipt.json"
+    write_json(receipt, {
+        "schema": "emulebb.ed2k-server-upstream-build/1",
+        "sourceRevision": revision,
+        "upstreamRef": "refs/remotes/upstream/master",
+        "upstreamTip": upstream_tip,
+        "upstreamUrl": upstream_url,
+        "builderRevision": builder_revision,
+        "target": ED2K_SERVER_LINUX_TARGET,
+        "binary": "bin/ed2k-server",
+        "sha256": digest,
+    })
+    print(f"Upstream ed2k-server receipt: {receipt}")
+
+
 def build_ed2k_server_service(
     session: BuildSession,
     *,
     clean: bool,
     use_wsl: bool | None = None,
+    repo_root: Path | None = None,
+    staged_root: Path | None = None,
 ) -> None:
     """Build the Linux Rust index server and stage its sole runnable binary."""
 
-    repo_root = session.layout.ed2k_server_repo_root
+    repo_root = repo_root or session.layout.ed2k_server_repo_root
     if not (repo_root / "Cargo.toml").is_file():
         raise RuntimeError(f"ed2k-server repository was not found: {repo_root}")
 
@@ -291,7 +348,7 @@ def build_ed2k_server_service(
         target_root = target_root.parent / "target-wsl"
     release_root = target_root / ED2K_SERVER_LINUX_TARGET / "release"
     source_binary = release_root / "ed2k-server"
-    staged_root = staged_ed2k_server_root(session.layout)
+    staged_root = staged_root or staged_ed2k_server_root(session.layout)
     staged_binary = staged_root / "bin" / "ed2k-server"
     if clean and not use_wsl:
         remove_tree_if_present(staged_root)

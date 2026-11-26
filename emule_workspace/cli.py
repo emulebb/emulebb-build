@@ -1584,9 +1584,11 @@ def build_clients(
 @build.command("ed2k-server")
 @_common_options
 @click.option("--clean", is_flag=True, help="Clean the staged server and executable before building.")
+@click.option("--upstream-revision", help="Build an exact commit from fetched upstream/master into a separate run-owned stage.")
 def build_ed2k_server(
     *,
     clean: bool,
+    upstream_revision: str | None,
     workspace_options: WorkspaceOptions,
     layout,
 ) -> None:
@@ -1594,7 +1596,9 @@ def build_ed2k_server(
 
     _locked(
         "build ed2k-server",
-        lambda **kwargs: invoke_build_ed2k_server(kwargs["layout"], kwargs["workspace_options"], clean=clean),
+        lambda **kwargs: invoke_build_ed2k_server(
+            kwargs["layout"], kwargs["workspace_options"], clean=clean, upstream_revision=upstream_revision,
+        ),
     )(workspace_options=workspace_options, layout=layout)
 
 

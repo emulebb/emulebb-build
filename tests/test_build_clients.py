@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -601,6 +603,62 @@ def test_build_ed2k_server_uses_native_cargo_on_linux(
         build.ED2K_SERVER_LINUX_TARGET,
     ]
     assert (build.staged_ed2k_server_root(layout) / "bin" / "ed2k-server").read_bytes() == b"native-linux-server"
+
+
+def test_upstream_ed2k_build_exports_only_the_selected_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = make_layout(tmp_path, monkeypatch)
+    managed = layout.ed2k_server_repo_root
+    managed.mkdir(parents=True)
+    git_output = build.git_output
+    git_output(managed, "init")
+    cargo = managed / "Cargo.toml"
+    cargo.write_text("upstream source", encoding="utf-8")
+    git_output(managed, "add", "Cargo.toml")
+    git_output(managed, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+               "-c", "commit.gpgsign=false", "commit", "-m", "Upstream fixture")
+    upstream = git_output(managed, "rev-parse", "HEAD").strip()
+    git_output(managed, "update-ref", "refs/remotes/upstream/master", upstream)
+    git_output(managed, "remote", "add", "upstream", "https://example.invalid/ed2k-server")
+    cargo.write_text("managed overlay", encoding="utf-8")
+
+    def read_git(repo, *args):
+        if repo == managed:
+            return git_output(repo, *args)
+        return "a" * 40 if args == ("rev-parse", "HEAD") else ""
+
+    monkeypatch.setattr(build, "git_output", read_git)
+    managed_binary = build.staged_ed2k_server_root(layout) / "bin" / "ed2k-server"
+    managed_binary.parent.mkdir(parents=True)
+    managed_binary.write_bytes(b"managed")
+    exported_source = None
+
+    def stage_server(_session, *, clean, repo_root, staged_root):
+        nonlocal exported_source
+        exported_source = repo_root
+        assert clean
+        assert (repo_root / "Cargo.toml").read_text(encoding="utf-8") == "upstream source"
+        binary = staged_root / "bin" / "ed2k-server"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"upstream")
+
+    monkeypatch.setattr(build, "build_ed2k_server_service", stage_server)
+    session = build.BuildSession(
+        layout=layout, options=WorkspaceOptions(workspace_root=layout.emule_workspace_root),
+        command_name="build ed2k-server",
+    )
+    build.build_upstream_ed2k_server(session, upstream)
+
+    assert exported_source is not None and not exported_source.exists()
+    assert cargo.read_text(encoding="utf-8") == "managed overlay"
+    assert managed_binary.read_bytes() == b"managed"
+    stage = session.log_directory / "ed2k-server"
+    receipt = json.loads((stage / "build-receipt.json").read_text(encoding="utf-8"))
+    assert receipt["sourceRevision"] == receipt["upstreamTip"] == upstream
+    assert receipt["builderRevision"] == "a" * 40
+    assert (stage / receipt["binary"]).read_bytes() == b"upstream"
+    assert receipt["sha256"] == hashlib.sha256(b"upstream").hexdigest()
 
 
 def test_build_ed2k_server_rejects_non_linux_service_matrix(tmp_path: Path) -> None:
