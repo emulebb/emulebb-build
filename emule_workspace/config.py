@@ -199,6 +199,7 @@ class LiveE2eOptions(BaseModel):
     vpn_guard_scenario: Literal["off", "success", "not-allowlisted", "vpn-off"] = "success"
     vpn_guard_expected_startup_block: bool = False
     multi_client_require_optional_clients: bool = False
+    multi_client_native_sx2: Literal["stock", "amule", "both"] | None = None
     search_ui_search_rounds: int = 1
     search_ui_download_lifecycle_count: int = 1
     godzilla_visible_ui: bool = False

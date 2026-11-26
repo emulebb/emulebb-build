@@ -1331,6 +1331,19 @@ def test_live_e2e_forwards_multi_client_required_optional_clients(tmp_path: Path
     ]
 
 
+@pytest.mark.parametrize("selection", [None, "stock", "amule", "both"])
+def test_live_e2e_forwards_multi_client_native_sx2(tmp_path: Path, monkeypatch, selection) -> None:
+    commands = []
+    monkeypatch.setattr(test_runs, "run_native", lambda command, **kwargs: commands.append(command))
+    test_runs.invoke_live_e2e_suite(
+        make_layout(tmp_path),
+        WorkspaceOptions(workspace_root=tmp_path, platform="x64"),
+        LiveE2eOptions(suites=("multi-client-p2p-matrix",), multi_client_native_sx2=selection),
+    )
+    command, = commands
+    assert option_values(command, "--multi-client-native-sx2") == ([] if selection is None else [selection])
+
+
 def test_live_e2e_forwards_output_root_mfc_oracle_when_available(tmp_path: Path, monkeypatch) -> None:
     captured: dict[str, object] = {}
 
