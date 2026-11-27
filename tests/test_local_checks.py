@@ -744,6 +744,7 @@ def _synthetic_check_runner(tmp_path, monkeypatch, paths, *, windows=True):
     repo = root / "repos/emulebb-build"
     repo.mkdir(parents=True)
     monkeypatch.setattr(local_checks, "_windows_host", lambda: windows)
+    monkeypatch.setattr(local_checks, "local_toolchain", lambda repo: {})
     monkeypatch.setattr(local_checks, "changed_paths", lambda *args: paths)
     monkeypatch.setattr(local_checks, "check_whitespace", lambda *args: None)
     monkeypatch.setattr(local_checks, "_workstream_sources", lambda root, output, registration, repo_name:
@@ -754,9 +755,41 @@ def _synthetic_check_runner(tmp_path, monkeypatch, paths, *, windows=True):
     snapshots = []
     def snapshot(sources, **kwargs):
         snapshots.append(dict(sources))
-        return {name: {"revision": "a" * 40} for name in sources}
+        return {name: {"revision": "a" * 40, "dirty": ""} for name in sources}
     monkeypatch.setattr(local_checks, "_source_snapshot", snapshot)
     return root, output, repo, snapshots
+
+
+def test_local_resume_runs_only_the_unfinished_suffix(tmp_path, monkeypatch):
+    root, output, repo, _ = _synthetic_check_runner(tmp_path, monkeypatch, {"README.md"})
+    monkeypatch.setattr(local_checks, "check_plan", lambda *args: [(repo, ["first"]), (repo, ["second"])])
+    called = []
+
+    def execute(command, **kwargs):
+        called.extend(command)
+        return subprocess.CompletedProcess(command, 1 if called == ["first", "second"] else 0)
+
+    monkeypatch.setattr(local_checks.subprocess, "run", execute)
+    options = dict(repo=repo, stage="full", remote="origin", updates=None, root=root, output=output)
+    with pytest.raises(RuntimeError, match="Local check failed"):
+        local_checks.run_checks(**options)
+    receipt, = (output / "reports/local-check" / repo.name).iterdir()
+    local_checks.run_checks(**options, resume=receipt)
+    assert called == ["first", "second", "second"]
+
+
+def test_development_plan_selects_touched_crates_without_platform_matrix(tmp_path):
+    repo = tmp_path / "repos/emulebb-rust"
+    crate = repo / "crates/emulebb-kad-dht"
+    crate.mkdir(parents=True)
+    (crate / "Cargo.toml").write_text('[package]\nname = "emulebb-kad-dht"\n', encoding="utf-8")
+    commands = local_checks.check_plan(
+        repo, {"crates/emulebb-kad-dht/src/lib.rs"}, "dev", tmp_path, tmp_path / "output",
+        workstream="feature",
+    )
+    assert commands[-1][1][-5:] == ["rust-unit", "--package", "emulebb-kad-dht", "--workstream", "feature"]
+    assert not any("validate-emulebb-rust-linux" in command or "validate-rust-android" in command
+                   for _, command in commands)
 
 
 def test_early_arm_failure_stops_before_expensive_host_checks_and_releases_session(tmp_path, monkeypatch):
