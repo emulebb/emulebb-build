@@ -29,7 +29,13 @@ from .cleanup import run_pre_test_cleanup
 from .hide_me_split_tunnel import ensure_split_tunnel_apps, restart_hide_me_after_upnp_failure_if_requested
 from .layout import WorkspaceLayout, get_test_build_tag
 from .local_package_install import materialize_test_local_install
-from .network_context import LAN_IP_RESOLVED_ENV, TestNetwork, resolve_workspace_network_context
+from .network_context import (
+    LAN_IP_RESOLVED_ENV,
+    X_LOCAL_IP_ENV,
+    TestNetwork,
+    resolve_workspace_network_context,
+    validate_lan_ip,
+)
 from .process import find_tool, get_python_invocation, run_native
 from .rust_source_cache import ensure_rust_source_cache
 
@@ -971,6 +977,66 @@ def invoke_rust_network_proof(
         cwd=layout.tests_repo_root,
         env=_workspace_env(layout),
     )
+
+
+def invoke_rust_native_peer_browse(
+    layout: WorkspaceLayout,
+    options: WorkspaceOptions,
+    *,
+    ed2k_server_exe: Path,
+    artifacts_dir: Path | None = None,
+) -> None:
+    """Run the Harness-owned local stock eMule and stable aMule browse scenarios."""
+    from .rust_runtime_stage import verify_stage
+    from .workstreams import _safe_path, resolve_workstream
+
+    if os.name != "nt" or options.platform != "x64":
+        raise RuntimeError("Rust native peer browse requires Windows x64.")
+    lan_ip = os.environ.get(X_LOCAL_IP_ENV, "").strip()
+    if not lan_ip:
+        raise RuntimeError(f"Rust native peer browse requires inherited {X_LOCAL_IP_ENV}.")
+    validate_lan_ip(lan_ip)
+
+    environment = _workspace_env(layout)
+    workspace = layout.emule_workspace_root.resolve()
+    output = layout.output_root.resolve()
+    rust = layout.emulebb_rust_repo_root
+    if rust is None:
+        raise RuntimeError("Rust native peer browse requires selected Rust sources.")
+    harness = layout.tests_repo_root
+    script = _safe_path(harness, harness / "scripts" / "multi-client-p2p-matrix.py")
+    if not script.is_file():
+        raise RuntimeError("Selected Harness is missing the multi-client P2P matrix.")
+    server = _safe_path(output, ed2k_server_exe)
+    receipt = _safe_path(output, server.parent.parent / "build-receipt.json")
+    if (server.name != "ed2k-server" or server.parent.name != "bin"
+            or not server.is_file() or not receipt.is_file()):
+        raise RuntimeError("Rust native peer browse requires a receipt-backed upstream ED2K server.")
+    if artifacts_dir is not None:
+        artifacts_dir = _safe_path(output, artifacts_dir)
+        if artifacts_dir.exists():
+            raise RuntimeError("Rust native peer browse requires a new artifacts directory.")
+
+    registration = resolve_workstream(workspace, output, repo=rust)
+    if registration is None:
+        raise RuntimeError("Rust native peer browse requires a registered Rust and Harness workstream.")
+    harness_entry = registration["repositories"].get("emulebb-build-tests")
+    if harness_entry is None or Path(harness_entry["path"]) != harness:
+        raise RuntimeError("The Harness must share the selected registered Rust workstream.")
+    verify_stage(layout, diagnostics=True)
+
+    arguments = [
+        "-B", script, "--configuration", options.configuration,
+        "--lan-bind-addr", lan_ip, "--ed2k-server-exe", server,
+        "--require-scenario", "rust-downloads-from-stock-emule",
+        "--require-scenario", "rust-downloads-from-amule-stable",
+        "--verify-peer-browse", "--native-browse-buckets", "27",
+        "--native-reverse-browse-buckets", "27", "--fixture-size-bytes", "33554432",
+    ]
+    if artifacts_dir is not None:
+        arguments.extend(["--artifacts-dir", artifacts_dir])
+    run_native(get_python_invocation().command(arguments), label="Rust native peer browse",
+               cwd=harness, env=environment)
 
 
 def invoke_builder_unit_tests(layout: WorkspaceLayout, *, paths: tuple[str, ...]) -> Path:

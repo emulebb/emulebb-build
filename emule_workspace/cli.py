@@ -72,6 +72,7 @@ from .test_runs import (
     invoke_builder_unit_tests,
     invoke_community_core_coverage,
     invoke_fake_kad_trust_soak,
+    invoke_rust_native_peer_browse,
     invoke_rust_network_proof,
     invoke_rust_rest_openapi,
     invoke_rust_shared_library_io,
@@ -2289,6 +2290,21 @@ def test_rust_webui(*, workspace_options: WorkspaceOptions, layout) -> None:
         "test rust-webui",
         lambda **kwargs: invoke_rust_webui_tests(kwargs["layout"]),
     )(workspace_options=workspace_options, layout=layout)
+
+
+@test.command("rust-native-peer-browse")
+@click.option("--ed2k-server-exe", required=True, type=click.Path(path_type=Path, dir_okay=False),
+              help="Receipt-backed upstream server executable under the workspace output root.")
+@click.option("--artifacts-dir", type=click.Path(path_type=Path, file_okay=False),
+              help="New directory under the workspace output root. Defaults to the Harness run directory.")
+@_common_options
+def test_rust_native_peer_browse(*, ed2k_server_exe: Path, artifacts_dir: Path | None,
+                                 workspace_options: WorkspaceOptions, layout) -> None:
+    """Prove bidirectional peer browsing with stock eMule and stable aMule."""
+    _locked("test rust-native-peer-browse", lambda **kwargs: invoke_rust_native_peer_browse(
+        kwargs["layout"], kwargs["workspace_options"], ed2k_server_exe=ed2k_server_exe,
+        artifacts_dir=artifacts_dir,
+    ))(workspace_options=workspace_options, layout=layout)
 
 
 @test.command("rust-network-proof")
