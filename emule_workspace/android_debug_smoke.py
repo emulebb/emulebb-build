@@ -136,11 +136,18 @@ def boot_and_smoke(harness: Path, *, output: Path, sdk: Path, user_home: Path,
     acceleration = accel.stdout.splitlines()
     if len(acceleration) < 3 or acceleration[:2] != ["accel:", "0"]:
         raise RuntimeError("Android emulator hardware acceleration is unavailable")
-    emulator_info = subprocess.run([emulator, "-version"], env=environment, check=True,
-                                   capture_output=True, text=True, timeout=15)
-    version = re.search(r"Android emulator version ([0-9.]+)", emulator_info.stdout + emulator_info.stderr)
-    if version is None:
-        raise RuntimeError("Android emulator version could not be identified")
+    installed = sdk / "emulator-inputs.json"
+    if installed.is_file():
+        # WHY: the checksum-verified Linux installation already identifies
+        # its build. The desktop version probe can load Qt on a headless host.
+        version = json.loads(installed.read_text(encoding="utf-8"))["assets"]["emulator"]["version"]
+    else:
+        emulator_info = subprocess.run([emulator, "-version"], env=environment, check=True,
+                                       capture_output=True, text=True, timeout=15)
+        match = re.search(r"Android emulator version ([0-9.]+)", emulator_info.stdout + emulator_info.stderr)
+        if match is None:
+            raise RuntimeError("Android emulator version could not be identified")
+        version = match[1]
     report.parent.mkdir(parents=True, exist_ok=True)
     directory = report.parent
 
@@ -190,7 +197,7 @@ def boot_and_smoke(harness: Path, *, output: Path, sdk: Path, user_home: Path,
                           abi="x86_64", report=report)
                 with (directory / "emulator.json").open("x", encoding="utf-8") as stream:
                     json.dump({"api": int(api), "pageSizeBytes": int(page_size),
-                               "systemImageFingerprint": image, "emulatorVersion": version[1],
+                               "systemImageFingerprint": image, "emulatorVersion": version,
                                "accelerator": acceleration[2]}, stream, indent=2)
                     stream.write("\n")
             finally:
