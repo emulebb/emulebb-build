@@ -272,11 +272,14 @@ def validate_android(layout, *, abis: tuple[str, ...] = ("arm64-v8a", "x86_64"),
                       "--mount", f"type=bind,source={docker.path(rust)},target=/source,readonly",
                       "--mount", f"type=bind,source={docker.path(miniupnp)},target=/native/miniupnp,readonly",
                       "--mount", f"type=bind,source={docker.path(pcpnatpmp)},target=/native/pcpnatpmp,readonly"]
+            from .rust_source_cache import container_cargo_jobs, ensure_rust_source_cache
+            cargo_jobs = container_cargo_jobs()
+            print(f"Cargo jobs (Android): {cargo_jobs}", flush=True)
             child = {"HOME": "/output/" + home.relative_to(output).as_posix(),
                      "CARGO_HOME": "/output/" + cargo_home.relative_to(output).as_posix(),
                      "CARGO_TARGET_DIR": "/output/" + target_dir.relative_to(output).as_posix(),
                      "MINIUPNP_ROOT": "/native/miniupnp", "PCPNATPMP_ROOT": "/native/pcpnatpmp",
-                     "CARGO_BUILD_JOBS": "4", "RUSTUP_TOOLCHAIN": "1.98.1",
+                     "CARGO_BUILD_JOBS": str(cargo_jobs), "RUSTUP_TOOLCHAIN": "1.98.1",
                      "EMULEBB_SOURCE_REVISION": provenance["source"]["emulebbRust"]["commit"],
                      "EMULEBB_RELEASE_VERSION": version,
                      "EMULEBB_RELEASE_CHANNEL": channel}
@@ -287,7 +290,6 @@ def validate_android(layout, *, abis: tuple[str, ...] = ("arm64-v8a", "x86_64"),
                     "--workdir", "/source"]
             image = "local/emulebb-android-toolchain:reviewed"
 
-            from .rust_source_cache import ensure_rust_source_cache
             cache_invocation = 0
             def cache_cargo(arguments):
                 nonlocal cache_invocation

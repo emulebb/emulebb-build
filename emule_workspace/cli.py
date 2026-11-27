@@ -1038,6 +1038,8 @@ def provision_rust_android_signing(*, workspace_options, layout) -> None:
 @click.option("--expected-cert-sha256", help="Trusted public release certificate SHA-256; required for production.")
 @click.option("--version-code", required=True, type=click.IntRange(1, 2_100_000_000))
 @click.option("--debug", is_flag=True, help="Explicit local test APK; never publication evidence.")
+@click.option("--debug-abi", type=click.Choice(["arm64-v8a", "x86_64"]), help="Build one ABI for a debug APK.")
+@click.option("--cargo-jobs", type=click.IntRange(min=1), help="Limit Cargo jobs for this APK build.")
 @click.option("--retained-signing", is_flag=True, help="Explicitly use the verified operator-owned retained release identity.")
 @click.option("--author-gradle-verification", is_flag=True, help="Debug only: retain resolved dependency checksums for source review.")
 @click.option("--kotlin-only", is_flag=True, help="Compile the staged app only; no native build, APK or runtime proof.")
@@ -1045,15 +1047,44 @@ def provision_rust_android_signing(*, workspace_options, layout) -> None:
 @_common_options
 def package_rust_android_apk(*, release_version: str, expected_source_sha: str,
                             expected_cert_sha256: str | None, version_code: int, debug: bool, retained_signing: bool,
-                            author_gradle_verification: bool, kotlin_only: bool, lint_only: bool, workspace_options, layout) -> None:
+                            author_gradle_verification: bool, kotlin_only: bool, lint_only: bool,
+                            debug_abi: str | None, cargo_jobs: int | None, workspace_options, layout) -> None:
     """Build the universal APK through the selected registered source set."""
     from .android_apk import package_apk
     def package(**kwargs):
         print(package_apk(kwargs["layout"], release_version=release_version, channel="nightly",
               expected_source_sha=expected_source_sha, version_code=version_code, debug=debug,
               retained_signing=retained_signing, author_gradle_verification=author_gradle_verification,
-              kotlin_only=kotlin_only, lint_only=lint_only, expected_cert_sha256=expected_cert_sha256))
+              kotlin_only=kotlin_only, lint_only=lint_only, expected_cert_sha256=expected_cert_sha256,
+              debug_abi=debug_abi, cargo_jobs=cargo_jobs))
     _locked("package-rust-android-apk", package)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("smoke-rust-android-debug-apk")
+@click.option("--adb", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--serial", required=True)
+@click.option("--server-port", type=click.IntRange(1, 65535), default=5037)
+@click.option("--manifest", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--manifest-sha256", required=True)
+@click.option("--source-sha", required=True)
+@click.option("--certificate-sha256", required=True)
+@click.option("--abi", required=True, type=click.Choice(["arm64-v8a", "x86_64"]))
+@click.option("--report", required=True, type=click.Path(path_type=Path, dir_okay=False))
+@_common_options
+def smoke_rust_android_debug_apk(*, workspace_options, layout, **inputs) -> None:
+    """Smoke one exact debug APK on an already booted, empty emulator."""
+    import subprocess
+    import sys
+
+    def smoke(**kwargs):
+        harness = kwargs["layout"].tests_repo_root
+        script = harness / "scripts/smoke-android-debug-apk.py"
+        command = [sys.executable, "-B", str(script)]
+        for name, value in inputs.items():
+            command.extend(("--" + name.replace("_", "-"), str(value)))
+        subprocess.run(command, check=True)
+
+    _locked("smoke-rust-android-debug-apk", smoke)(workspace_options=workspace_options, layout=layout)
 
 
 def _android_ci_layout():
@@ -1082,12 +1113,16 @@ def _android_ci_layout():
 
 @main.command("local-check")
 @click.option("--repo", type=click.Path(path_type=Path, exists=True), required=True)
-@click.option("--stage", type=click.Choice(["commit", "push", "full"]), default="push",
-              help="commit=staged checks; push=fast host checks; full=locked validation of all tracked HEAD inputs.")
+@click.option("--stage", type=click.Choice(["commit", "push", "dev", "full"]), default="dev",
+              help="dev=focused Windows checks; commit/push=hook checks; full=whole-tree validation.")
+@click.option("--plan", "plan_only", is_flag=True, help="Show selected inputs and commands without running checks.")
+@click.option("--cargo-jobs", type=click.IntRange(min=1), help="Limit Cargo jobs for this invocation.")
+@click.option("--resume", type=click.Path(path_type=Path, exists=True, file_okay=False), help="Resume a matching local validation receipt directory.")
 @click.option("--remote", default="origin")
 @click.option("--push-stdin", is_flag=True, help="Read Git pre-push ref updates from stdin.")
 @_common_options
-def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, workspace_options, layout,
+def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, plan_only: bool,
+                cargo_jobs: int | None, resume: Path | None, workspace_options, layout,
                 workstream: str | None = None) -> None:
     """Run fast commit/push checks or explicit full local validation."""
     import sys
@@ -1101,10 +1136,10 @@ def local_check(*, repo: Path, stage: str, remote: str, push_stdin: bool, worksp
         return run_checks(
             repo=repo, stage=stage, remote=remote, updates=updates,
             root=workspace_options.workspace_root.resolve(), output=workspace_options.output_root.resolve(),
-            workstream=workstream,
+            workstream=workstream, plan_only=plan_only, cargo_jobs=cargo_jobs, resume=resume,
         )
 
-    if stage in {"commit", "push"}:
+    if plan_only or stage in {"commit", "push"}:
         try:
             execute()
         except Exception as exc:

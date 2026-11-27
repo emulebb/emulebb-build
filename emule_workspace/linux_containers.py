@@ -1167,8 +1167,11 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
         "--mount", f"type=bind,source={docker.path(cache)},target=/usr/local/cargo/registry",
     ]
     target_root = "/output/" + target_directory.relative_to(output).as_posix()
+    from .rust_source_cache import container_cargo_jobs, ensure_rust_source_cache
+    cargo_jobs = container_cargo_jobs()
+    print(f"Cargo jobs (Linux {architecture}/{libc}): {cargo_jobs}", flush=True)
     environment = [*hosted_environment, "--env", f"CARGO_TARGET_DIR={target_root}", "--env", "MINIUPNP_ROOT=/native/miniupnp",
-                   "--env", "PCPNATPMP_ROOT=/native/pcpnatpmp", "--env", "CARGO_BUILD_JOBS=4",
+                   "--env", "PCPNATPMP_ROOT=/native/pcpnatpmp", "--env", f"CARGO_BUILD_JOBS={cargo_jobs}",
                    "--env", "HOME=/output/" + home.relative_to(output).as_posix()]
     source_revision = provenance["source"]["emulebbRust"]["commit"]
     hosted = os.environ.get("GITHUB_ACTIONS") == "true"
@@ -1191,7 +1194,6 @@ def _build_linux_artifacts(layout, docker: LinuxDocker, *, libc: str, architectu
     profile_test_mount = (f"{target_root}/tmp/profile-ownership-tests:rw,exec,nosuid,nodev,"
                           f"size=8g,uid={uid},gid={gid},mode=0700")
     test_cargo = ["--tmpfs", profile_test_mount, *cargo]
-    from .rust_source_cache import ensure_rust_source_cache
     cache_invocation = 0
     def cache_cargo(arguments):
         nonlocal cache_invocation
