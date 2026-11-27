@@ -42,6 +42,22 @@ def test_ci_android_guest_rejects_local_execution(monkeypatch):
     assert result.exit_code != 0 and "requires GitHub Actions" in result.output
 
 
+def test_managed_debug_smoke_rejects_changed_manifest_before_boot(tmp_path):
+    import json
+    from emule_workspace.android_debug_smoke import boot_and_smoke
+
+    manifest = tmp_path / "apk.manifest.json"
+    manifest.write_text(json.dumps({"buildIdentity": {"sourceRevision": "a" * 40},
+                                    "signerSha256": "b" * 64, "debug": True, "abis": ["x86_64"]}),
+                        encoding="utf-8")
+    report = tmp_path / "reports/smoke.json"
+    with pytest.raises(ValueError, match="exact retained single-ABI"):
+        boot_and_smoke(tmp_path / "harness", output=tmp_path, sdk=tmp_path / "sdk",
+                       user_home=tmp_path / "user", avd_home=tmp_path / "user/avd",
+                       manifest=manifest, manifest_sha256="c" * 64, report=report)
+    assert not report.parent.exists()
+
+
 def test_physical_android_apk_adapter_uses_exact_harness_owner_under_lock_without_logging_serial(tmp_path, monkeypatch):
     from types import SimpleNamespace
     adb = tmp_path / "adb.exe"

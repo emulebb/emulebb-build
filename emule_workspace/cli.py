@@ -706,6 +706,34 @@ def package_rust_android_apk_ci(*, release_version: str, channel: str,
     _locked("package-rust-android-apk-ci", package)(workspace_options=options, layout=layout)
 
 
+@main.command("package-rust-android-debug-apk-ci")
+@click.option("--source-sha", required=True)
+@click.option("--github-output", required=True, type=click.Path(path_type=Path, dir_okay=False))
+def package_rust_android_debug_apk_ci(*, source_sha: str, github_output: Path) -> None:
+    """Build one hosted x86_64 debug APK and export its smoke-test inputs."""
+    from datetime import datetime, timezone
+    from .android_apk import package_apk
+    from .python_runtime import sha256
+    from .release import _emulebb_rust_workspace_version
+
+    options, layout = _android_ci_layout()
+
+    def package(**kwargs):
+        selected = kwargs["layout"]
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        version = _emulebb_rust_workspace_version(selected.emulebb_rust_repo_root)
+        apk = package_apk(selected, release_version=f"{version}.nightly.{day}.g{source_sha[:8]}",
+                          channel="nightly", expected_source_sha=source_sha,
+                          version_code=int(day), debug=True, debug_abi="x86_64")
+        manifest = apk.with_name(apk.name + ".manifest.json")
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        with github_output.open("a", encoding="utf-8", newline="\n") as stream:
+            print(f"payload={apk.parent}\nmanifest={manifest.name}", file=stream)
+            print(f"manifest_sha256={sha256(manifest)}\nsigner_sha256={data['signerSha256']}", file=stream)
+
+    _locked("package-rust-android-debug-apk-ci", package)(workspace_options=options, layout=layout)
+
+
 @main.command("prepare-rust-android-apk-gradle")
 @_common_options
 def prepare_rust_android_apk_gradle(*, workspace_options, layout) -> None:
@@ -1073,18 +1101,67 @@ def package_rust_android_apk(*, release_version: str, expected_source_sha: str,
 @_common_options
 def smoke_rust_android_debug_apk(*, workspace_options, layout, **inputs) -> None:
     """Smoke one exact debug APK on an already booted, empty emulator."""
-    import subprocess
-    import sys
+    from .android_debug_smoke import run_smoke
 
     def smoke(**kwargs):
-        harness = kwargs["layout"].tests_repo_root
-        script = harness / "scripts/smoke-android-debug-apk.py"
-        command = [sys.executable, "-B", str(script)]
-        for name, value in inputs.items():
-            command.extend(("--" + name.replace("_", "-"), str(value)))
-        subprocess.run(command, check=True)
+        run_smoke(kwargs["layout"].tests_repo_root, **inputs)
 
     _locked("smoke-rust-android-debug-apk", smoke)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("test-rust-android-debug-apk")
+@click.option("--manifest", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--sdk-root", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@_common_options
+def test_rust_android_debug_apk(*, workspace_options, layout, manifest: Path, sdk_root: Path | None) -> None:
+    """Boot the local x86_64 Windows emulator and test a retained debug APK."""
+    from uuid import uuid4
+    from .android_debug_smoke import boot_and_smoke
+
+    def smoke(**kwargs):
+        selected = kwargs["layout"]
+        output = selected.output_root.resolve()
+        sdk = (sdk_root or output / "tools/android-windows-smoke").resolve()
+        user_home = sdk / "user"
+        report = output / "reports/android-debug-apk-smoke" / uuid4().hex / "smoke.json"
+        print(boot_and_smoke(selected.tests_repo_root, output=output, sdk=sdk, user_home=user_home,
+                             avd_home=user_home / "avd", manifest=manifest.absolute(), report=report))
+
+    _locked("test-rust-android-debug-apk", smoke)(workspace_options=workspace_options, layout=layout)
+
+
+@main.command("test-rust-android-debug-apk-ci")
+@click.option("--manifest", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--manifest-sha256", required=True)
+@click.option("--source-sha", required=True)
+@click.option("--certificate-sha256", required=True)
+def test_rust_android_debug_apk_ci(**inputs) -> None:
+    """Smoke the exact same-run retained APK on a fresh hosted Linux emulator."""
+    from .android_debug_smoke import boot_and_smoke, prepare_hosted_emulator
+    from .release import _emulebb_rust_artifact_origin, _assert_emulebb_rust_hosted_artifact
+    from .python_runtime import sha256
+
+    if _emulebb_rust_artifact_origin()["origin"] != "github-actions":
+        raise click.ClickException("CI debug APK smoke requires GitHub Actions")
+    workspace, output = resolve_required_workspace_roots()
+    harness = (workspace / "repos/emulebb-build-tests").resolve()
+    if not harness.is_relative_to(workspace) or not (harness / "scripts/smoke-android-debug-apk.py").is_file():
+        raise click.ClickException("CI debug APK smoke requires the pinned shared harness checkout")
+    manifest = inputs["manifest"]
+    if (manifest.is_symlink() or manifest.stat().st_size > 65536
+            or not manifest.resolve().is_relative_to(output) or sha256(manifest) != inputs["manifest_sha256"]):
+        raise click.ClickException("Retained debug APK manifest identity differs")
+    _assert_emulebb_rust_hosted_artifact(json.loads(manifest.read_text(encoding="utf-8")))
+    options = WorkspaceOptions(workspace_root=workspace, output_root=output, workspace_name="ci")
+    layout = replace(build_ci_layout(output_root=output), emule_workspace_root=workspace, tests_repo_root=harness)
+
+    def smoke(**kwargs):
+        sdk, user_home, avd_home = prepare_hosted_emulator(kwargs["layout"].output_root)
+        report = output / "reports/android-debug-apk-smoke/smoke.json"
+        print(boot_and_smoke(harness, output=output, sdk=sdk, user_home=user_home,
+                             avd_home=avd_home, report=report, **inputs))
+
+    _locked("test-rust-android-debug-apk-ci", smoke)(workspace_options=options, layout=layout)
 
 
 def _android_ci_layout():
