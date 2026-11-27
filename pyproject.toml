@@ -18,6 +18,7 @@ dev = [
     "psutil>=6",
     "playwright==1.59.0",
     "pywin32==312; sys_platform == 'win32'",
+    "pywinauto==0.6.9; sys_platform == 'win32'",
     "mkdocs>=1.6,<2.0",
     "mkdocs-material>=9.5,<10.0",
     "mkdocs-redirects>=1.2,<2.0",
