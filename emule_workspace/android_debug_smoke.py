@@ -168,11 +168,11 @@ def boot_and_smoke(harness: Path, *, output: Path, sdk: Path, user_home: Path,
             while time.monotonic() < deadline:
                 if server.poll() is not None or guest.poll() is not None:
                     raise RuntimeError(f"Owned ADB or Android emulator exited during boot. Logs: {directory}")
-                try:
+                # WHY: the ADB transport can stall briefly during guest startup.
+                # The outer deadline still bounds boot and later probes fail normally.
+                with suppress(subprocess.TimeoutExpired):
                     if command("shell", "getprop", "sys.boot_completed").stdout.strip() == "1":
                         break
-                except subprocess.TimeoutExpired:
-                    pass
                 time.sleep(1)
             else:
                 raise RuntimeError(f"Android emulator did not finish booting. Logs: {directory}")
