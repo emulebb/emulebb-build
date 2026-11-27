@@ -778,6 +778,20 @@ def test_local_resume_runs_only_the_unfinished_suffix(tmp_path, monkeypatch):
     assert called == ["first", "second", "second"]
 
 
+def test_development_plan_selects_touched_crates_without_platform_matrix(tmp_path):
+    repo = tmp_path / "repos/emulebb-rust"
+    crate = repo / "crates/emulebb-kad-dht"
+    crate.mkdir(parents=True)
+    (crate / "Cargo.toml").write_text('[package]\nname = "emulebb-kad-dht"\n', encoding="utf-8")
+    commands = local_checks.check_plan(
+        repo, {"crates/emulebb-kad-dht/src/lib.rs"}, "dev", tmp_path, tmp_path / "output",
+        workstream="feature",
+    )
+    assert commands[-1][1][-5:] == ["rust-unit", "--package", "emulebb-kad-dht", "--workstream", "feature"]
+    assert not any("validate-emulebb-rust-linux" in command or "validate-rust-android" in command
+                   for _, command in commands)
+
+
 def test_early_arm_failure_stops_before_expensive_host_checks_and_releases_session(tmp_path, monkeypatch):
     from emule_workspace import linux_containers
     root, output, repo, snapshots = _synthetic_check_runner(

@@ -264,14 +264,14 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
         commands.append((repo, [py, str(preflight), "--repo", str(repo), "--offline"]))
     if workflow_changed and repo.name != "emulebb-rust":
         commands.append((repo, ["go", "run", "github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca"]))
-    if stage == "push":
+    if stage in {"push", "dev"}:
         # WHY: ordinary upload must not acquire the heavy owner, compile product
         # code or overwrite a runtime. Full proof is an explicit locked stage.
         scratch = paths_file.parent if paths_file is not None else output / "tmp" / "local-check" / "plan"
         commands.extend(_fast_push_plan(repo, paths, tooling, scratch))
-        return commands
+        if stage == "push":
+            return commands
     if stage == "dev":
-        commands.extend(_fast_push_plan(repo, paths, tooling, scratch))
         code = {path for path in paths if not path.endswith(".md") and not path.startswith("docs/")}
         if repo.name == "emulebb-rust" and code:
             packages = set()

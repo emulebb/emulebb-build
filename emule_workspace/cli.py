@@ -1058,6 +1058,33 @@ def package_rust_android_apk(*, release_version: str, expected_source_sha: str,
     _locked("package-rust-android-apk", package)(workspace_options=workspace_options, layout=layout)
 
 
+@main.command("smoke-rust-android-debug-apk")
+@click.option("--adb", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--serial", required=True)
+@click.option("--server-port", type=click.IntRange(1, 65535), default=5037)
+@click.option("--manifest", required=True, type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--manifest-sha256", required=True)
+@click.option("--source-sha", required=True)
+@click.option("--certificate-sha256", required=True)
+@click.option("--abi", required=True, type=click.Choice(["arm64-v8a", "x86_64"]))
+@click.option("--report", required=True, type=click.Path(path_type=Path, dir_okay=False))
+@_common_options
+def smoke_rust_android_debug_apk(*, workspace_options, layout, **inputs) -> None:
+    """Smoke one exact debug APK on an already booted, empty emulator."""
+    import subprocess
+    import sys
+
+    def smoke(**kwargs):
+        harness = kwargs["layout"].tests_repo_root
+        script = harness / "scripts/smoke-android-debug-apk.py"
+        command = [sys.executable, "-B", str(script)]
+        for name, value in inputs.items():
+            command.extend(("--" + name.replace("_", "-"), str(value)))
+        subprocess.run(command, check=True)
+
+    _locked("smoke-rust-android-debug-apk", smoke)(workspace_options=workspace_options, layout=layout)
+
+
 def _android_ci_layout():
     """Share the validated minimal hosted checkout boundary for Android owners."""
     from .release import _emulebb_rust_artifact_origin
