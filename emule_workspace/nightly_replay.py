@@ -326,3 +326,69 @@ def replay(*, workspace: Path, output: Path, run_id: int, attempt: int,
     finally:
         report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
     return report_path
+
+
+def stage_windows_arm64(*, release: Path, run_id: int, attempt: int, source_sha: str,
+                        artifact_name: str, artifact_sha256: str) -> dict:
+    """Admit only the requested original Windows ARM64 Nightly payload."""
+    from .platform_profiles import package_layout
+    from .release import _assert_emulebb_rust_package_contents
+    from .release_candidate import package_sbom
+
+    if (run_id < 1 or attempt < 1 or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+            or not re.fullmatch(r"[0-9a-f]{64}", artifact_sha256)
+            or artifact_name != ARTIFACT_PREFIX + "native-payload-windows-arm64"):
+        raise ValueError("Select an exact Nightly Windows ARM64 artifact, SHA-256 and source SHA")
+    run = _run(run_id, attempt)
+    if run["head_sha"] != source_sha:
+        raise RuntimeError("Nightly source differs from the selected Rust revision")
+    inventory = _github(f"runs/{run_id}/artifacts?per_page=100")
+    artifact = _select_artifacts(run, inventory, {artifact_name})[artifact_name]
+    if artifact["digest"] != f"sha256:{artifact_sha256}":
+        raise RuntimeError("Nightly artifact differs from the independently supplied SHA-256")
+    if release.exists():
+        raise RuntimeError("Retained package staging requires a new destination")
+    release.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=release.parent, prefix="arm64-replay-") as temp:
+        scratch = Path(temp)
+        extracted = scratch / "payload"
+        _extract(_archive(artifact, scratch), extracted)
+        manifests = list(extracted.glob("*-windows-arm64.zip.manifest.json"))
+        if len(manifests) != 1:
+            raise RuntimeError("Expected a single Windows ARM64 package manifest")
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        version = manifest["version"]
+        if not re.fullmatch(r"[0-9][A-Za-z0-9.+-]*", version):
+            raise RuntimeError("Invalid retained package version")
+        asset, = package_layout(version)["windows-arm64"]
+        expected_workflow = {"repository": REPOSITORY, "runId": str(run_id),
+                             "runAttempt": str(attempt), "workflowSha": source_sha}
+        if (manifest.get("workflow") != expected_workflow or manifest.get("origin") != "github-actions"
+                or manifest.get("platform") != "ARM64" or manifest.get("configuration") != "Release"
+                or manifest.get("asset") != asset
+                or {item.name for item in extracted.iterdir()} != {asset, f"{asset}.manifest.json", package_sbom(asset)}
+                or _sha256(extracted / asset) != manifest.get("sha256")):
+            raise RuntimeError("Retained package bytes or producer attempt do not match")
+        _assert_emulebb_rust_package_contents(extracted / asset, "ARM64")
+        extracted.rename(release)
+    return {"version": version, "package_sha256": manifest["sha256"], "artifact_id": artifact["id"]}
+
+
+def _arm64_main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=stage_windows_arm64.__doc__)
+    parser.add_argument("--release", type=Path, required=True)
+    parser.add_argument("--run-id", type=int, required=True)
+    parser.add_argument("--attempt", type=int, required=True)
+    parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--artifact-name", required=True)
+    parser.add_argument("--artifact-sha256", required=True)
+    result = stage_windows_arm64(**vars(parser.parse_args()))
+    with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
+        for name, value in result.items():
+            print(f"{name}={value}", file=stream)
+
+
+if __name__ == "__main__":
+    _arm64_main()

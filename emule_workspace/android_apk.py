@@ -106,7 +106,7 @@ def signing_inputs(environment: dict[str, str]) -> tuple[Path, str]:
     return key, alias
 
 
-def audit_badging(text: str, *, version: str, version_code: int) -> None:
+def audit_badging(text: str, *, version: str, version_code: int, abis=None) -> None:
     """Validate packaged manifest/ABI metadata using the pinned Android aapt2 output."""
     expected = {"name": APPLICATION_ID, "versionName": version, "versionCode": str(version_code)}
     packages = [line for line in text.splitlines() if line.startswith("package: ")]
@@ -119,7 +119,7 @@ def audit_badging(text: str, *, version: str, version_code: int) -> None:
         if re.findall(r"^" + field + r":'([0-9]+)'$", text, re.MULTILINE) != [str(expected_value)]:
             raise RuntimeError("APK SDK bounds differ from its declared package contract")
     native = [line for line in text.splitlines() if line.startswith("native-code:")]
-    if len(native) != 1 or set(re.findall(r"'([^']+)'", native[0])) != set(TARGETS):
+    if len(native) != 1 or set(re.findall(r"'([^']+)'", native[0])) != set(TARGETS if abis is None else abis):
         raise RuntimeError("APK must contain exactly both supported native ABIs")
 
 
@@ -198,8 +198,9 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 version_code: int, wsl_distro: str = "Ubuntu", debug: bool = False,
                 retained_signing: bool = False, author_gradle_verification: bool = False,
                 kotlin_only: bool = False, lint_only: bool = False,
-                expected_cert_sha256: str | None = None) -> Path:
-    """Build both JNI ABIs, bundled SPA and APK from one immutable source selection.
+                expected_cert_sha256: str | None = None, debug_abi: str | None = None,
+                cargo_jobs: int | None = None) -> Path:
+    """Build the selected JNI ABIs, bundled SPA and APK from immutable sources.
 
     Debug builds are explicit local test inputs. Nightly publication always
     requires configured production signing, regardless of any debug keystore.
@@ -211,6 +212,9 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
         raise ValueError("Gradle verification authoring requires debug; retained signing requires release")
     if kotlin_only and lint_only:
         raise ValueError("Select one Gradle-only validation scope")
+    if debug_abi is not None and (not debug or debug_abi not in TARGETS or kotlin_only or lint_only):
+        raise ValueError("Select one supported ABI only for a debug APK build")
+    abis = tuple(TARGETS) if debug_abi is None else (debug_abi,)
     selected_signing, retained_certificate = None, None
     if retained_signing:
         from .android_signing import retained_signing_inputs
@@ -233,12 +237,17 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
     scratch = output / "tmp/android-apk" / run_id
     report_root = output / "reports/android-apk" / run_id
     root = output / ("packages/rust-android-apk-debug" if debug else "packages/rust-android-apk") / release_version
+    if debug_abi is not None:
+        root /= debug_abi
     for directory in (scratch, report_root, root):
         if directory.is_symlink() or not directory.resolve().is_relative_to(output):
             raise RuntimeError("APK output must stay within the inherited output root")
         directory.mkdir(parents=True, exist_ok=True)
     report = {"schema": "emulebb.android.apk-build/1", "status": "failed",
               "source": provenance["source"], "runtimeExecution": "not-run", "checks": []}
+    from .rust_source_cache import container_cargo_jobs
+    jobs = container_cargo_jobs(cargo_jobs)
+    report["cargoJobs"] = jobs
     try:
         project = scratch / "android"
         shutil.copytree(rust / "android", project, ignore=shutil.ignore_patterns(".gradle", "build", "local.properties"))
@@ -264,7 +273,7 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 for argument in ("--mount", f"type=bind,source={docker.path(host)},target={guest}" + (",readonly" if readonly else ""))]
             path = lambda item: "/output/" + item.relative_to(output).as_posix()
             env = {"HOME": path(home), "CARGO_HOME": path(cargo_home), "CARGO_TARGET_DIR": path(target),
-                   "GRADLE_USER_HOME": path(home / "gradle"), "CARGO_BUILD_JOBS": "4",
+                   "GRADLE_USER_HOME": path(home / "gradle"), "CARGO_BUILD_JOBS": str(jobs),
                    "RUSTUP_TOOLCHAIN": "1.98.1",
                    "MINIUPNP_ROOT": "/native/miniupnp", "PCPNATPMP_ROOT": "/native/pcpnatpmp",
                    "EMULEBB_SOURCE_REVISION": expected_source_sha, "EMULEBB_RELEASE_VERSION": release_version,
@@ -344,7 +353,8 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 execution_source="/source", execution_target=env["CARGO_TARGET_DIR"],
                 native_roots=(mini, pcp), execution_identity={"image": image, "inputs": tool_inputs()})
             report["native"] = {}
-            for abi, (triple, _machine) in TARGETS.items():
+            for abi in abis:
+                triple, _machine = TARGETS[abi]
                 extra = _container_environment(compiler_environment(abi, min_api=MIN_SDK))
                 execute(abi + "-jni", ["cargo", "build", "--locked", "--offline", "--release",
                     "--manifest-path", "/source/Cargo.toml", "--target", triple, "-p", "emulebb-android"], extra=extra)
@@ -384,7 +394,7 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
             tools = "/opt/android-tools/sdk/build-tools/" + tool_inputs()["assets"]["build-tools"]["version"]
             execute("zip-alignment", [tools + "/zipalign", "-c", "-P", "16", "4", path(signed)])
             badging = execute("apk-manifest", [tools + "/aapt2", "dump", "badging", path(signed)], capture=True)
-            audit_badging(badging, version=release_version, version_code=version_code)
+            audit_badging(badging, version=release_version, version_code=version_code, abis=abis)
             license_assets = notice_inventory(notices)
             audit_packaged_notices(signed, license_assets)
             sbom_root = scratch / "sbom-payload"
@@ -393,11 +403,11 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
             sbom = release._build_spdx_sbom(
                 name=f"eMuleBB Rust {release_version} Android application",
                 namespace=f"https://github.com/emulebb/emulebb-rust/releases/download/rust-v{release_version}/{names['sbom']}",
-                package_name="emulebb-rust-android-universal", package_version=release_version,
+                package_name=f"emulebb-rust-android-{debug_abi or 'universal'}", package_version=release_version,
                 package_license="GPL-2.0-only", package_comment="Experimental Android application; device qualification remains separate.",
                 package_root=sbom_root, release_root=root,
                 components=[*release._emulebb_rust_sbom_components(layout, rust), *spdx_components(runtime)])
-            if any(report["native"][abi]["runtimeDependencies"]["bundled"] for abi in TARGETS):
+            if any(report["native"][abi]["runtimeDependencies"]["bundled"] for abi in abis):
                 component = release._component_spdx_package(name="Android NDK libc++ runtime",
                     declared_license="Apache-2.0 WITH LLVM-exception", version=tool_inputs()["assets"]["ndk"]["version"],
                     comment="Pinned Android NDK archive; exact per-ABI bytes and NOTICE are bound in the APK manifest.")
@@ -410,7 +420,7 @@ def package_apk(layout, *, release_version: str, channel: str, expected_source_s
                 "versionCode": version_code, "experimental": True, "debug": debug,
                 "source": provenance["source"], "buildIdentity": {"sourceRevision": expected_source_sha,
                 "version": release_version, "channel": channel}, "signerSha256": signer,
-                "runtimeExecution": "not-run", "abis": list(TARGETS), "toolInputs": tool_inputs(),
+                "runtimeExecution": "not-run", "abis": list(abis), "toolInputs": tool_inputs(),
                 "apk": {"path": signed.name, "sha256": release._sha256(signed), "sizeBytes": signed.stat().st_size},
                 "native": report["native"], "runtimeClasspath": runtime, "notices": license_assets}
             manifest.update(sbom=names["sbom"], sbomSha256=release._sha256(root / names["sbom"]))

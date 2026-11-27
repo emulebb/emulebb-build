@@ -28,6 +28,14 @@ MAX_FILES = 20000
 MAX_BYTES = 256 * 1024 * 1024
 
 
+def container_cargo_jobs(override: int | None = None) -> int:
+    """Use an explicit invocation budget, or the current validated default."""
+    value = str(override) if override is not None else os.environ.get("CARGO_BUILD_JOBS", "4")
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        raise ValueError("CARGO_BUILD_JOBS must be a positive integer")
+    return int(value)
+
+
 def _source_identity(roots: tuple[Path, ...]) -> list[dict]:
     """Hash Rust then native inputs; only native tracked file links may be followed."""
     result = []

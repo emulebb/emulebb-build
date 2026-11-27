@@ -5,21 +5,39 @@ import os
 import ast
 import hashlib
 import json
+import platform
 import re
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from uuid import uuid4
 from time import perf_counter
 from .git_environment import git_environment
+from .locks import WORKSPACE_LOCK_TOKEN_ENV
 
 
 def git(repo: Path, *args: str) -> str:
     """Run a read-only Git query, propagating errors."""
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True,
                                    env=git_environment()).rstrip("\r\n")
+
+
+def local_toolchain(repo: Path) -> dict[str, str | None]:
+    """Record resolved tool versions for resume without invoking build steps."""
+    versions = {}
+    npm = "npm.cmd" if os.name == "nt" else "npm"
+    for command in (("rustc", "-Vv"), ("cargo", "-V"), ("go", "version"),
+                    (npm, "--version"), ("node", "--version"), ("wsl", "--version")):
+        try:
+            versions[command[0]] = subprocess.check_output(
+                command, cwd=repo, env=git_environment(), stderr=subprocess.DEVNULL, timeout=10,
+            ).decode("utf-8", errors="replace").replace("\x00", "").strip()
+        except (OSError, subprocess.SubprocessError):
+            versions[command[0]] = None
+    return versions
 
 
 def outgoing_ranges(repo: Path, remote: str, updates: str | None) -> list[tuple[str, str]]:
@@ -53,6 +71,11 @@ def changed_paths(repo: Path, stage: str, remote: str, updates: str | None) -> s
     """Select staged/outgoing paths, or the complete committed tree for full proof."""
     if stage == "full":
         return set(filter(None, git(repo, "ls-files", "-z", "--").split("\0")))
+    if stage == "dev":
+        base, _ = outgoing_ranges(repo, remote, None)[0]
+        raw = git(repo, "diff", "--name-only", "-z", base, "--") + git(
+            repo, "ls-files", "--others", "--exclude-standard", "-z")
+        return set(filter(None, raw.split("\0")))
     if stage == "commit":
         raw = git(repo, "diff", "--cached", "--name-only", "-z", "--")
         return set(filter(None, raw.split("\0")))
@@ -68,6 +91,9 @@ def check_whitespace(repo: Path, stage: str, remote: str, updates: str | None) -
         git(repo, "diff", "--cached", "--check", "--")
     elif stage == "full":
         git(repo, "show", "--format=", "--check", "HEAD", "--")
+    elif stage == "dev":
+        base, _ = outgoing_ranges(repo, remote, None)[0]
+        git(repo, "diff", "--check", base, "--")
     else:
         # WHY: HEAD versus a clean worktree is empty, even when outgoing commits
         # introduce whitespace errors. Use the same ranges as change selection.
@@ -233,6 +259,9 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
                             "--repo-root", str(repo), "--repo-kind",
                             {"emulebb-build": "emulebb-build", "emulebb-tooling": "tooling"}.get(repo.name, "generic")]))
     workflow_changed = any(p.startswith(".github/workflows/") for p in paths)
+    preflight = tooling / "scripts" / "rust-delivery-preflight.py"
+    if repo.name == "emulebb-rust" and (workflow_changed or stage == "full") and preflight.is_file():
+        commands.append((repo, [py, str(preflight), "--repo", str(repo), "--offline"]))
     if workflow_changed and repo.name != "emulebb-rust":
         commands.append((repo, ["go", "run", "github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca"]))
     if stage == "push":
@@ -240,6 +269,23 @@ def check_plan(repo: Path, paths: set[str], stage: str, root: Path, output: Path
         # code or overwrite a runtime. Full proof is an explicit locked stage.
         scratch = paths_file.parent if paths_file is not None else output / "tmp" / "local-check" / "plan"
         commands.extend(_fast_push_plan(repo, paths, tooling, scratch))
+        return commands
+    if stage == "dev":
+        commands.extend(_fast_push_plan(repo, paths, tooling, scratch))
+        code = {path for path in paths if not path.endswith(".md") and not path.startswith("docs/")}
+        if repo.name == "emulebb-rust" and code:
+            packages = set()
+            for path in code:
+                parts = Path(path).parts
+                manifest = repo.joinpath(*parts[:2], "Cargo.toml")
+                if len(parts) < 3 or parts[0] != "crates" or not manifest.is_file():
+                    packages.clear()
+                    break
+                packages.add(tomllib.loads(manifest.read_text(encoding="utf-8"))["package"]["name"])
+            commands.extend((builder, [py, "-B", "-m", "emule_workspace", "test", "rust-unit",
+                                       *(["--package", package] if package else []),
+                                       *(["--workstream", workstream] if workstream else [])])
+                            for package in sorted(packages) or [None])
         return commands
     implementation = any(not (p.endswith(".md") or p.startswith("docs/")) for p in paths)
     if repo.name == "emulebb-rust":
@@ -365,6 +411,9 @@ def _source_snapshot(sources: dict[str, Path], *, clean: bool) -> dict:
         if clean and dirty:
             raise RuntimeError(f"Source {name} requires a clean worktree for push validation")
         snapshot[name] = {"path": str(source), "revision": revision, "dirty": dirty}
+        if dirty and not clean:
+            from .rust_source_cache import _source_identity
+            snapshot[name]["workingTree"] = _source_identity((source,))[0]
     return snapshot
 
 
@@ -389,12 +438,15 @@ def _workstream_sources(root: Path, output: Path, registration: dict | None,
 
 
 def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root: Path, output: Path,
-               workstream: str | None = None) -> None:
+               workstream: str | None = None, plan_only: bool = False, cargo_jobs: int | None = None,
+               resume: Path | None = None) -> None:
     """Execute applicable checks; a missing tool or failed check blocks Git."""
-    if stage not in {"commit", "push", "full"}:
-        raise ValueError("Local check stage must be commit, push or full")
+    if stage not in {"commit", "push", "dev", "full"}:
+        raise ValueError("Local check stage must be commit, push, dev or full")
     if stage == "full" and updates is not None:
         raise ValueError("Full validation selects the committed tree, not pre-push ref input")
+    if resume is not None and (stage not in {"dev", "full"} or plan_only):
+        raise ValueError("--resume requires a development or full execution")
     # WHY: a UTF-8 subprocess log can contain characters the Windows console
     # cannot encode. Preserve that log and report the original failing check.
     reconfigure = getattr(sys.stdout, "reconfigure", None)
@@ -413,19 +465,36 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
             raise RuntimeError("--repo is not the selected workstream checkout")
     checked_head = git(repo, "rev-parse", "HEAD") if stage != "commit" else None
     paths = changed_paths(repo, stage, remote, updates)
+    if plan_only:
+        commands = check_plan(repo, paths, stage, root, output, source_paths,
+                              registration["id"] if registration else None)
+        print(json.dumps({
+            "stage": stage, "head": checked_head,
+            "base": outgoing_ranges(repo, remote, updates)[0][0] if stage == "dev" else None,
+            "sources": _source_snapshot(source_paths, clean=False), "paths": sorted(paths),
+            "cargoJobs": cargo_jobs,
+            "plan": [{"cwd": str(cwd), "command": command} for cwd, command in commands] if paths else [],
+        }, indent=2))
+        return
+    if stage == "dev" and repo.name == "emulebb-rust" and not _windows_host():
+        raise RuntimeError("The development plan requires native Windows")
     if not paths:
         if stage == "full":
             raise RuntimeError("Full validation requires tracked committed inputs")
         print("No outgoing file changes; no local checks needed.")
         return
     dirty = git(repo, "status", "--porcelain") if stage != "commit" else git(repo, "diff", "--name-only")
-    if dirty:
+    if dirty and stage != "dev":
         raise RuntimeError("Local validation requires a clean worktree for push/full and no unstaged tracked edits for commit")
+    if dirty and resume is not None:
+        raise RuntimeError("Resume requires clean, immutable sources")
     check_whitespace(repo, stage, remote, updates)
     target = Path(os.environ.get("CARGO_TARGET_DIR", "")).resolve()
     if repo.name == "emulebb-rust" and target != output / "builds" / "rust" / "target":
         raise RuntimeError("CARGO_TARGET_DIR must equal EMULEBB_WORKSPACE_OUTPUT_ROOT/builds/rust/target")
     child_env = git_environment()
+    if cargo_jobs is not None:
+        child_env["CARGO_BUILD_JOBS"] = str(cargo_jobs)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
     scratch = output / "tmp" / "local-check" / run_id
     scratch.mkdir(parents=True)
@@ -443,7 +512,31 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
     if owns_wsl:
         # The imported lifecycle code is a selected validation input too.
         source_paths.setdefault("emulebb-build-tests", root / "repos/emulebb-build-tests")
-    snapshot = _source_snapshot(source_paths, clean=stage != "commit")
+    snapshot = _source_snapshot(source_paths, clean=stage not in {"commit", "dev"})
+    if resume is not None and any(source["dirty"] for source in snapshot.values()):
+        raise RuntimeError("Resume requires clean, immutable companion sources")
+    identity_environment = git_environment()
+    identity_environment.pop(WORKSPACE_LOCK_TOKEN_ENV, None)
+    identity = {
+        "stage": stage, "head": checked_head, "sources": snapshot, "paths": sorted(paths),
+        "platform": platform.platform(), "python": sys.version,
+        "environmentSha256": hashlib.sha256(json.dumps(identity_environment, sort_keys=True).encode()).hexdigest(),
+        "toolchain": local_toolchain(repo) if stage in {"dev", "full"} else {},
+        "cargoJobs": child_env.get("CARGO_BUILD_JOBS"),
+        "plan": [[str(cwd), [arg.replace(str(scratch), "<scratch>") for arg in command]] for cwd, command in plan],
+    }
+    reused = []
+    if resume is not None:
+        resume = resume.resolve()
+        if resume.parent != reports.parent:
+            raise RuntimeError("Resume receipt must belong to this repository's local validation reports")
+        if json.loads((resume / "identity.json").read_text(encoding="utf-8")) != identity:
+            raise RuntimeError("Resume receipt inputs differ from the current validation")
+        for row in json.loads((resume / "results.json").read_text(encoding="utf-8"))[:len(plan)]:
+            if row["returncode"] != 0:
+                break
+            reused.append(row)
+    (reports / "identity.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
     (reports / "sources.json").write_text(json.dumps({"stage": stage, "head": checked_head,
                                                       "workstream": registration["id"] if registration else None,
                                                       "sources": snapshot,
@@ -468,6 +561,11 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
                 cargo_layout = apply_workstream_layout(cargo_layout, registration)
             ensure_rust_source_cache(cargo_layout, prefetch=True)
         for index, (cwd, command) in enumerate(plan):
+            if index < len(reused):
+                results.append({**reused[index], "reusedFrom": str(resume)})
+                (reports / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+                print(f"Reused local {stage} check {index}", flush=True)
+                continue
             if wsl is not None:
                 wsl.check(f"before-check-{index}")
             print(f"Local {stage}: {' '.join(command)}", flush=True)
@@ -497,9 +595,9 @@ def run_checks(*, repo: Path, stage: str, remote: str, updates: str | None, root
             # without leaving a dirty tree. Its gates must run before it can push.
             if git(repo, "rev-parse", "HEAD") != checked_head:
                 raise RuntimeError("HEAD changed during validation; validate the intended commit before pushing")
-            if git(repo, "status", "--porcelain"):
+            if stage != "dev" and git(repo, "status", "--porcelain"):
                 raise RuntimeError("Validation changed the worktree; review changes before pushing")
-            if _source_snapshot(source_paths, clean=True) != snapshot:
+            if _source_snapshot(source_paths, clean=stage != "dev") != snapshot:
                 raise RuntimeError("Participating sources changed during validation; validate the intended revisions")
         if wsl is not None:
             wsl.check("plan-complete")
